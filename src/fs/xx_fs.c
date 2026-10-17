@@ -156,11 +156,6 @@ static int xx_fs_entry_compare(const void *left, const void *right)
     return xx_rt_strcmp(a->name, b->name);
 }
 
-static bool xx_fs_name_is_dot(const char *name)
-{
-    return name && name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'));
-}
-
 /* Context for xx_fs_collect_entry: where to append, and whether an append has
  * already failed. */
 typedef struct xx_fs_collector_s {
