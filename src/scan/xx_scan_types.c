@@ -16,6 +16,24 @@
 #include <stdio.h>
 #include <string.h>
 
+static int xx_scan_memcmp(const void* ptr1, const void* ptr2, size_t size)
+{
+    const unsigned char* a = (const unsigned char*)ptr1;
+    const unsigned char* b = (const unsigned char*)ptr2;
+    size_t i;
+
+    for (i = 0; i < size; ++i) {
+        if (a[i] != b[i]) {
+            return (int)a[i] - (int)b[i];
+        }
+    }
+
+    return 0;
+}
+
+#undef memcmp
+#define memcmp xx_scan_memcmp
+
 typedef struct xx_scan_type_window {
     xx_io_device view;
     xx_io_device *source;
