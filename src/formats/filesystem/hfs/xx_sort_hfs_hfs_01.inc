@@ -1,0 +1,30 @@
+/* Private sorting implementation from src/formats/filesystem/hfs/xx_hfs.c. */
+
+static uint16_t hfs_sort(uint8_t c)
+{
+    static const uint16_t weights[89] = {0x4108, 0x410C, 0x4310, 0x4502, 0x4E0A, 0x4F08, 0x5508, 0x4182, 0x4104, 0x4186, 0x4108, 0x410A, 0x410C, 0x4310, 0x4502,
+                                         0x4584, 0x4586, 0x4588, 0x4982, 0x4984, 0x4986, 0x4988, 0x4E0A, 0x4F82, 0x4F84, 0x4F86, 0x4F08, 0x4F0A, 0x5582, 0x5584,
+                                         0x5586, 0x5508, 0xA000, 0xA100, 0xA200, 0xA300, 0xA400, 0xA500, 0xA600, 0x5382, 0xA800, 0xA900, 0xAA00, 0xAB00, 0xAC00,
+                                         0xAD00, 0x4114, 0x4F0E, 0xB000, 0xB100, 0xB200, 0xB300, 0xB400, 0xB500, 0xB600, 0xB700, 0xB800, 0xB900, 0xBA00, 0x4192,
+                                         0x4F92, 0xBD00, 0x4114, 0x4F0E, 0xC000, 0xC100, 0xC200, 0xC300, 0xC400, 0xC500, 0xC600, 0x2206, 0x2208, 0xC900, 0x2000,
+                                         0x4104, 0x410A, 0x4F0A, 0x4F14, 0x4F14, 0xD000, 0xD100, 0x2202, 0x2204, 0x2702, 0x2704, 0xD600, 0xD700, 0x5988};
+    if (c >= 0x80U && c <= 0xD8U) return weights[c - 0x80U];
+    if (c == 0x60U) return 0x4180U;
+    if (c >= 'a' && c <= 'z') c -= 32U;
+    return (uint16_t)(c << 8);
+}
+static int hfs_key_compare(const hfs_key *a, const hfs_key *b, bool catalog)
+{
+    size_t i, n;
+    if (a->id != b->id) return a->id < b->id ? -1 : 1;
+    if (!catalog) {
+        if (a->fork != b->fork) return a->fork < b->fork ? -1 : 1;
+        return a->block == b->block ? 0 : (a->block < b->block ? -1 : 1);
+    }
+    n = a->length < b->length ? a->length : b->length;
+    for (i = 0U; i < n; ++i) {
+        uint16_t x = hfs_sort(a->name[i]), y = hfs_sort(b->name[i]);
+        if (x != y) return x < y ? -1 : 1;
+    }
+    return a->length == b->length ? 0 : (a->length < b->length ? -1 : 1);
+}

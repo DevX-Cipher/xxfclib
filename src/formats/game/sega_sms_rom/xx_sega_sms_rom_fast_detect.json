@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "formats": [
+    {
+      "enum": "SEGA_SMS_ROM",
+      "sources": ["src/formats/game/sega_sms_rom/xx_sega_sms_rom.c"],
+      "note": "TMR SEGA copyright signature at each standard cartridge-header slot; reader validation checks the full header.",
+      "rules": [
+        {"min_size": 8192, "tests": [{"origin": "base", "offset": 8176, "hex": "54 4d 52 20 53 45 47 41"}]},
+        {"min_size": 16384, "tests": [{"origin": "base", "offset": 16368, "hex": "54 4d 52 20 53 45 47 41"}]},
+        {"min_size": 32768, "tests": [{"origin": "base", "offset": 32752, "hex": "54 4d 52 20 53 45 47 41"}]}
+      ]
+    }
+  ]
+}

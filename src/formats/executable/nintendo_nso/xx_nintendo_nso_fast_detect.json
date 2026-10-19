@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "formats": [
+    {
+      "enum": "NINTENDO_NSO",
+      "sources": ["src/formats/executable/nintendo_nso/xx_nintendo_nso.c"],
+      "note": "NSO0 executable signature; the reader validates compressed section lengths and decoded-size budgets.",
+      "rules": [
+        {"min_size": 256, "tests": [{"origin": "base", "offset": 0, "hex": "4e 53 4f 30"}]}
+      ]
+    }
+  ]
+}

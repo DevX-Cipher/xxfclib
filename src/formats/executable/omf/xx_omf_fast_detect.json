@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "formats": [
+    {
+      "enum": "OMF",
+      "sources": [
+        "src/formats/executable/omf/xx_omf.c",
+        "radare2/test/db/formats/omf"
+      ],
+      "note": "Weak THEADR/LHEADR anchors only; the reader validates the complete first header, ASCII module name, checksum, every record boundary and all referenced indices.",
+      "rules": [
+        { "min_size": 5, "tests": [{ "origin": "base", "offset": 0, "hex": "80" }] },
+        { "min_size": 5, "tests": [{ "origin": "base", "offset": 0, "hex": "82" }] }
+      ]
+    }
+  ]
+}

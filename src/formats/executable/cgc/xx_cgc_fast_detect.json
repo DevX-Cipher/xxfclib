@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "formats": [
+    {
+      "enum": "CGC",
+      "sources": [
+        "src/formats/executable/cgc/xx_cgc.c"
+      ],
+      "note": "CGC magic plus the required 32-bit class; full ELF-like table validation remains in the reader.",
+      "rules": [
+        {
+          "tests": [
+            {
+              "origin": "base",
+              "offset": 0,
+              "hex": "7f 43 47 43 01"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "formats": [
+    {
+      "enum": "BFLT",
+      "sources": [
+        "src/formats/executable/bflt/xx_bflt.c"
+      ],
+      "note": "bFLT revision 4 magic and revision; the reader validates and bounds the remaining header and relocation table.",
+      "rules": [
+        {
+          "tests": [
+            {
+              "origin": "base",
+              "offset": 0,
+              "hex": "62 46 4c 54 00 00 00 04"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

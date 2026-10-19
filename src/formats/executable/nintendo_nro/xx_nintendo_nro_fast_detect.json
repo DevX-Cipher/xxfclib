@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "formats": [
+    {
+      "enum": "NINTENDO_NRO",
+      "sources": ["src/formats/executable/nintendo_nro/xx_nintendo_nro.c"],
+      "note": "NRO0 executable signature at the fixed 16-byte start-header boundary; the reader validates segment and ASET extents.",
+      "rules": [
+        {"min_size": 128, "tests": [{"origin": "base", "offset": 16, "hex": "4e 52 4f 30"}]}
+      ]
+    }
+  ]
+}

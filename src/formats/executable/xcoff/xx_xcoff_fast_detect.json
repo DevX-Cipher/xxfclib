@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "formats": [
+    {
+      "enum": "XCOFF",
+      "sources": ["src/formats/executable/xcoff/xx_xcoff.c"],
+      "note": "AIX XCOFF32 magic and 72-byte optional-header size; the reader validates section and loader-table bounds.",
+      "rules": [
+        {"min_size": 92, "tests": [{"origin": "base", "offset": 0, "hex": "01 98"}, {"origin": "base", "offset": 16, "hex": "00 48"}]},
+        {"min_size": 92, "tests": [{"origin": "base", "offset": 0, "hex": "01 9d"}, {"origin": "base", "offset": 16, "hex": "00 48"}]},
+        {"min_size": 92, "tests": [{"origin": "base", "offset": 0, "hex": "01 9f"}, {"origin": "base", "offset": 16, "hex": "00 48"}]},
+        {"min_size": 92, "tests": [{"origin": "base", "offset": 0, "hex": "01 d8"}, {"origin": "base", "offset": 16, "hex": "00 48"}]},
+        {"min_size": 92, "tests": [{"origin": "base", "offset": 0, "hex": "01 dd"}, {"origin": "base", "offset": 16, "hex": "00 48"}]},
+        {"min_size": 92, "tests": [{"origin": "base", "offset": 0, "hex": "01 df"}, {"origin": "base", "offset": 16, "hex": "00 48"}]}
+      ]
+    }
+  ]
+}

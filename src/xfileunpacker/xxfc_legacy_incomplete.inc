@@ -1,0 +1,27 @@
+/* Only readers that explicitly share xx_legacy_archive_info. */
+    case XX_FILE_TYPE_AMPLUS:
+    case XX_FILE_TYPE_ARC_CBM:
+    case XX_FILE_TYPE_BALZ:
+    case XX_FILE_TYPE_COMPDISK:
+    case XX_FILE_TYPE_CPM_CRUNCH:
+    case XX_FILE_TYPE_CRUNCHDISK:
+    case XX_FILE_TYPE_GRZIP:
+    case XX_FILE_TYPE_LHF:
+    case XX_FILE_TYPE_LHPAK_SFX:
+    case XX_FILE_TYPE_LHSFX:
+    case XX_FILE_TYPE_LHWARP:
+    case XX_FILE_TYPE_LPAQ1:
+    case XX_FILE_TYPE_LPAQ5:
+    case XX_FILE_TYPE_LRZIP:
+    case XX_FILE_TYPE_MXM_SIMPLEARC:
+    case XX_FILE_TYPE_NOWCOMPRESS:
+    case XX_FILE_TYPE_NSIS:
+    case XX_FILE_TYPE_PAQ8:
+    case XX_FILE_TYPE_PCOMPRESS_PACK:
+    case XX_FILE_TYPE_QUAD:
+    case XX_FILE_TYPE_SAVAGE:
+    case XX_FILE_TYPE_SDS_SFX:
+    case XX_FILE_TYPE_SHRINK_CDAF:
+    case XX_FILE_TYPE_SPACK:
+    case XX_FILE_TYPE_S_OMNI:
+    case XX_FILE_TYPE_WARP:

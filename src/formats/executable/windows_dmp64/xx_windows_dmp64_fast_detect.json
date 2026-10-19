@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "formats": [
+    {
+      "enum": "WINDOWS_DMP64",
+      "sources": ["src/formats/executable/windows_dmp64/xx_windows_dmp64.c"],
+      "note": "PAGEDU64 kernel-dump signature; the reader validates the fixed header, bitmap, page count and complete file extent.",
+      "rules": [
+        {"min_size": 8248, "tests": [{"origin": "base", "offset": 0, "hex": "50 41 47 45 44 55 36 34"}]}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "formats": [
+    {
+      "enum": "PEBBLE",
+      "sources": ["src/formats/executable/pebble/xx_pebble.c"],
+      "note": "Pebble application signature; the reader validates all header, image and relocation extents.",
+      "rules": [
+        {
+          "min_size": 124,
+          "tests": [{"origin": "base", "offset": 0, "hex": "50 42 4c 41 50 50 00 00"}]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "formats": [
+    {
+      "enum": "HP_SOM",
+      "sources": ["src/formats/executable/hp_som/xx_hp_som.c"],
+      "note": "HP SOM magic at offset two; the reader validates the 128-byte header and every parsed table extent.",
+      "rules": [
+        {"min_size": 128, "tests": [{"origin": "base", "offset": 2, "hex": "01 06"}]},
+        {"min_size": 128, "tests": [{"origin": "base", "offset": 2, "hex": "01 07"}]},
+        {"min_size": 128, "tests": [{"origin": "base", "offset": 2, "hex": "01 08"}]},
+        {"min_size": 128, "tests": [{"origin": "base", "offset": 2, "hex": "01 09"}]},
+        {"min_size": 128, "tests": [{"origin": "base", "offset": 2, "hex": "01 0b"}]},
+        {"min_size": 128, "tests": [{"origin": "base", "offset": 2, "hex": "01 0d"}]},
+        {"min_size": 128, "tests": [{"origin": "base", "offset": 2, "hex": "01 0e"}]}
+      ]
+    }
+  ]
+}

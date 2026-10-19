@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "formats": [
+    {
+      "enum": "PLAN9_EXEC",
+      "sources": ["src/formats/executable/plan9_exec/xx_plan9_exec.c"],
+      "note": "All Plan 9 a.out architecture magics in network byte order; full section extents remain reader validation.",
+      "rules": [
+        {"min_size": 32, "tests": [{"origin": "base", "offset": 0, "hex": "00 00 01 07"}]},
+        {"min_size": 32, "tests": [{"origin": "base", "offset": 0, "hex": "00 00 01 eb"}]},
+        {"min_size": 32, "tests": [{"origin": "base", "offset": 0, "hex": "00 00 02 ab"}]},
+        {"min_size": 32, "tests": [{"origin": "base", "offset": 0, "hex": "00 00 04 07"}]},
+        {"min_size": 32, "tests": [{"origin": "base", "offset": 0, "hex": "00 00 05 17"}]},
+        {"min_size": 32, "tests": [{"origin": "base", "offset": 0, "hex": "00 00 06 47"}]},
+        {"min_size": 32, "tests": [{"origin": "base", "offset": 0, "hex": "00 00 06 eb"}]},
+        {"min_size": 32, "tests": [{"origin": "base", "offset": 0, "hex": "00 00 07 97"}]},
+        {"min_size": 32, "tests": [{"origin": "base", "offset": 0, "hex": "00 00 09 07"}]},
+        {"min_size": 32, "tests": [{"origin": "base", "offset": 0, "hex": "00 00 09 cb"}]},
+        {"min_size": 40, "tests": [{"origin": "base", "offset": 0, "hex": "00 00 8a 97"}]},
+        {"min_size": 40, "tests": [{"origin": "base", "offset": 0, "hex": "00 00 8b 6b"}]},
+        {"min_size": 40, "tests": [{"origin": "base", "offset": 0, "hex": "00 00 8c 47"}]},
+        {"min_size": 40, "tests": [{"origin": "base", "offset": 0, "hex": "00 00 8e 17"}]}
+      ]
+    }
+  ]
+}

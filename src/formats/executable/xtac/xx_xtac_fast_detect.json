@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "formats": [
+    {
+      "enum": "XTAC",
+      "sources": [
+        "src/formats/executable/xtac/xx_xtac.c",
+        "radare2/test/db/formats/xtac"
+      ],
+      "note": "XTAC signature; the reader additionally bounds all header regions, address pairs, UTF-16 metadata, BLCK stubs and linked records.",
+      "rules": [
+        { "min_size": 57, "tests": [{ "origin": "base", "offset": 0, "hex": "58 54 41 43" }] }
+      ]
+    }
+  ]
+}
