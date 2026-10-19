@@ -40,6 +40,7 @@ const char *xx_type_to_string(xx_format_type_t type)
         case XX_TYPE_PACKAGE: return "Package";
         case XX_TYPE_RAW: return "Raw";
         case XX_TYPE_ARCHIVE: return "Archive";
+        case XX_TYPE_ROM: return "ROM";
         default: return "Unknown";
     }
 }
@@ -67,6 +68,9 @@ const char *xx_arch_to_string(xx_arch_t arch)
         case XX_ARCH_JVM: return "jvm";
         case XX_ARCH_DOTNET: return "cil";
         case XX_ARCH_DALVIK: return "dalvik";
+        case XX_ARCH_Z80: return "z80";
+        case XX_ARCH_ARC: return "arc";
+        case XX_ARCH_HPPA: return "hppa";
         case XX_ARCH_GENERIC: return "Generic";
         default: return "Unknown";
     }
@@ -84,6 +88,22 @@ const char *xx_os_to_string(xx_os_t os)
         case XX_OS_ANDROID: return "Android";
         case XX_OS_IOS: return "iOS";
         case XX_OS_OS2: return "OS/2";
+        case XX_OS_SMD: return "smd";
+        case XX_OS_NDS: return "nds";
+        case XX_OS_NES: return "nes";
+        case XX_OS_WASM: return "WebAssembly";
+        case XX_OS_WII: return "wii";
+        case XX_OS_PSX: return "psx";
+        case XX_OS_AMIGAOS: return "AmigaOS";
+        case XX_OS_MENUET: return "MenuetOS";
+        case XX_OS_MSX: return "msx";
+        case XX_OS_PLAN9: return "Plan9";
+        case XX_OS_SMS: return "sms";
+        case XX_OS_NINTENDO_SWITCH: return "Nintendo Switch";
+        case XX_OS_PEBBLE: return "Pebble";
+        case XX_OS_HPUX: return "HP-UX";
+        case XX_OS_QNX: return "QNX";
+        case XX_OS_AIX: return "AIX";
         case XX_OS_GENERIC: return "Generic";
         default: return "Unknown";
     }
@@ -829,6 +849,10 @@ const char *xx_format_file_type_to_string(xx_file_type_t type)
         case XX_FILE_TYPE_MATRIX_MARKET: return "matrix market";
         case XX_FILE_TYPE_GROMACS_GRO: return "gromacs gro";
         case XX_FILE_TYPE_MICROSOFT_MSF: return "microsoft msf";
+        case XX_FILE_TYPE_PEF: return "PEF";
+        case XX_FILE_TYPE_RPRJ: return "RPRJ";
+        case XX_FILE_TYPE_BFLT: return "bFLT";
+        case XX_FILE_TYPE_CGC: return "CGC";
         case XX_FILE_TYPE_WINDOWS_REGISTRY_HIVE: return "windows registry hive";
         case XX_FILE_TYPE_WINDOWS_EVTX: return "windows evtx";
         case XX_FILE_TYPE_BINARY_PLIST: return "binary plist";
@@ -1293,6 +1317,25 @@ const char *xx_format_file_type_to_string(xx_file_type_t type)
         case XX_FILE_TYPE_NUMBERED_SPLIT: return "Numbered split file";
         case XX_FILE_TYPE_PDF: return "PDF";
         case XX_FILE_TYPE_PYC: return "Python bytecode";
+        case XX_FILE_TYPE_MENUET: return "MenuetOS executable";
+        case XX_FILE_TYPE_MSX_ROM: return "MSX ROM image";
+        case XX_FILE_TYPE_PLAN9_EXEC: return "Plan 9 executable";
+        case XX_FILE_TYPE_SEGA_SMS_ROM: return "SEGA Master System ROM";
+        case XX_FILE_TYPE_TIC80: return "TIC-80 cartridge";
+        case XX_FILE_TYPE_NINTENDO_NRO: return "Nintendo Switch NRO executable";
+        case XX_FILE_TYPE_NINTENDO_NSO: return "Nintendo Switch NSO executable";
+        case XX_FILE_TYPE_GRESOURCE: return "GLib GResource bundle";
+        case XX_FILE_TYPE_BIOS_FIRMWARE: return "PC BIOS firmware";
+        case XX_FILE_TYPE_GNS1: return "Apple C4000 GNS1 baseband firmware";
+        case XX_FILE_TYPE_WINDOWS_DMP64: return "Windows 64-bit kernel crash dump";
+        case XX_FILE_TYPE_OMF: return "Intel Relocatable Object Module Format";
+        case XX_FILE_TYPE_XTAC: return "Windows XTA cache";
+        case XX_FILE_TYPE_PEBBLE: return "Pebble application";
+        case XX_FILE_TYPE_HP_SOM: return "HP-UX System Object Model";
+        case XX_FILE_TYPE_QNX_LMF: return "QNX Load Module Format executable";
+        case XX_FILE_TYPE_NINTENDO_REL: return "Nintendo Wii REL relocatable module";
+        case XX_FILE_TYPE_XCOFF: return "AIX Extended COFF executable";
+        case XX_FILE_TYPE_EXECUTABLE_OVERLAY: return "Executable overlay";
         case XX_FILE_TYPE_SFX_INFTOOL: return "sfx inftool";
         case XX_FILE_TYPE_AMIGA_EXT_ADF: return "amiga ext adf";
         case XX_FILE_TYPE_AMIGA_OLD_EXT_ADF: return "amiga old ext adf";
@@ -1324,7 +1367,7 @@ const char *xx_format_file_type_to_string(xx_file_type_t type)
         case XX_FILE_TYPE_RVZ: return "Dolphin RVZ GameCube image";
 #define XX_DIE_MUSIC_TYPE_NAME(type, name) \
     case type: return name;
-#include "die_music/xx_die_music_type_names.inc"
+#include "audio/die_music/xx_die_music_type_names.inc"
 #undef XX_DIE_MUSIC_TYPE_NAME
         case XX_FILE_TYPE_DOOM_WAD: return "doom wad";
         case XX_FILE_TYPE_QUAKE_WAD2: return "quake wad2";
@@ -1403,6 +1446,11 @@ const char *xx_format_file_type_to_string(xx_file_type_t type)
         case XX_FILE_TYPE_SFX_JGSOFT_DEPLOYMASTER_PACKAGE: return "JGsoft DeployMaster";
         case XX_FILE_TYPE_SFX_ARDI_DISKETTE_IMAGE: return "ARDI diskette image";
         case XX_FILE_TYPE_SFX_SBX_EXTRACTOR: return "SBX self-extractor";
+        case XX_FILE_TYPE_PE: return "PE";
+        case XX_FILE_TYPE_ELF: return "ELF";
+        case XX_FILE_TYPE_MACHO: return "Mach-O";
+        case XX_FILE_TYPE_ARCHIVE: return "Archive";
+        case XX_FILE_TYPE_IMAGE: return "Image";
         case XX_FILE_TYPE_PE32: return "PE32";
         case XX_FILE_TYPE_PE64: return "PE64";
         case XX_FILE_TYPE_DOTNET: return "DotNet";

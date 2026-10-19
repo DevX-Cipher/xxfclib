@@ -17,7 +17,7 @@ typedef struct lzma2_sink_s {
     unsigned check_mask;
     uint32_t crc32;
     uint64_t crc64;
-    xx_hash_context sha256;
+    xx_sha256_context sha256;
     xx_pd_struct *pd;
     uint8_t delta_history[256];
     uint64_t delta_position;
@@ -78,7 +78,7 @@ static ssize_t lzma2_sink_write(xx_io_device *device, const void *data, size_t s
         }
         if (sink->check_mask & XX_LZMA2_CALC_CRC32) sink->crc32 = xx_crc32_calc(sink->crc32, output, amount);
         if (sink->check_mask & XX_LZMA2_CALC_CRC64) sink->crc64 = xx_crc64_xz_calc(sink->crc64, output, amount);
-        if (sink->check_mask & XX_LZMA2_CALC_SHA256) xx_hash_update(&sink->sha256, output, amount);
+        if (sink->check_mask & XX_LZMA2_CALC_SHA256) xx_sha256_update(&sink->sha256, output, amount);
         sink->written += amount;
         source += amount;
         size -= amount;
@@ -111,7 +111,7 @@ static bool lzma2_sink_init(lzma2_sink *sink, xx_io_device *target, uint64_t exp
     sink->device.get_total_size = lzma2_sink_size;
     sink->device.size = lzma2_sink_size;
     sink->device.priv = sink;
-    if ((check_mask & XX_LZMA2_CALC_SHA256) && !xx_hash_init(&sink->sha256, XX_HASH_SHA256)) {
+    if ((check_mask & XX_LZMA2_CALC_SHA256) && !xx_sha256_init(&sink->sha256)) {
         xx_mem_free(sink->transformed);
         sink->transformed = NULL;
         return false;
@@ -134,7 +134,7 @@ bool xx_lzma2_unpack_filtered_checked_device(xx_io_device *source, int64_t offse
         return false;
     }
     if (!xx_lzma2_unpack_device(source, offset, compressed_size, property, &sink.device, pd) || sink.failed || sink.written != expected_size ||
-        ((check_mask & XX_LZMA2_CALC_SHA256) && !xx_hash_final(&sink.sha256, info->sha256, sizeof(info->sha256)))) {
+        ((check_mask & XX_LZMA2_CALC_SHA256) && !xx_sha256_final(&sink.sha256, info->sha256, sizeof(info->sha256)))) {
         goto cleanup;
     }
     info->written = sink.written;

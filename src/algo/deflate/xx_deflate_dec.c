@@ -366,7 +366,19 @@ static inline void xx_decode_copy_words(uint8_t *dst, const uint8_t *src, size_t
         dst += 8U;
         size -= 8U;
     }
-    while (size-- != 0U) *dst++ = *src++;
+    /* Exact-width tails avoid a byte loop on the common 3..15-byte
+     * matches. Unlike a wild vector copy these never overread history. */
+    if (size >= 4U) {
+        uint32_t word;
+        memcpy(&word, src, sizeof(word)); memcpy(dst, &word, sizeof(word));
+        src += 4U; dst += 4U; size -= 4U;
+    }
+    if (size >= 2U) {
+        uint16_t word;
+        memcpy(&word, src, sizeof(word)); memcpy(dst, &word, sizeof(word));
+        src += 2U; dst += 2U; size -= 2U;
+    }
+    if (size != 0U) *dst = *src;
 }
 
 static void xx_decode_copy_scalar(uint8_t *dst, const uint8_t *src, size_t size)
@@ -387,7 +399,15 @@ static inline void xx_decode_move_words(uint8_t *dst, const uint8_t *src, size_t
             memcpy(&word, src + size, sizeof(word));
             memcpy(dst + size, &word, sizeof(word));
         }
-        while (size-- != 0U) dst[size] = src[size];
+        if (size >= 4U) {
+            uint32_t word; size -= 4U;
+            memcpy(&word, src + size, sizeof(word)); memcpy(dst + size, &word, sizeof(word));
+        }
+        if (size >= 2U) {
+            uint16_t word; size -= 2U;
+            memcpy(&word, src + size, sizeof(word)); memcpy(dst + size, &word, sizeof(word));
+        }
+        if (size != 0U) dst[0] = src[0];
     }
 }
 
@@ -399,7 +419,9 @@ static inline void xx_decode_fill_words(uint8_t *dst, uint8_t value, size_t size
         dst += 8U;
         size -= 8U;
     }
-    while (size-- != 0U) *dst++ = value;
+    if (size >= 4U) { uint32_t part = (uint32_t)word; memcpy(dst, &part, sizeof(part)); dst += 4U; size -= 4U; }
+    if (size >= 2U) { uint16_t part = (uint16_t)word; memcpy(dst, &part, sizeof(part)); dst += 2U; size -= 2U; }
+    if (size != 0U) *dst = value;
 }
 
 static void xx_decode_match_scalar(uint8_t *window, size_t win_size, size_t target, size_t source, uint32_t distance, size_t chunk)
@@ -407,6 +429,10 @@ static void xx_decode_match_scalar(uint8_t *window, size_t win_size, size_t targ
     size_t seed, first, produced;
     if (distance == 1U) {
         xx_decode_fill_words(window + target, window[source], chunk);
+        return;
+    }
+    if ((distance >= 8U || chunk <= distance) && chunk <= win_size - source) {
+        xx_decode_copy_words(window + target, window + source, chunk);
         return;
     }
     seed = chunk < distance ? chunk : distance;
@@ -456,6 +482,10 @@ static XX_DEFLATE_DEC_NOINLINE void xx_decode_match_sse2(uint8_t *window, size_t
             chunk -= 16U;
         }
         xx_decode_fill_words(dst, value, chunk);
+    } else if ((distance >= 16U || chunk <= distance) && chunk <= win_size - source) {
+        /* A vector-wide distance permits forward LZ copies; a shorter
+         * distance is safe when the complete match is prior history. */
+        xx_decode_copy_vectors(dst, window + source, chunk);
     } else if (distance >= 16U) {
         /* Load before store, advancing forwards in stream order. A full
          * vector is no longer than the distance, so it only reads initialized
@@ -487,6 +517,65 @@ static XX_DEFLATE_DEC_NOINLINE void xx_decode_match_sse2(uint8_t *window, size_t
 }
 #endif
 
+#ifdef XX_DEFLATE_DEC_NEON
+static inline void xx_decode_copy_neon_vectors(uint8_t *dst, const uint8_t *src, size_t size)
+{
+    while (size >= 16U) {
+        vst1q_u8(dst, vld1q_u8(src));
+        src += 16U;
+        dst += 16U;
+        size -= 16U;
+    }
+    xx_decode_copy_words(dst, src, size);
+}
+
+static XX_DEFLATE_DEC_NOINLINE void xx_decode_copy_neon(uint8_t *dst, const uint8_t *src, size_t size)
+{
+    xx_decode_copy_neon_vectors(dst, src, size);
+}
+
+static XX_DEFLATE_DEC_NOINLINE void xx_decode_match_neon(uint8_t *window, size_t win_size, size_t target, size_t source, uint32_t distance, size_t chunk)
+{
+    uint8_t *dst = window + target;
+    if (distance == 1U) {
+        uint8_t value = window[source];
+        uint8x16_t repeated = vdupq_n_u8(value);
+        while (chunk >= 16U) {
+            vst1q_u8(dst, repeated);
+            dst += 16U;
+            chunk -= 16U;
+        }
+        xx_decode_fill_words(dst, value, chunk);
+    } else if ((distance >= 16U || chunk <= distance) && chunk <= win_size - source) {
+        /* A vector-wide distance permits forward LZ copies; a shorter
+         * distance is safe when the complete match is prior history. */
+        xx_decode_copy_neon_vectors(dst, window + source, chunk);
+    } else if (distance >= 16U) {
+        while (chunk != 0U) {
+            size_t span = win_size - source;
+            if (span > chunk) span = chunk;
+            xx_decode_copy_neon_vectors(dst, window + source, span);
+            dst += span;
+            chunk -= span;
+            source = 0U;
+        }
+    } else {
+        size_t seed = chunk < distance ? chunk : distance;
+        size_t first = win_size - source;
+        size_t produced = seed;
+        if (first > seed) first = seed;
+        xx_decode_move_words(dst, window + source, first);
+        if (seed > first) xx_decode_move_words(dst + first, window, seed - first);
+        while (produced < chunk) {
+            size_t copy = chunk - produced;
+            if (copy > produced) copy = produced;
+            xx_decode_copy_neon_vectors(dst + produced, dst, copy);
+            produced += copy;
+        }
+    }
+}
+#endif
+
 typedef struct {
     xx_io_device *dev;
     uint8_t *mem_dst;
@@ -496,6 +585,7 @@ typedef struct {
     size_t buf_cap;
     size_t buf_pos;
     int64_t total_written;
+    size_t pending_start;
     bool error;
     xx_decode_copy_fn copy;
     xx_decode_match_fn match;
@@ -515,6 +605,12 @@ static bool xx_out_init(xx_out_acc *out, xx_io_device *dev, uint8_t *mem_dst, si
     if (xx_is_sse2_enabled()) {
         out->copy = xx_decode_copy_sse2;
         out->match = xx_decode_match_sse2;
+    }
+#endif
+#ifdef XX_DEFLATE_DEC_NEON
+    if (xx_is_neon_enabled()) {
+        out->copy = xx_decode_copy_neon;
+        out->match = xx_decode_match_neon;
     }
 #endif
 
@@ -607,6 +703,30 @@ static bool xx_out_write(xx_out_acc *out, const uint8_t *data, size_t size)
     return true;
 }
 
+/* File/device output is emitted a contiguous history span at a time.
+ * Deferring until the ring wraps replaces per-literal output stores and
+ * per-match indirect calls with whole-span SIMD copies. The accumulator
+ * still batches device writes and its selected NEON/SSE2 backend copies
+ * whole spans. Memory destinations retain their bounded eager-write path.
+ * pending_start excludes any preset dictionary bytes. */
+static inline bool xx_out_emit_window(xx_out_acc *out, const uint8_t *window, size_t win_size, size_t win_pos, bool force)
+{
+    if (force || (win_pos & (win_size - 1U)) == 0U) {
+        size_t count = win_pos - out->pending_start;
+        if (count != 0U) {
+            int64_t produced = out->total_written;
+            out->total_written -= (int64_t)count;
+            bool success = xx_out_write(out, window + (out->pending_start & (win_size - 1U)), count);
+            /* Logical output is counted as it is decoded, also when a
+             * destination fails, just as for eagerly buffered literals. */
+            out->total_written = produced;
+            if (!success) return false;
+            out->pending_start = win_pos;
+        }
+    }
+    return true;
+}
+
 static bool xx_out_copy_match(xx_out_acc *out, uint8_t *window, size_t win_size, size_t *win_pos, uint32_t distance, uint32_t length)
 {
     while (length != 0U) {
@@ -615,8 +735,10 @@ static bool xx_out_copy_match(xx_out_acc *out, uint8_t *window, size_t win_size,
         size_t chunk = win_size - target;
         if (chunk > length) chunk = length;
         out->match(window, win_size, target, source, distance, chunk);
-        if (!xx_out_write(out, window + target, chunk)) return false;
+        if (out->dev) out->total_written += (int64_t)chunk;
+        else if (!xx_out_write(out, window + target, chunk)) return false;
         *win_pos += chunk;
+        if (out->dev && !xx_out_emit_window(out, window, win_size, *win_pos, false)) return false;
         length -= (uint32_t)chunk;
     }
     return true;
@@ -650,6 +772,7 @@ bool xx_deflate_decompress_stream_with_options(xx_bit_reader *reader, xx_io_devi
     }
     if (dictionary_size != 0U) xx_rt_memcpy(window, dictionary, dictionary_size);
     size_t win_pos = dictionary_size;
+    out.pending_start = dictionary_size;
 
     xx_huff_decoder fixed_lit, fixed_dist;
     bool fixed_built = false;
@@ -686,11 +809,15 @@ bool xx_deflate_decompress_stream_with_options(xx_bit_reader *reader, xx_io_devi
                 size_t at = win_pos & (win_size - 1U);
                 size_t chunk = win_size - at;
                 if (chunk > len) chunk = len;
-                if (!xx_br_read_bytes(reader, window + at, chunk) || !xx_out_write(&out, window + at, chunk)) {
+                if (!xx_br_read_bytes(reader, window + at, chunk) || (!out.dev && !xx_out_write(&out, window + at, chunk))) {
                     success = false;
                     break;
                 }
                 win_pos += chunk;
+                if (out.dev) {
+                    out.total_written += (int64_t)chunk;
+                    if (!xx_out_emit_window(&out, window, win_size, win_pos, false)) { success = false; break; }
+                }
                 len = (uint16_t)(len - chunk);
             }
             if (!success) break;
@@ -812,7 +939,10 @@ bool xx_deflate_decompress_stream_with_options(xx_bit_reader *reader, xx_io_devi
                     /* Literal byte */
                     uint8_t b = (uint8_t)sym;
                     window[win_pos++ & (win_size - 1)] = b;
-                    if (!xx_out_put_byte(&out, b)) {
+                    if (out.dev) {
+                        out.total_written++;
+                        if (!xx_out_emit_window(&out, window, win_size, win_pos, false)) { success = false; break; }
+                    } else if (!xx_out_put_byte(&out, b)) {
                         success = false;
                         break;
                     }
@@ -884,10 +1014,17 @@ bool xx_deflate_decompress_stream_with_options(xx_bit_reader *reader, xx_io_devi
     }
 
     if (reader->error) success = false;
+    if (out.dev && (success || (reader->eof && !(pd && xx_pd_is_stopped(pd))))) {
+        if (!xx_out_emit_window(&out, window, win_size, win_pos, true)) success = false;
+    }
     if (success) {
         if (!xx_out_flush(&out)) {
             success = false;
         }
+    } else if (reader->eof && !(pd && xx_pd_is_stopped(pd))) {
+        /* The input ended inside the stream (a cut file): the destination
+         * still gets all that was decoded, for a caller that keeps it. */
+        (void)xx_out_flush(&out);
     }
 
     if (out_written) {

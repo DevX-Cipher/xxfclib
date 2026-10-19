@@ -93,6 +93,9 @@ bool xx_buf_reserve(xx_buf_t *buf, size_t capacity)
     if (!grown) {
         return xx_buf_fail(buf);
     }
+    /* The first allocation must start terminated too, or detaching a buffer
+     * that was reserved but never appended to hands out garbage. */
+    grown[buf->size] = '\0';
     buf->data = grown;
     buf->capacity = new_capacity;
     return true;

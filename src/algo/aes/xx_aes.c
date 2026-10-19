@@ -21,9 +21,27 @@
 
 #include "xxfclib/algo/aes/xx_aes.h"
 #include "xx_aes_internal.h"
+#include "platforms/xx_aes_arm_crypto.h"
 #include "xxfclib/algo/sha/xx_sha.h"
+#include "xxfclib/global/xx_global.h"
 #include "../../io/platforms/xx_io_platform.h"
 #include "xxfclib/data/xx_data.h"
+
+#if (defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)) && (defined(_MSC_VER) || defined(__GNUC__) || defined(__clang__))
+#define XX_AES_NI_X86 1
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <immintrin.h>
+#else
+#include <wmmintrin.h>
+#endif
+#if defined(__GNUC__) || defined(__clang__)
+#define XX_AES_TARGET_NI __attribute__((target("aes"), noinline))
+#elif defined(_MSC_VER)
+#define XX_AES_TARGET_NI __declspec(noinline)
+#else
+#define XX_AES_TARGET_NI
+#endif
+#endif
 
 static void xx_crypto_clear(void *data, size_t size)
 {
@@ -210,10 +228,59 @@ static void xx_aes_mix_columns(uint8_t state[XX_AES_BLOCK_SIZE])
     }
 }
 
+#ifdef XX_AES_NI_X86
+/* The software key expansion stores round keys in the byte order expected by
+ * AES-NI. Keep this function in an AES-targeted region so ordinary x86 builds
+ * retain their pre-AES instruction baseline. */
+XX_AES_TARGET_NI
+static void xx_aes_encrypt_block_ni(const xx_aes_context *context, const uint8_t input[XX_AES_BLOCK_SIZE], uint8_t output[XX_AES_BLOCK_SIZE])
+{
+    __m128i state = _mm_loadu_si128((const __m128i *)(const void *)input);
+    unsigned int round;
+
+    state = _mm_xor_si128(state, _mm_loadu_si128((const __m128i *)(const void *)context->round_keys));
+    for (round = 1U; round < context->rounds; ++round) {
+        state = _mm_aesenc_si128(state, _mm_loadu_si128((const __m128i *)(const void *)(context->round_keys + ((size_t)round * XX_AES_BLOCK_SIZE))));
+    }
+    state = _mm_aesenclast_si128(state,
+                                _mm_loadu_si128((const __m128i *)(const void *)(context->round_keys + ((size_t)context->rounds * XX_AES_BLOCK_SIZE))));
+    _mm_storeu_si128((__m128i *)(void *)output, state);
+}
+
+XX_AES_TARGET_NI
+static void xx_aes_decrypt_block_ni(const xx_aes_context *context, const uint8_t input[XX_AES_BLOCK_SIZE], uint8_t output[XX_AES_BLOCK_SIZE])
+{
+    __m128i state = _mm_loadu_si128((const __m128i *)(const void *)input);
+    unsigned int round;
+
+    state = _mm_xor_si128(state,
+                         _mm_loadu_si128((const __m128i *)(const void *)(context->round_keys + ((size_t)context->rounds * XX_AES_BLOCK_SIZE))));
+    for (round = context->rounds - 1U; round > 0U; --round) {
+        __m128i key = _mm_loadu_si128((const __m128i *)(const void *)(context->round_keys + ((size_t)round * XX_AES_BLOCK_SIZE)));
+        state = _mm_aesdec_si128(state, _mm_aesimc_si128(key));
+    }
+    state = _mm_aesdeclast_si128(state, _mm_loadu_si128((const __m128i *)(const void *)context->round_keys));
+    _mm_storeu_si128((__m128i *)(void *)output, state);
+}
+#endif
+
 void xx_aes_internal_encrypt_block(const xx_aes_context *context, const uint8_t input[XX_AES_BLOCK_SIZE], uint8_t output[XX_AES_BLOCK_SIZE])
 {
     uint8_t state[XX_AES_BLOCK_SIZE];
     unsigned int round;
+
+#ifdef XX_AES_ARM_CRYPTO
+    if (xx_is_arm_crypto_enabled()) {
+        xx_aes_encrypt_block_arm_crypto(context, input, output);
+        return;
+    }
+#endif
+#ifdef XX_AES_NI_X86
+    if (xx_is_aes_enabled()) {
+        xx_aes_encrypt_block_ni(context, input, output);
+        return;
+    }
+#endif
 
     xx_bytes_copy(state, input, sizeof(state));
     xx_aes_add_round_key(state, context->round_keys);
@@ -284,6 +351,19 @@ static void xx_aes_decrypt_block(const xx_aes_context *context, const uint8_t in
 {
     uint8_t state[XX_AES_BLOCK_SIZE];
     unsigned int round;
+
+#ifdef XX_AES_ARM_CRYPTO
+    if (xx_is_arm_crypto_enabled()) {
+        xx_aes_decrypt_block_arm_crypto(context, input, output);
+        return;
+    }
+#endif
+#ifdef XX_AES_NI_X86
+    if (xx_is_aes_enabled()) {
+        xx_aes_decrypt_block_ni(context, input, output);
+        return;
+    }
+#endif
 
     xx_bytes_copy(state, input, sizeof(state));
     xx_aes_add_round_key(state, context->round_keys + ((size_t)context->rounds * XX_AES_BLOCK_SIZE));

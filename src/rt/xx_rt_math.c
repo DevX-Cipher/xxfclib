@@ -29,6 +29,7 @@
  */
 
 #include "xxfclib/rt/xx_rt.h"
+#include "xxfclib/global/xx_global.h"
 
 typedef union {
     double nDouble;
@@ -149,39 +150,64 @@ double xx_rt_ceil(double nValue)
 #include <emmintrin.h> /* compiler intrinsics, not a library header */
 #endif
 
-/* Square root comes from the hardware wherever the compiler exposes it
- * without a library call: an SSE2 intrinsic on 64-bit MSVC, a builtin on
- * GCC and Clang. Everything else falls back to Newton-Raphson below.      */
+/* Square root uses an SSE2 intrinsic on 64-bit MSVC or a compiler builtin
+ * on GCC and Clang. On x86 these fast paths honor the global SSE2 switch;
+ * an exact integer fallback serves disabled and unsupported targets. */
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_AMD64))
 #define CDIE_SQRT_INTRINSIC 1
 #elif (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
 /* TinyCC sometimes defines __GNUC__ for header compatibility but has no
- * __builtin_sqrt, so it must fall through to the software Newton path. */
+ * __builtin_sqrt, so it must fall through to the integer fallback. */
 #define CDIE_SQRT_INTRINSIC 2
 #endif
 
-#if !defined(CDIE_SQRT_INTRINSIC)
-/* One Newton step done in effectively double-double precision.
- *
- * Plain Newton in floating point reaches a fixed point that can sit 1 ULP
- * off, because every iteration rounds: without this, sqrt(2) comes out as
- * 1.414213562373095 rather than 1.4142135623730951. The fix is to compute the
- * residual v - g^2 exactly - g^2 needs 106 bits, so it is split with Dekker's
- * trick into an exact hi + lo pair - and take one more step from there.
- */
-static double math_sqrt_refine(double nValue, double nGuess)
+/* Exact integer square root of a 105- or 106-bit fixed-point significand.
+ * Each two-bit step needs at most a 56-bit remainder, so this stays portable
+ * to compilers without 128-bit integers. The final remainder rounds to the
+ * nearest binary64 value without a floating-point approximation. */
+static double math_sqrt_scalar(double nValue)
 {
-    const double nSplit = 134217729.0; /* 2^27 + 1 */
-    double c = nSplit * nGuess;
-    double nHi = c - (c - nGuess);
-    double nLo = nGuess - nHi;
-    double nSquareHi = nGuess * nGuess;
-    double nSquareLo = ((nHi * nHi - nSquareHi) + 2.0 * nHi * nLo) + nLo * nLo;
-    double nResidual = (nValue - nSquareHi) - nSquareLo;
+    unsigned long long nBits = math_bits(nValue);
+    unsigned long long nMantissa = nBits & 0x000FFFFFFFFFFFFFull;
+    int nExponent;
+    int nShift;
+    int nScaleExponent;
+    unsigned long long nHigh;
+    unsigned long long nLow;
+    unsigned long long nRemainder = 0;
+    unsigned long long nRoot = 0;
 
-    return nGuess + nResidual / (2.0 * nGuess);
+    if ((nBits >> 52) != 0) {
+        nMantissa |= 0x0010000000000000ull;
+        nExponent = (int)(nBits >> 52) - 1075;
+    } else {
+        nExponent = -1074;
+        while ((nMantissa & 0x0010000000000000ull) == 0) {
+            nMantissa <<= 1;
+            --nExponent;
+        }
+    }
+
+    nShift = 52 + (nExponent % 2 != 0);
+    nScaleExponent = (nExponent - nShift) / 2;
+    nHigh = nMantissa >> (64 - nShift);
+    nLow = nMantissa << nShift;
+    for (int i = 52; i >= 0; --i) {
+        unsigned nPair = i >= 32 ? (unsigned)((nHigh >> (2 * i - 64)) & 3ull) : (unsigned)((nLow >> (2 * i)) & 3ull);
+        unsigned long long nTrial;
+        nRemainder = (nRemainder << 2) | nPair;
+        nTrial = (nRoot << 2) | 1ull;
+        nRoot <<= 1;
+        if (nRemainder >= nTrial) {
+            nRemainder -= nTrial;
+            nRoot |= 1ull;
+        }
+    }
+
+    /* N - root^2 > root exactly when sqrt(N) is above root + 1/2. */
+    if (nRemainder > nRoot) ++nRoot;
+    return (double)nRoot * math_from_bits((unsigned long long)(nScaleExponent + 1023) << 52);
 }
-#endif
 
 double xx_rt_sqrt(double nValue)
 {
@@ -194,29 +220,19 @@ double xx_rt_sqrt(double nValue)
     }
 
 #if CDIE_SQRT_INTRINSIC == 1
-    /* SSE2 gives a correctly rounded result in one instruction. */
-    return _mm_cvtsd_f64(_mm_sqrt_sd(_mm_setzero_pd(), _mm_set_sd(nValue)));
-#elif CDIE_SQRT_INTRINSIC == 2
-    /* A compiler builtin, not a library call: on any target with a square
-     * root instruction this is that instruction inline.                    */
-    return __builtin_sqrt(nValue);
-#else
-    {
-        /* Seed from the exponent: halving it halves the magnitude. */
-        unsigned long long nBits = math_bits(nValue);
-        unsigned long long nSeed = (nBits >> 1) + (0x3FF0000000000000ull >> 1);
-        double nGuess = math_from_bits(nSeed);
-        int i = 0;
-
-        /* Newton-Raphson converges quadratically; six rounds is ample from a
-         * seed already accurate to a few bits.                             */
-        for (i = 0; i < 6; i++) {
-            nGuess = 0.5 * (nGuess + nValue / nGuess);
-        }
-
-        return math_sqrt_refine(nValue, nGuess);
+    if (xx_is_sse2_enabled()) {
+        /* SSE2 gives a correctly rounded result in one instruction. */
+        return _mm_cvtsd_f64(_mm_sqrt_sd(_mm_setzero_pd(), _mm_set_sd(nValue)));
     }
+#elif CDIE_SQRT_INTRINSIC == 2
+    /* On x86 the builtin may emit SSE2. Other targets have no SSE2 switch. */
+#if defined(__i386__) || defined(__x86_64__)
+    if (xx_is_sse2_enabled()) return __builtin_sqrt(nValue);
+#else
+    return __builtin_sqrt(nValue);
 #endif
+#endif
+    return math_sqrt_scalar(nValue);
 }
 
 double xx_rt_fmod(double nValue, double nDivisor)

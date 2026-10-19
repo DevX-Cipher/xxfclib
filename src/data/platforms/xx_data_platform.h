@@ -31,13 +31,16 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#if !defined(_M_ARM64EC) && (defined(_M_ARM64) || defined(__aarch64__))
+#define XX_DATA_ARM_NEON 1
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 struct xx_pd_struct;
 typedef struct xx_pd_struct xx_pd_struct;
-struct XXDataLiteralDualBatch;
 
 /**
  * @brief Search for a byte pattern using SSE2 128-bit SIMD instructions.
@@ -51,12 +54,13 @@ int64_t xx_data_find_bytes_sse2(const uint8_t *pdata, size_t data_size, size_t s
  */
 int64_t xx_data_find_bytes_avx2(const uint8_t *pdata, size_t data_size, size_t start_offset, const uint8_t *pat, size_t pattern_size, xx_pd_struct *pd);
 
-/* Private prefix-index batches; offsets include overlapping two-byte starts. */
-bool xx_data_can_fuse_literal_prefix_avx2(const uint8_t *pat, size_t pattern_size);
-size_t xx_data_collect_prefixes_avx2(const uint8_t *data, size_t size, size_t start, const uint8_t prefix[2], size_t *positions, size_t capacity, size_t *next);
-size_t xx_data_collect_prefixes_sse2(const uint8_t *data, size_t size, size_t start, const uint8_t prefix[2], size_t *positions, size_t capacity, size_t *next);
-bool xx_data_collect_literal_dual_avx2(const uint8_t *data, size_t size, size_t start, const uint8_t prefix[2], struct XXDataLiteralDualBatch *batch);
-bool xx_data_collect_literal_dual_sse2(const uint8_t *data, size_t size, size_t start, const uint8_t prefix[2], struct XXDataLiteralDualBatch *batch);
+#ifdef XX_DATA_ARM_NEON
+/**
+ * @brief Search for a byte pattern using ARM NEON 128-bit SIMD instructions.
+ * @return Byte offset where pattern starts, or -1 if not found or stopped.
+ */
+int64_t xx_data_find_bytes_neon(const uint8_t *pdata, size_t data_size, size_t start_offset, const uint8_t *pat, size_t pattern_size, xx_pd_struct *pd);
+#endif
 
 /* Masked pattern search, for signatures with wildcard bytes: the first start
  * p in [0, size - pattern_size] with (data[p + i] & mask[i]) == value[i] for
@@ -66,6 +70,9 @@ bool xx_data_collect_literal_dual_sse2(const uint8_t *data, size_t size, size_t 
 int64_t xx_data_find_masked(const uint8_t *data, size_t size, const uint8_t *value, const uint8_t *mask, size_t pattern_size, size_t idx1, size_t idx2);
 int64_t xx_data_find_masked_sse2(const uint8_t *data, size_t size, const uint8_t *value, const uint8_t *mask, size_t pattern_size, size_t idx1, size_t idx2);
 int64_t xx_data_find_masked_avx2(const uint8_t *data, size_t size, const uint8_t *value, const uint8_t *mask, size_t pattern_size, size_t idx1, size_t idx2);
+#ifdef XX_DATA_ARM_NEON
+int64_t xx_data_find_masked_neon(const uint8_t *data, size_t size, const uint8_t *value, const uint8_t *mask, size_t pattern_size, size_t idx1, size_t idx2);
+#endif
 
 #ifdef __cplusplus
 }

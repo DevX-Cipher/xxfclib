@@ -19,23 +19,17 @@
  * SOFTWARE.
  */
 
-/* die_engine.h - the Detect It Easy scan engine.
+/* die_engine.h - the Detect It Easy signature execution engine.
  *
- * Moved here from cdie. Load a signature database, set scan options, scan a
- * file or a memory image, and render the result as text, JSON, XML or CSV.
- *
- * The engine's own state (DieEngine) and the binary-format parsers behind it
- * are deliberately NOT exposed: they live in src/die_engine/ and change with
- * the signature format. A consumer needs the four types below and nothing
- * more -- which is exactly what cdie's own console, GUI and shared library
- * used.
+ * Shared database, option and result types are declared in scan/xx_scan.h.
+ * The engine's own state and script bindings remain private to src/die_engine/.
  */
 
 #ifndef XX_DIE_ENGINE_H
 #define XX_DIE_ENGINE_H
 
 #include "xxfclib/xxfc_defs.h"
-#include "xxfclib/io/xx_io.h"
+#include "xxfclib/scan/xx_scan.h"
 
 #include <stdint.h>
 
@@ -45,179 +39,55 @@ extern "C" {
 
 /* --------------------------------------------------------------- types  */
 
-/**
- * @brief What a file was detected as.
- *
- * The same numbering the signature databases use, so a database's declared
- * type can be compared against a detected one directly.
- */
-typedef enum {
-    XFT_UNKNOWN = 0,
-    XFT_BINARY,
-    XFT_COM,
-    XFT_MSDOS,
-    XFT_NE,
-    XFT_LE,
-    XFT_LX,
-    XFT_PE,
-    XFT_PE32,
-    XFT_PE64,
-    XFT_ELF,
-    XFT_ELF32,
-    XFT_ELF64,
-    XFT_MACHO,
-    XFT_MACHO32,
-    XFT_MACHO64,
-    XFT_ZIP,
-    XFT_JAR,
-    XFT_APK,
-    XFT_IPA,
-    XFT_DEX,
-    XFT_NPM,
-    XFT_MACHOFAT,
-    XFT_ARCHIVE,
-    XFT_PDF,
-    XFT_CFBF,
-    XFT_IMAGE,
-    XFT_JPEG,
-    XFT_PNG,
-    XFT_RAR,
-    XFT_ISO9660,
-    XFT_AMIGAHUNK,
-    XFT_ATARIST,
-    XFT_JAVACLASS,
-    XFT_PYC,
-    XFT_DOS16M,
-    XFT_DOS4G,
-    XFT_CLI_ASSEMBLY,
-    XFT_COUNT
-} XFileType;
-
-/** @brief The human-readable name of a type, as printed. */
-XXFC_API const char *xft_to_string(XFileType type);
-
-/**
- * @brief Does a database's declared file type match a detected one?
- *
- * Signature databases declare a broad type (XFT_PE) and files detect as a
- * specific one (XFT_PE64); this is the rule that decides which scripts run
- * against a file, so a caller driving the engine needs it to predict or
- * filter that set. Mirrors XBinary::checkFileType in the reference.
- */
-XXFC_API int xft_check(XFileType databaseType, XFileType fileType);
-
 /** @brief Opaque engine state. Defined in src/die_engine/. */
 typedef struct DieEngine DieEngine;
 
-typedef enum {
-    DB_MAIN = 0,
-    DB_EXTRA,
-    DB_CUSTOM
-} DBKind;
+/* Compatibility aliases for DIE engine scan options and results */
+typedef xx_scan_options ScanOptions;
+typedef xx_scan_result ScanResult;
 
-typedef struct {
-    char *pName;     /* file name including the extension, e.g. "_PE.0.sg" */
-    char *pFilePath; /* absolute path                                      */
-    char *pText;     /* script source or precompiled bytecode              */
-    size_t nSize;    /* size of pText / bytecode in bytes                  */
-    XFileType fileType;
-    DBKind databaseType;
-    int64_t nElapsedTime; /* elapsed execution time in ms (when profiling/scan-time enabled) */
-} DBSignature;
+#define scan_options_init xx_scan_options_init
+#define scan_options_free xx_scan_options_free
+#define scan_result_free xx_scan_result_free
 
-typedef struct {
-    DBSignature *pRecords;
-    int nCount;
-    int nCapacity;
-} DBase;
+#define bShowType show_type
+#define bShowVersion show_version
+#define bShowInfo show_info
+#define bUseCustomDatabase use_custom_database
+#define bUseExtraDatabase use_extra_database
+#define bSort sort
+#define bFormatResult format_result
 
-XXFC_API int db_load(DBase *pDb, const char *pPath, DBKind kind);
-XXFC_API int db_load_tar(DBase *pDb, const char *pTarPath, DBKind kind);
-/** Load the bundled Detect It Easy db/Binary/audio* rules and their helpers.
- * This provides named audio/tracker identification without a separate DIE DB.
- * Like db_load(), call db_free() when finished. */
-XXFC_API int db_load_builtin_audio(DBase *pDb, DBKind kind);
-/** Load only the framework/helper scripts and Binary/audio.1.sg tracker and
- * chiptune rules from the bundled audio database. This avoids executing the
- * separate voice/container rules when identifying music families. */
-XXFC_API int db_load_builtin_music(DBase *pDb, DBKind kind);
-XXFC_API int db_create_tar(const char *pDbPath, const char *pTarPath);
-XXFC_API int db_create_tar_precompiled(const char *pDbPath, const char *pTarPath);
-XXFC_API void db_sort(DBase *pDb);
-XXFC_API void db_free(DBase *pDb);
-XXFC_API int db_count_for_type(DBase *pDb, XFileType fileType);
+#define die_engine_format_text xx_scan_format_text
+#define die_engine_format_json xx_scan_format_json
+#define die_engine_format_xml xx_scan_format_xml
+#define die_engine_format_csv xx_scan_format_csv
 
-/* --------------------------------------------------------------- options  */
-
-typedef struct {
-    int bDeepScan;
-    int bHeuristicScan;
-    int bAggressiveScan;
-    int bRecursiveScan;
-    int bVerbose;
-    int bAllTypesScan; /* die_library flag mapping only; the console -a option
-                        * was removed as it is not implemented in the engine */
-    int bFormatResult;
-    int bHideUnknown;
-    int bShowType;
-    int bShowVersion;
-    int bShowInfo;
-    int bUseCustomDatabase;
-    int bUseExtraDatabase;
-    int bResultAsJSON;
-    int bResultAsXML;
-    int bResultAsCSV;
-    int bResultAsTSV;
-    int bResultAsPlainText;
-    int bShowMessages;
-    int bProfiling;
-    int bSort;
-    char *pMainDatabasePath;
-    char *pExtraDatabasePath;
-    char *pCustomDatabasePath;
-} ScanOptions;
-
-XXFC_API void scan_options_init(ScanOptions *pOptions);
-XXFC_API void scan_options_free(ScanOptions *pOptions);
-
-/* --------------------------------------------------------------- results  */
-
-typedef struct {
-    char *pType;
-    char *pName;
-    char *pVersion;
-    char *pInfo;
-    int nPrio;
-    int bIsHeuristic;
-    int bIsAHeuristic;
-    int bIsUnknown;
-    /* Stable //fmt[...] identifier for bundled Binary/audio.1.sg results.
-     * NULL for other scripts and untagged results. Owned by ScanResult. */
-    char *pFormatId;
-} ScanRecord;
-
-typedef struct {
-    ScanRecord *pRecords;
-    int nCount;
-    int nCapacity;
-    char **ppErrors;
-    int nErrorCount;
-    XFileType fileType;
-    char *pFileName;
-    int64_t nFileSize;
-} ScanResult;
-
-XXFC_API void scan_result_free(ScanResult *pResult);
+/** Initialise the signature implementation of every xx_scan_engine callback.
+ * The engine borrows database until xx_scan_engine_cleanup(); it never frees it.
+ * Results returned by callbacks are owned and released with xx_scan_free_result().
+ * Use xx_scan_file/device/memory for bounded scans, parent passes and overlays.
+ * Recursive, resource, archive-member and first-wrapper modes are unsupported.
+ * Returns false for a NULL engine or database. Initialise a fresh/cleaned engine. */
+XXFC_API bool die_engine_init(xx_scan_engine *engine, DBase *database);
 
 /* ---------------------------------------------------------------- scan  */
 
-XXFC_API int die_engine_scan_file(const char *pFileName, DBase *pDb, ScanOptions *pOptions, ScanResult *pResult);
+XXFC_API int die_engine_scan_file(const char *pFileName, DBase *pDb, xx_scan_options *pOptions, xx_scan_result *pResult);
 
 /* Reinterprets a file as one explicit type. XFT_UNKNOWN retains automatic
  * detection, including its COM/binary fallback passes. An explicit type runs
  * exactly that type's pass and reports that type in the result. Invalid types
  * fail with an empty result. */
-XXFC_API int die_engine_scan_file_type(const char *pFileName, DBase *pDb, ScanOptions *pOptions, XFileType fileType, ScanResult *pResult);
+XXFC_API int die_engine_scan_file_type(const char *pFileName, DBase *pDb, xx_scan_options *pOptions, XFileType fileType, xx_scan_result *pResult);
+
+/* As die_engine_scan_file_type, with the caller's progress object: the engine
+ * enters its levels in pProgress and stops early once it is stopped, failing
+ * with pProgress->is_stop set. NULL behaves exactly like the call above. To
+ * follow or stop the scan from another thread, bind an observer on the
+ * scanning thread with xx_pd_set_observer (xxfclib/data/xx_pd.h). */
+XXFC_API int die_engine_scan_file_type_pd(const char *pFileName, DBase *pDb, xx_scan_options *pOptions, XFileType fileType, xx_scan_result *pResult,
+                                          xx_pd_struct *pProgress);
 
 /* Enumerates detected types without scanning signature databases. The preferred
  * type is first, followed by the other detected types in descending type order.
@@ -226,24 +96,12 @@ XXFC_API int die_engine_scan_file_type(const char *pFileName, DBase *pDb, ScanOp
 typedef void (*die_engine_file_type_fn)(XFileType fileType, void *pUserData);
 XXFC_API int die_engine_detect_file_types(const char *pFileName, die_engine_file_type_fn pTypeFn, void *pUserData);
 
-/* Scan an entire seekable device without taking ownership. The caller's
- * position is restored before return, even when the scan fails. Use a bounded
- * xx_io_multivolume_open() view to scan a region of another device. */
-XXFC_API int die_engine_scan_device(xx_io_device *pDevice, DBase *pDb, ScanOptions *pOptions, ScanResult *pResult);
+/* Scan a seekable device without taking ownership, respecting options.offset/size.
+ * The caller's position is restored before return, even when the scan fails. */
+XXFC_API int die_engine_scan_device(xx_io_device *pDevice, DBase *pDb, xx_scan_options *pOptions, xx_scan_result *pResult);
 
-/* Scans an in-memory buffer (a private copy is taken). Backs DIE_ScanMemory. */
-XXFC_API int die_engine_scan_memory(const void *pData, int64_t nSize, DBase *pDb, ScanOptions *pOptions, ScanResult *pResult);
-
-/* --------------------------------------------------------- profiling (-l)  */
-
-/* Output helpers (result.c). */
-XXFC_API char *die_engine_format_text(ScanResult *pResult, ScanOptions *pOptions);
-XXFC_API char *die_engine_format_json(ScanResult *pResult, ScanOptions *pOptions);
-XXFC_API char *die_engine_format_xml(ScanResult *pResult, ScanOptions *pOptions);
-XXFC_API char *die_engine_format_csv(ScanResult *pResult, ScanOptions *pOptions, char nSeparator);
-
-XXFC_API int die_engine_type_to_prio(const char *pType);
-XXFC_API char *die_engine_translate_type(const char *pType);
+/* Synchronously scan a borrowed memory buffer. Backs DIE_ScanMemory. */
+XXFC_API int die_engine_scan_memory(const void *pData, int64_t nSize, DBase *pDb, xx_scan_options *pOptions, xx_scan_result *pResult);
 
 #ifdef __cplusplus
 }

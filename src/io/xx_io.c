@@ -22,8 +22,68 @@
 #include "xxfclib/io/xx_io.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/rt/xx_rt.h"
+#include "xx_io_buffer.h"
 /* The xx_rt_* runtime memory primitives that used to live here now sit in
  * src/memory/platforms/, beside the other memory platform code. */
+
+ssize_t xx_io_read(xx_io_device *device, void *buffer, size_t size)
+{
+    if (!device) return -1;
+    if (device->buffer_state) return xx_io_buffer_read_dispatch(device, buffer, size);
+    return device->read ? device->read(device, buffer, size) : -1;
+}
+
+ssize_t xx_io_write(xx_io_device *device, const void *buffer, size_t size)
+{
+    if (!device) return -1;
+    if (device->buffer_state) return xx_io_buffer_write_dispatch(device, buffer, size);
+    return device->write ? device->write(device, buffer, size) : -1;
+}
+
+int xx_io_seek(xx_io_device *device, long offset, int whence)
+{
+    if (!device) return -1;
+    if (device->buffer_state) return xx_io_buffer_seek_dispatch(device, (int64_t)offset, whence);
+    return device->seek ? device->seek(device, offset, whence) : -1;
+}
+
+int xx_io_seek64(xx_io_device *device, int64_t offset, int whence)
+{
+    if (!device) return -1;
+    if (device->buffer_state) return xx_io_buffer_seek_dispatch(device, offset, whence);
+    if (device->seek64) return device->seek64(device, offset, whence);
+    if (offset < LONG_MIN || offset > LONG_MAX) return -1;
+    return device->seek ? device->seek(device, (long)offset, whence) : -1;
+}
+
+int64_t xx_io_tell(xx_io_device *device)
+{
+    if (!device) return -1;
+    if (device->buffer_state) return xx_io_buffer_tell_dispatch(device);
+    return device->tell ? device->tell(device) : -1;
+}
+
+int xx_io_close(xx_io_device *device)
+{
+    if (!device) return -1;
+    if (device->buffer_state) return xx_io_buffer_close_dispatch(device);
+    return device->close ? device->close(device) : -1;
+}
+
+bool xx_io_check(xx_io_device *device, int64_t offset, int64_t size)
+{
+    int64_t total = xx_io_total_size(device);
+    if (total < 0 || offset < 0 || size < 0 || offset > total) return false;
+    return size <= total - offset;
+}
+
+bool xx_io_range_clamp(xx_io_device *device, int64_t offset, int64_t *size)
+{
+    int64_t total = xx_io_total_size(device);
+    if (!size || total < 0 || offset < 0 || offset >= total) return false;
+    if (*size < 0 || *size > total - offset) *size = total - offset;
+    return true;
+}
 
 bool xx_io_read_at(xx_io_device *device, int64_t offset, void *buffer, size_t n)
 {

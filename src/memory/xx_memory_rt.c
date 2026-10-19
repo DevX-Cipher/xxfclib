@@ -71,9 +71,15 @@ static const xx_memory_operations *xx_memory_operations_for_size(size_t size)
     static const xx_memory_operations scalar = {xx_memory_copy_scalar, xx_memory_move_scalar, xx_memory_set_scalar, xx_memory_compare_scalar, xx_memory_find_scalar};
     static const xx_memory_operations sse2 = {xx_memory_copy_sse2, xx_memory_move_sse2, xx_memory_set_sse2, xx_memory_compare_sse2, xx_memory_find_sse2};
     static const xx_memory_operations avx2 = {xx_memory_copy_avx2, xx_memory_move_avx2, xx_memory_set_avx2, xx_memory_compare_avx2, xx_memory_find_avx2};
+#ifdef XX_MEMORY_ARM_NEON
+    static const xx_memory_operations neon = {xx_memory_copy_neon, xx_memory_move_neon, xx_memory_set_neon, xx_memory_compare_neon, xx_memory_find_neon};
+#endif
     /* Avoid feature-query overhead for short fields and compiler-generated
      * initialization during feature detection. Honor changes to the switches. */
     if (size >= 32) {
+#ifdef XX_MEMORY_ARM_NEON
+        if (xx_is_neon_enabled()) return &neon;
+#endif
         if (xx_is_avx2_enabled()) return &avx2;
         if (xx_is_sse2_enabled()) return &sse2;
     }

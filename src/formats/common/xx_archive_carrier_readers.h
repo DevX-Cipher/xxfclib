@@ -2,13 +2,13 @@
 #ifndef XX_ARCHIVE_CARRIER_READERS_H
 #define XX_ARCHIVE_CARRIER_READERS_H
 #include "xx_executable_carrier.h"
-#include "xxfclib/formats/imp/xx_imp.h"
-#include "xxfclib/formats/starkit/xx_starkit.h"
-#include "xxfclib/formats/chm/xx_chm.h"
+#include "xxfclib/formats/archive/imp/xx_imp.h"
+#include "xxfclib/formats/executable/starkit/xx_starkit.h"
+#include "xxfclib/formats/document/chm/xx_chm.h"
 #include "xxfclib/algo/dcl/xx_dcl.h"
 #include "xxfclib/algo/crc/xx_crc.h"
 #include "xxfclib/algo/ain/xx_ain.h"
-#include "../sfx_imp/xx_ain_directory.h"
+#include "../archive/sfx_imp/xx_ain_directory.h"
 #define ARCHIVE_CARRIER_LIMIT 16777216U
 #define ARCHIVE_CARRIER_COUNT 4096U
 static XXFC_MAYBE_UNUSED uint8_t *archive_carrier_load(Abstractformat *f, size_t *n, xx_pd_struct *pd)

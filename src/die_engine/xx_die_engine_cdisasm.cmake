@@ -10,7 +10,8 @@ if(NOT TARGET cdisasm::cdisasm)
     endif()
 
     # Scope cdisasm's options to its own subdirectory. Its development tests,
-    # ARM decoder and examples are not part of xxfclib's embedded decoder.
+    # ARM decoder and examples are not part of an ordinary embedded decoder.
+    # The private cdie asm corpus can opt in to ARM and extended opcodes.
     function(_xxfc_add_cdisasm source_dir)
         set(BUILD_TESTING OFF)
         set(CDISASM_BUILD_SHARED_LIBS OFF)
@@ -18,9 +19,17 @@ if(NOT TARGET cdisasm::cdisasm)
         set(CDISASM_BUILD_FUZZERS OFF)
         set(CDISASM_VERIFY_GENERATED OFF)
         set(USE_ARCH_X86 ON)
-        set(USE_ARCH_ARM OFF)
+        if(XXFC_CDISASM_ENABLE_ARM)
+            set(USE_ARCH_ARM ON)
+        else()
+            set(USE_ARCH_ARM OFF)
+        endif()
         set(USE_DISASM_FORMAT ON)
-        set(USE_EXTRA_OPCODES OFF)
+        if(XXFC_CDISASM_ENABLE_EXTRA)
+            set(USE_EXTRA_OPCODES ON)
+        else()
+            set(USE_EXTRA_OPCODES OFF)
+        endif()
         add_subdirectory("${source_dir}" "${CMAKE_CURRENT_BINARY_DIR}/cdisasm")
     endfunction()
     _xxfc_add_cdisasm("${XXFC_CDISASM_DIR}")
@@ -40,17 +49,15 @@ if(_xxfc_cdisasm_target)
         set_target_properties(${_xxfc_cdisasm_target} PROPERTIES
             POSITION_INDEPENDENT_CODE ON)
 
-        if(MSVC AND XXFC_MSVC_X64)
+        if(MSVC AND XXFC_MSVC_CRT_FREE_CDISASM)
             # Match xxfclib's CRT-free static/shared configurations. The
             # consumer supplies compiler support routines and the entry point.
-            target_compile_options(${_xxfc_cdisasm_target} PRIVATE /GS- /GL- /Zl)
+            target_compile_options(${_xxfc_cdisasm_target} PRIVATE /GS- /sdl- /GL- /Zl)
             set_property(TARGET ${_xxfc_cdisasm_target} PROPERTY
                 MSVC_RUNTIME_LIBRARY "MultiThreaded")
             if(POLICY CMP0184)
                 set_property(TARGET ${_xxfc_cdisasm_target} PROPERTY
                     MSVC_RUNTIME_CHECKS "")
-            else()
-                target_compile_options(${_xxfc_cdisasm_target} PRIVATE /RTC-)
             endif()
         endif()
     endif()

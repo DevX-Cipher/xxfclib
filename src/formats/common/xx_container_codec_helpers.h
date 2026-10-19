@@ -2,7 +2,8 @@
 #ifndef XX_CONTAINER_CODEC_HELPERS_H
 #define XX_CONTAINER_CODEC_HELPERS_H
 #include "xx_memory_blob.h"
-#include "xxfclib/algo/hash/xx_hash.h"
+#include "xxfclib/algo/md5/xx_md5.h"
+#include "xxfclib/algo/sha/xx_sha.h"
 #include "xxfclib/algo/adler32/xx_adler32.h"
 #include "xxfclib/data/xx_data.h"
 static XXFC_MAYBE_UNUSED bool container_codec_mem(Abstractformat *f, pm_stream *s, const char *name, uint8_t **p, uint64_t n)

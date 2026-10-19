@@ -2,22 +2,37 @@
 # Define XXFC_STATIC, add XXFORMATS_INCLUDE_DIR publicly and
 # XXFORMATS_INCLUDE_DIRS privately, and link XXFORMATS_LIBRARIES.
 # The legacy x*.c parsers are part of die_engine and are deliberately excluded.
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/xxfclib_codepages.cmake")
 set(XXFORMATS_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/include")
-file(GLOB_RECURSE XXFORMATS_SOURCES CONFIGURE_DEPENDS
+# FOLLOW_SYMLINKS: a synced folder (ownCloud, OneDrive) can mark directories
+# as cloud reparse points, which a recursive glob otherwise skips.
+file(GLOB_RECURSE XXFORMATS_SOURCES FOLLOW_SYMLINKS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_*.c"
     "${CMAKE_CURRENT_LIST_DIR}/src/algo/xx_*.c"
 )
+list(FILTER XXFORMATS_SOURCES EXCLUDE REGEX
+    "[/\\\\][^/\\\\]* \\(conflicted copy [^/\\\\]*\\)\\.[^/\\\\]+$")
 # This includes SHA and BZip2 scalar and CPU-dispatched kernels. Their SIMD
 # instructions are isolated inside guarded functions, so no global ISA flag
 # is needed for formats-only consumers or non-x86 builds.
 # DIE music readers require the separate signature engine and its runtime.
-list(FILTER XXFORMATS_SOURCES EXCLUDE REGEX "/src/formats/die_music/")
+list(FILTER XXFORMATS_SOURCES EXCLUDE REGEX "/src/formats/audio/die_music/")
 list(APPEND XXFORMATS_SOURCES
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/pdf/xxpdf.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/pdf/xxpdf_decode.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/pdf/xxpdf_extractor.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/nsis/nsis_bzip2.c
+    ${XXFC_CODEPAGE_SOURCES}
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/installer/fead/encoder/deflate.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/installer/fead/encoder/trees.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/installer/fead/encoder/adler32.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/installer/fead/encoder/crc32.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/installer/fead/encoder/compress.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/document/pdf/xxpdf.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/document/pdf/xxpdf_decode.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/document/pdf/xxpdf_extractor.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/installer/nsis/nsis_bzip2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/rt/xx_rt.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sort/xx_sort.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sort/platforms/xx_sort_sse2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sort/platforms/xx_sort_avx2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sort/platforms/xx_sort_neon.c
     ${CMAKE_CURRENT_LIST_DIR}/src/rt/xx_rt_fp.c
     ${CMAKE_CURRENT_LIST_DIR}/src/rt/xx_rt_math.c
     ${CMAKE_CURRENT_LIST_DIR}/src/buf/xx_buf.c
@@ -26,6 +41,7 @@ list(APPEND XXFORMATS_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/global/xx_global.c
     ${CMAKE_CURRENT_LIST_DIR}/src/global/platforms/xx_global_cpu.c
     ${CMAKE_CURRENT_LIST_DIR}/src/io/xx_io.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/io/xx_io_buffer.c
     ${CMAKE_CURRENT_LIST_DIR}/src/io/xx_io_file.c
     ${CMAKE_CURRENT_LIST_DIR}/src/io/xx_io_mem.c
     ${CMAKE_CURRENT_LIST_DIR}/src/io/xx_io_memory_only.c
@@ -35,13 +51,16 @@ list(APPEND XXFORMATS_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/memory/xx_memory_rt.c
     ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_sse2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_avx2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_neon.c
     ${CMAKE_CURRENT_LIST_DIR}/src/strings/xx_string.c
     ${CMAKE_CURRENT_LIST_DIR}/src/data/xx_pd.c
     ${CMAKE_CURRENT_LIST_DIR}/src/data/xx_data_raw.c
     ${CMAKE_CURRENT_LIST_DIR}/src/data/xx_data_io.c
     ${CMAKE_CURRENT_LIST_DIR}/src/data/platforms/xx_data_sse2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/data/platforms/xx_data_avx2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/data/platforms/xx_data_neon.c
     ${CMAKE_CURRENT_LIST_DIR}/src/list/xx_list.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sort/xx_sort_list.c
     ${CMAKE_CURRENT_LIST_DIR}/src/var/xx_var.c
 )
 if(WIN32)
@@ -50,6 +69,7 @@ if(WIN32)
         ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_windows.c
         ${CMAKE_CURRENT_LIST_DIR}/src/strings/platforms/xx_string_windows.c
         ${CMAKE_CURRENT_LIST_DIR}/src/rt/platforms/xx_rt_windows.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/sort/platforms/xx_sort_windows.c
         ${CMAKE_CURRENT_LIST_DIR}/src/global/platforms/xx_global_windows.c
     )
     set(XXFORMATS_LIBRARIES kernel32)
@@ -59,6 +79,7 @@ else()
         ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_posix.c
         ${CMAKE_CURRENT_LIST_DIR}/src/strings/platforms/xx_string_posix.c
         ${CMAKE_CURRENT_LIST_DIR}/src/rt/platforms/xx_rt_posix.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/sort/platforms/xx_sort_posix.c
         ${CMAKE_CURRENT_LIST_DIR}/src/global/platforms/xx_global_posix.c
     )
     find_package(Threads REQUIRED)
@@ -74,12 +95,17 @@ set(XXFORMATS_INCLUDE_DIRS
     ${CMAKE_CURRENT_LIST_DIR}/src/data
     ${CMAKE_CURRENT_LIST_DIR}/src/data/platforms
     ${CMAKE_CURRENT_LIST_DIR}/src/formats
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/tar_common
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/tar_common
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/bzip2
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/sha
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/md5
 )
-file(GLOB_RECURSE _xxformats_algo_headers CONFIGURE_DEPENDS
+# FOLLOW_SYMLINKS: a synced folder (ownCloud, OneDrive) can mark directories
+# as cloud reparse points, which a recursive glob otherwise skips.
+file(GLOB_RECURSE _xxformats_algo_headers FOLLOW_SYMLINKS CONFIGURE_DEPENDS
     "${XXFORMATS_INCLUDE_DIR}/xxfclib/algo/*.h")
+list(FILTER _xxformats_algo_headers EXCLUDE REGEX
+    "[/\\\\][^/\\\\]* \\(conflicted copy [^/\\\\]*\\)\\.[^/\\\\]+$")
 foreach(_xxformats_header IN LISTS _xxformats_algo_headers)
     get_filename_component(_xxformats_dir "${_xxformats_header}" DIRECTORY)
     list(APPEND XXFORMATS_INCLUDE_DIRS "${_xxformats_dir}")
@@ -92,16 +118,20 @@ set_property(SOURCE ${CMAKE_CURRENT_LIST_DIR}/src/data/xx_data_raw.c
 # The detection fallback also depends on the excluded DIE music engine.
 set_property(SOURCE
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format_catalog.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format_names.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/detection/xx_format_detect_device.c
     APPEND PROPERTY COMPILE_DEFINITIONS XXFC_FORMATS_ONLY)
 set_property(SOURCE ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format_extractor.c
     APPEND PROPERTY COMPILE_DEFINITIONS XXFC_FORMATS_ONLY)
 
-if(MSVC)
+if(MSVC AND CMAKE_C_COMPILER_ARCHITECTURE_ID MATCHES "^(X86|x86|x64|AMD64)$")
     set_source_files_properties(
         ${CMAKE_CURRENT_LIST_DIR}/src/data/platforms/xx_data_avx2.c
         ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_avx2.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/algo/adler32/platforms/xx_adler32_avx2.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/algo/crc/platforms/xx_crc64_avx2.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/algo/deflate/platforms/xx_deflate_avx2.c
         ${CMAKE_CURRENT_LIST_DIR}/src/algo/entropy/platforms/xx_entropy_avx2.c
         ${CMAKE_CURRENT_LIST_DIR}/src/algo/lzma/platforms/xx_lzma_avx2.c
         PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
@@ -109,3 +139,15 @@ endif()
 unset(_xxformats_header)
 unset(_xxformats_dir)
 unset(_xxformats_algo_headers)
+
+# SIMD flags apply only to the runtime-dispatched sorting translation units.
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/xxfclib_sort_simd.cmake")
+xxfclib_configure_sort_simd_sources("${CMAKE_CURRENT_LIST_DIR}")
+
+# SIMD flags apply only to the runtime-dispatched .NET #US backends.
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/xxfclib_dotnet_simd.cmake")
+xxfclib_configure_dotnet_simd_sources("${CMAKE_CURRENT_LIST_DIR}")
+
+# ARM feature flags apply only to runtime-dispatched algorithm backends.
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/xxfclib_arm_accel.cmake")
+xxfclib_configure_arm_accel_sources("${CMAKE_CURRENT_LIST_DIR}")

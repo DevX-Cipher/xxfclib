@@ -25,6 +25,8 @@
 #include "xx_crc32_slice8.h"
 #include "platforms/xx_crc64_platform.h"
 #include "platforms/xx_crc_small_simd.h"
+#include "platforms/xx_crc32c_sse42.h"
+#include "platforms/xx_crc32_arm.h"
 
 static const uint32_t _TABLE_CRC32_ISO[256] = {
     0x00000000u, 0x77073096u, 0xEE0E612Cu, 0x990951BAu, 0x076DC419u, 0x706AF48Fu, 0xE963A535u, 0x9E6495A3u, 0x0EDB8832u, 0x79DCB8A4u, 0xE0D5E91Eu, 0x97D2D988u,
@@ -118,6 +120,9 @@ static uint32_t xx_crc32_mpeg2_raw(uint32_t reg, const void *data, size_t size)
 {
     const uint8_t *p = (const uint8_t *)data;
     if (!p || !size) return reg;
+#ifdef XX_CRC32_ARM
+    if (xx_is_arm_crc32_enabled()) return xx_crc32_mpeg2_arm(reg, data, size);
+#endif
 #ifdef XX_CRC64_X86
     if (xx_crc32_use_pclmul(size, 128U)) {
         size_t bulk = size & ~(size_t)15U;
@@ -135,6 +140,11 @@ uint32_t xx_crc32_calc(uint32_t crc, const void *data, size_t size)
     if (!data || size == 0) {
         return crc;
     }
+#ifdef XX_CRC32_ARM
+    if (size >= 3072U && xx_is_arm_crc32_enabled() && xx_is_arm_pmull_enabled())
+        return xx_crc32_arm_pmull(crc, data, size);
+    if (xx_is_arm_crc32_enabled()) return xx_crc32_arm(crc, data, size);
+#endif
     const uint8_t *p = (const uint8_t *)data;
     crc = ~crc;
 #ifdef XX_CRC64_X86
@@ -182,6 +192,18 @@ uint32_t xx_crc32c_calc(uint32_t crc, const void *data, size_t size)
     if (!data || size == 0) {
         return crc;
     }
+#ifdef XX_CRC32_ARM
+    if (size >= 3072U && xx_is_arm_crc32_enabled() && xx_is_arm_pmull_enabled())
+        return xx_crc32c_arm_pmull(crc, data, size);
+    if (xx_is_arm_crc32_enabled()) return xx_crc32c_arm(crc, data, size);
+#endif
+#ifdef XX_CRC32C_SSE42_X86
+    /* Prefer the CRC32C instruction for all lengths when enabled. The
+     * PCLMUL and table paths remain available when SSE4.2 is disabled. */
+    if (xx_is_sse42_enabled()) {
+        return xx_crc32c_sse42(crc, data, size);
+    }
+#endif
     const uint8_t *p = (const uint8_t *)data;
     crc = ~crc;
 #ifdef XX_CRC64_X86
@@ -196,6 +218,15 @@ uint32_t xx_crc32c_calc(uint32_t crc, const void *data, size_t size)
         crc = (crc >> 8) ^ _TABLE_CRC32C[(crc ^ p[i]) & 0xFF];
     }
     return ~crc;
+}
+
+uint32_t xx_crc32c_string(const char *string)
+{
+    size_t size = 0;
+    if (string) {
+        while (string[size] != '\0') ++size;
+    }
+    return xx_crc32c_calc(UINT32_MAX, string, size);
 }
 
 bool xx_crc32_has_fast(xx_crc_type_t type)

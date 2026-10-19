@@ -201,6 +201,18 @@ XXFC_API bool xx_crc_calculate_by_type(xx_crc_type_t type, const void *data, siz
 XXFC_API bool xx_crc_calculate_device(xx_io_device *dev, int64_t offset, int64_t size, const xx_crc_model *model, xx_pd_struct *pd, uint64_t *out_crc);
 
 /**
+ * @brief CRC-32 / ISO-HDLC over a clamped device range, continuing init.
+ * Negative or oversized size reads to EOF. Invalid or empty ranges return
+ * init; a read failure returns the checksum of completed cache windows.
+ * Buffered devices retain their logical cursor. Ordinary devices are borrowed
+ * through a temporary cache and their underlying cursor may advance.
+ */
+XXFC_API uint32_t xx_crc32_device(xx_io_device *device, int64_t offset, int64_t size, uint32_t init);
+
+/** @brief CRC-16 / ARC over a device range, with the same rules as xx_crc32_device. */
+XXFC_API uint16_t xx_crc16_device(xx_io_device *device, int64_t offset, int64_t size, uint16_t init);
+
+/**
  * @brief Compute CRC over a region of an xx_io_device using a predefined CRC type.
  */
 XXFC_API bool xx_crc_calculate_device_by_type(xx_io_device *dev, int64_t offset, int64_t size, xx_crc_type_t type, xx_pd_struct *pd, uint64_t *out_crc);
@@ -284,8 +296,17 @@ XXFC_API uint32_t xx_crc32_udi_calc(uint32_t crc, const void *data, size_t size)
 /**
  * @brief Calculate Castagnoli CRC-32C.
  * @param crc Running CRC (pass 0 for first chunk).
+ * @note Uses SSE4.2 CRC32 when available and enabled. The fallback uses
+ *       SSE2 + PCLMULQDQ for large buffers or a byte table.
  */
 XXFC_API uint32_t xx_crc32c_calc(uint32_t crc, const void *data, size_t size);
+
+/**
+ * @brief CRC-32C of a NUL-terminated byte string, starting with a zero register.
+ * Uses xx_crc32c_calc with seed UINT32_MAX, including its final complement.
+ * A NULL or empty string returns UINT32_MAX.
+ */
+XXFC_API uint32_t xx_crc32c_string(const char *string);
 
 /**
  * @brief Calculate CRC-16 / ARC (LHA/ARC).
@@ -330,7 +351,8 @@ XXFC_API uint8_t xx_crc8_maxim_calc(uint8_t crc, const void *data, size_t size);
 /**
  * @brief Calculate CRC-64 / XZ.
  * @param crc Running CRC (pass 0 for first chunk).
- * @note Large buffers use runtime-selected SSE2/AVX2 + PCLMULQDQ when available.
+ * @note Large buffers use runtime-selected SSE2/AVX2 + PCLMULQDQ or
+ *       AVX2 + VPCLMULQDQ when available.
  *       The shared SIMD switches are honored; other CPUs use the scalar path.
  */
 XXFC_API uint64_t xx_crc64_xz_calc(uint64_t crc, const void *data, size_t size);

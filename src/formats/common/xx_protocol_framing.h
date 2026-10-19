@@ -3,7 +3,8 @@
 #define XX_PROTOCOL_FRAMING_H
 #include "xx_container_wire_helpers.h"
 #include "xx_asn1_der.h"
-#include "xxfclib/algo/hash/xx_hash.h"
+#include "xxfclib/algo/md5/xx_md5.h"
+#include "xxfclib/algo/sha/xx_sha.h"
 static XXFC_MAYBE_UNUSED bool protocol_mem(Abstractformat *f, pm_stream *s, const char *name, uint8_t **p, uint64_t n)
 {
     if (n > 67108864 || s->count >= 4096 || !pm_add(f, s, name, 0, 0)) return false;

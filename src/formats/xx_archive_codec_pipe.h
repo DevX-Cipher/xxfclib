@@ -211,6 +211,12 @@ static void af_close(af_process *p)
 }
 static bool af_start(af_process *p, const char *helper, uint64_t memory)
 {
+#ifdef XXFC_NO_EXTERNAL_HELPERS
+    (void)p;
+    (void)helper;
+    (void)memory;
+    return false;
+#else
 #ifdef _WIN32
     wchar_t path[32768], pipe_name[160], *converted = NULL, *command = NULL;
     HANDLE child_read = NULL, child_write = NULL;
@@ -375,6 +381,7 @@ failed:
     if (out[0] >= 0) close(out[0]);
     if (out[1] >= 0) close(out[1]);
     return false;
+#endif
 #endif
 }
 #ifdef XFU_SPECIALIZED_LIBRARY

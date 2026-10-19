@@ -35,6 +35,8 @@ struct xx_rarx_decoder {
     xx_rarx20_state *rar20;
     xx_rarx29_state *rar29;
     xx_rarx50_state *rar50;
+    xx_rarx_chunk_cb chunk_cb;
+    void *chunk_user_data;
 };
 
 static void xx_rarx_clear_result(xx_rarx_result *result)
@@ -110,6 +112,16 @@ xx_rarx_status_t xx_rarx_decoder_last_status(const xx_rarx_decoder *decoder)
     return decoder ? decoder->status : XX_RARX_STATUS_INVALID_ARGUMENT;
 }
 
+void xx_rarx_decoder_set_chunk_callback(xx_rarx_decoder *decoder, xx_rarx_chunk_cb callback, void *user_data)
+{
+    if (!decoder) return;
+    decoder->chunk_cb = callback;
+    decoder->chunk_user_data = user_data;
+    if (decoder->rar50) {
+        xx_rarx50_set_chunk_callback(decoder->rar50, callback, user_data);
+    }
+}
+
 static xx_rarx_status_t xx_rarx_decode_memory(xx_rarx_decoder *decoder, const uint8_t *source, size_t source_size, uint8_t *destination, size_t destination_size,
                                               xx_rarx_method_t method, size_t window_size, bool solid, size_t *source_used, xx_pd_struct *progress)
 {
@@ -130,6 +142,7 @@ static xx_rarx_status_t xx_rarx_decode_memory(xx_rarx_decoder *decoder, const ui
         case XX_RARX_METHOD_50:
             if (!decoder->rar50) decoder->rar50 = xx_rarx50_create();
             if (!decoder->rar50) return XX_RARX_STATUS_NO_MEMORY;
+            xx_rarx50_set_chunk_callback(decoder->rar50, decoder->chunk_cb, decoder->chunk_user_data);
             return xx_rarx50_decode(decoder->rar50, source, source_size, destination, destination_size, window_size, solid, source_used, progress);
         case XX_RARX_METHOD_70:
         default: return XX_RARX_STATUS_UNSUPPORTED_VERSION;

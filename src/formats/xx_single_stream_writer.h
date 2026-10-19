@@ -8,7 +8,7 @@
 #include "xxfclib/algo/deflate/xx_deflate.h"
 #include "xxfclib/algo/bzip2/xx_bzip2.h"
 #include "xxfclib/algo/crc/xx_crc.h"
-#include "xxfclib/formats/xz/xx_xz.h"
+#include "xxfclib/formats/archive/xz/xx_xz.h"
 #include "xxfclib/global/xx_global.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/rt/xx_rt.h"

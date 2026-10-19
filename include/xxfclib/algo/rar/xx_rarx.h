@@ -84,6 +84,11 @@ XXFC_API void xx_rarx_decoder_free(xx_rarx_decoder *decoder);
 
 XXFC_API xx_rarx_status_t xx_rarx_decoder_last_status(const xx_rarx_decoder *decoder);
 
+typedef void (*xx_rarx_chunk_cb)(void *user_data, const uint8_t *data, size_t size);
+
+/** Register an optional callback invoked incrementally with finalized uncompressed bytes. */
+XXFC_API void xx_rarx_decoder_set_chunk_callback(xx_rarx_decoder *decoder, xx_rarx_chunk_cb callback, void *user_data);
+
 /**
  * Decode one compressed RAR member from a strictly bounded device range.
  * expected_size is mandatory. Set solid_continuation only when the member is

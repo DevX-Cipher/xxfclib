@@ -23,9 +23,9 @@
  *
  * On Windows the implementation uses the Win32 API: CreateFile/ReadFile for
  * I/O, WriteFile to the standard handles for output, ExitProcess and
- * GetEnvironmentVariableA. The remaining runtime primitives (sorting, numeric
- * conversion and integer formatting) are implemented here rather than taken
- * from the CRT. Runtime memory primitives live in src/memory/xx_memory_rt.c,
+ * GetEnvironmentVariableA. Numeric conversion and integer formatting are
+ * implemented here rather than taken from the CRT. Sorting lives in src/sort;
+ * runtime memory primitives live in src/memory/xx_memory_rt.c,
  * narrow/wide string primitives live in src/strings/xx_string.c, and the
  * Win32 UTF conversion boundary lives in
  * src/strings/platforms/xx_string_windows.c.
@@ -48,75 +48,6 @@
 
 #include "xxfclib/rt/xx_rt.h"
 #include "platforms/xx_rt_platform.h"
-
-/* ------------------------------------------------------------------------ */
-/*  Process                                                                  */
-/* ------------------------------------------------------------------------ */
-
-static void xx_rt_swap_bytes(char *pLeft, char *pRight, size_t nSize)
-{
-    size_t i = 0;
-
-    for (i = 0; i < nSize; i++) {
-        char nTemp = pLeft[i];
-
-        pLeft[i] = pRight[i];
-        pRight[i] = nTemp;
-    }
-}
-
-static void xx_rt_heap_sift_down(char *pBase, size_t nRoot, size_t nEnd, size_t nSize, xx_rt_compare_context_fn fnCompare, void *pContext)
-{
-    while (nRoot <= (nEnd - 1) / 2) {
-        size_t nChild = nRoot * 2 + 1;
-        size_t nSwap = nRoot;
-
-        if (fnCompare(pBase + nSwap * nSize, pBase + nChild * nSize, pContext) < 0) {
-            nSwap = nChild;
-        }
-
-        if ((nChild < nEnd) && (fnCompare(pBase + nSwap * nSize, pBase + (nChild + 1) * nSize, pContext) < 0)) {
-            nSwap = nChild + 1;
-        }
-
-        if (nSwap == nRoot) {
-            return;
-        }
-
-        xx_rt_swap_bytes(pBase + nRoot * nSize, pBase + nSwap * nSize, nSize);
-        nRoot = nSwap;
-    }
-}
-
-/* In-place heapsort has bounded O(log n) index state, never allocates, and
- * cannot degrade to quadratic behavior for equal or adversarial keys. */
-static void xx_rt_qsort_context_impl(char *pBase, size_t nCount, size_t nSize, xx_rt_compare_context_fn fnCompare, void *pContext)
-{
-    size_t nStart = nCount / 2;
-    size_t nEnd = nCount - 1;
-
-    while (nStart != 0) {
-        nStart--;
-        xx_rt_heap_sift_down(pBase, nStart, nEnd, nSize, fnCompare, pContext);
-    }
-
-    while (nEnd != 0) {
-        xx_rt_swap_bytes(pBase, pBase + nEnd * nSize, nSize);
-        nEnd--;
-        if (nEnd != 0) {
-            xx_rt_heap_sift_down(pBase, 0, nEnd, nSize, fnCompare, pContext);
-        }
-    }
-}
-
-void xx_rt_qsort_context(void *pBase, size_t nCount, size_t nSize, xx_rt_compare_context_fn fnCompare, void *pContext)
-{
-    if ((pBase == NULL) || (fnCompare == NULL) || (nCount < 2) || (nSize == 0) || (nCount > ((size_t)-1) / nSize)) {
-        return;
-    }
-
-    xx_rt_qsort_context_impl((char *)pBase, nCount, nSize, fnCompare, pContext);
-}
 
 /* ------------------------------------------------------------------------ */
 /*  Conversion                                                               */

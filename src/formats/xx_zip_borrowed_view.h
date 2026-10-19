@@ -5,7 +5,7 @@
  * and an optional byte-complement boundary; no container grammar lives here. */
 #ifndef XX_ZIP_BORROWED_VIEW_H
 #define XX_ZIP_BORROWED_VIEW_H
-#include "xxfclib/formats/zip/xx_zip.h"
+#include "xxfclib/formats/archive/zip/xx_zip.h"
 #include "xxfclib/memory/xx_memory.h"
 #include <stdio.h>
 #include <limits.h>

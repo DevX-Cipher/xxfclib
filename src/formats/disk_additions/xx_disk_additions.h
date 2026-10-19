@@ -6,7 +6,7 @@
 #ifndef XX_DISK_ADDITIONS_PRIVATE_H
 #define XX_DISK_ADDITIONS_PRIVATE_H
 #include "xxfclib/formats/disk_additions/xx_disk_additions.h"
-#include "../hxc_afi/xx_hxc_tracks.h"
+#include "../filesystem/hxc_afi/xx_hxc_tracks.h"
 #define DA_MAP_METHOD 65535U
 #define DA_MAX_RUNS 262144U
 #define DA_MAX_LOGICAL UINT64_C(8796093022208)

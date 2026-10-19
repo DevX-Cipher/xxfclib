@@ -48,6 +48,18 @@
         (void)self;                                                                                                                                                     \
         xx_format_search_free(state);                                                                                                                                   \
     }                                                                                                                                                                   \
+    static Abstractformat *xx_##name##_abstract_create_reader(xx_io_device *device)                                                                                     \
+    {                                                                                                                                                                   \
+        return (descriptor).open ? (descriptor).open(device) : NULL;                                                                                                     \
+    }                                                                                                                                                                   \
+    static void xx_##name##_abstract_free_reader(Abstractformat *format)                                                                                                \
+    {                                                                                                                                                                   \
+        if ((descriptor).close) (descriptor).close(format);                                                                                                               \
+    }                                                                                                                                                                   \
+    static int xx_##name##_abstract_signature(xx_io_device *device, int64_t base_address, bool is_mapped)                                                                 \
+    {                                                                                                                                                                   \
+        return xx_format_search_signature(&(descriptor), device, base_address, is_mapped);                                                                                 \
+    }                                                                                                                                                                   \
     static Abstractextractor xx_##name##_abstract_extractor = {.file_type = xx_##name##_file_type,                                                                      \
                                                                .fast_detect = xx_##name##_fast_detect,                                                                  \
                                                                .size = xx_##name##_size,                                                                                \
@@ -55,7 +67,10 @@
                                                                .create_format_search = xx_##name##_abstract_create_format_search,                                       \
                                                                .get_current_format_info = xx_##name##_abstract_get_current_format_info,                                 \
                                                                .format_search_find_next = xx_##name##_abstract_format_search_find_next,                                 \
-                                                               .free_format_search = xx_##name##_abstract_free_format_search};                                          \
+                                                               .free_format_search = xx_##name##_abstract_free_format_search,                                           \
+                                                               .create_reader = xx_##name##_abstract_create_reader,                                                     \
+                                                               .free_reader = xx_##name##_abstract_free_reader,                                                         \
+                                                               .signature = xx_##name##_abstract_signature};                                                            \
     Abstractextractor *xx_##name##_get_abstract_extractor(void)                                                                                                         \
     {                                                                                                                                                                   \
         return &xx_##name##_abstract_extractor;                                                                                                                         \

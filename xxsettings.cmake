@@ -9,13 +9,19 @@ set(XXSETTINGS_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/global/xx_settings_global.c
     ${CMAKE_CURRENT_LIST_DIR}/src/global/xx_global.c
     ${CMAKE_CURRENT_LIST_DIR}/src/global/platforms/xx_global_cpu.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/io/xx_io_memory_only.c
     ${CMAKE_CURRENT_LIST_DIR}/src/rt/xx_rt.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sort/xx_sort.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sort/platforms/xx_sort_sse2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sort/platforms/xx_sort_avx2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sort/platforms/xx_sort_neon.c
     ${CMAKE_CURRENT_LIST_DIR}/src/rt/xx_rt_fp.c
     ${CMAKE_CURRENT_LIST_DIR}/src/rt/xx_rt_math.c
     ${CMAKE_CURRENT_LIST_DIR}/src/memory/xx_memory.c
     ${CMAKE_CURRENT_LIST_DIR}/src/memory/xx_memory_rt.c
     ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_sse2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_avx2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_neon.c
 )
 if(WIN32)
     list(APPEND XXSETTINGS_SOURCES
@@ -23,6 +29,7 @@ if(WIN32)
         ${CMAKE_CURRENT_LIST_DIR}/src/settings/platforms/xx_settings_windows.c
         ${CMAKE_CURRENT_LIST_DIR}/src/global/platforms/xx_global_windows.c
         ${CMAKE_CURRENT_LIST_DIR}/src/rt/platforms/xx_rt_windows.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/sort/platforms/xx_sort_windows.c
         ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_windows.c
         ${CMAKE_CURRENT_LIST_DIR}/src/strings/platforms/xx_string_windows.c
     )
@@ -32,6 +39,7 @@ else()
         ${CMAKE_CURRENT_LIST_DIR}/src/settings/platforms/xx_settings_file_posix.c
         ${CMAKE_CURRENT_LIST_DIR}/src/global/platforms/xx_global_posix.c
         ${CMAKE_CURRENT_LIST_DIR}/src/rt/platforms/xx_rt_posix.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/sort/platforms/xx_sort_posix.c
         ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_posix.c
         ${CMAKE_CURRENT_LIST_DIR}/src/strings/platforms/xx_string_posix.c
     )
@@ -44,3 +52,7 @@ else()
         list(APPEND XXSETTINGS_SOURCES ${CMAKE_CURRENT_LIST_DIR}/src/settings/platforms/xx_settings_posix.c)
     endif()
 endif()
+
+# SIMD flags apply only to the runtime-dispatched sorting translation units.
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/xxfclib_sort_simd.cmake")
+xxfclib_configure_sort_simd_sources("${CMAKE_CURRENT_LIST_DIR}")

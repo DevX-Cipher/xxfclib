@@ -21,16 +21,11 @@
  *     the difference is documented at the point of divergence. Silently
  *     adopting xxfclib's variant would change printed output.
  *
- * The three that differ, and why they are not aliased:
+ * Sorting now uses xx_sort_quick, which preserves cdie's original
+ * median-of-three partitioning and equal-key ordering on every platform.
+ * The signature comparator in xx_scan_db.c depends on that ordering.
  *
- *   x_qsort     xxfclib's xx_rt_qsort is an in-place heapsort; cdie's is a
- *               median-of-three quicksort finishing with insertion sort.
- *               Heapsort is not stable, so it permutes equal keys differently.
- *               xx_die_engine_db.c's compare_signatures returns 0 for genuinely distinct
- *               signatures, and the note above it records that the comparator
- *               was hand-tuned against this exact partitioning -- retuning it
- *               moved script order *further* from diec. Signature order picks
- *               the winning signature, which picks the printed line.
+ * The two remaining policy differences are:
  *
  *   cd_malloc   never returns NULL: it longjmp-free aborts through the OOM
  *               path instead, and cd_malloc(0) yields a one-byte block. The
@@ -44,13 +39,14 @@
  *               a latent defect in the migrated lexer, which pairs a non-zero
  *               size with a possibly-NULL pointer.)
  *
- * Everything in this header is private to src/die_engine/.
+ * Private runtime support for the DIE engine and its shared scan models.
  */
 
 #ifndef DIE_ENGINE_COMPAT_H
 #define DIE_ENGINE_COMPAT_H
 
 #include "xxfclib/rt/xx_rt.h"
+#include "xxfclib/sort/xx_sort.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -137,14 +133,8 @@ typedef uint64_t cd_u64;
 
 /* ------------------------------------------------------------ sorting  -- */
 
-/**
- * @brief cdie's sort: median-of-three quicksort, insertion sort under 13.
- *
- * Deliberately NOT xx_rt_qsort. See the header comment: the signature
- * comparator is tuned to this partitioning, and changing it reorders the
- * signature database and therefore the printed result.
- */
-void x_qsort(void *pBase, size_t nCount, size_t nSize, int (*fnCompare)(const void *, const void *));
+/* Preserve the signature database's historical partitioning. */
+#define x_qsort xx_sort_quick
 
 /* --------------------------------------------------------- allocation  -- */
 

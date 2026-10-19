@@ -9,18 +9,26 @@
 # and compiler support. When the engine starts calling into another xxfclib
 # module, add that module's sources here, or consumers of die_engine fail to
 # link with unresolved xx_* symbols.
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/xxfclib_codepages.cmake")
 set(XXFC_DIE_ENGINE_SOURCES
+    ${XXFC_CODEPAGE_SOURCES}
     # Engine
     ${CMAKE_CURRENT_LIST_DIR}/src/die_engine/xx_die_engine_api.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/die_engine/xx_die_engine_bin.c
     ${CMAKE_CURRENT_LIST_DIR}/src/die_engine/xx_die_engine_compat.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/die_engine/xx_die_engine_db.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/die_engine/xx_die_engine_inflate.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/die_engine/xx_die_engine_literal_search.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/die_engine/xx_die_engine_result.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/die_engine/xx_die_engine_engine.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/die_engine/xx_die_engine_legacy.c
     ${CMAKE_CURRENT_LIST_DIR}/src/die_engine/xx_die_engine_scan.c
     ${CMAKE_CURRENT_LIST_DIR}/src/die_engine/xx_die_engine_xdisasm.c
+    # Shared scan models and signature database/result handling.
+    ${CMAKE_CURRENT_LIST_DIR}/src/scan/xx_scan.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/scan/xx_scan_db.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/scan/xx_scan_engine.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/scan/xx_scan_overlay.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/scan/xx_scan_result.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/scan/xx_scan_color.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sort/xx_sort_scan.c
     ${CMAKE_CURRENT_LIST_DIR}/src/scan/xx_scan_types.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sig/xx_sig.c
 
     # Script interpreter
     ${CMAKE_CURRENT_LIST_DIR}/src/js/xx_js_builtins.c
@@ -34,70 +42,99 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/js/xx_js_value.c
 
     # Native format readers and inspection APIs used by signatures.
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/apk/xx_apk.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/apk/xx_apk_inspect.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/atarist/xx_atarist.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/dex/xx_dex.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/dex/xx_dex_inspect.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/dos16m/xx_dos16m.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/elf/xx_elf_inspect.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/gz/xx_gz.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/ipa/xx_ipa.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/iso9660/xx_iso9660.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/iso9660/xx_iso_zisofs_native.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/jar/xx_jar.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/jpeg/xx_jpeg.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/macho/xx_macho_inspect.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/npm/xx_npm.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/pdf/xxpdf.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/pdf/xxpdf_decode.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/pe/xx_pe_inspect.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/pe/xx_pe_stream_symbols.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/pe/xx_pe_stream_coff.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/pe/xx_pe_stream_metadata.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/pe/xx_pe_stream_common.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/pe/xx_pe.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/pe/xx_pe_data.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/dotnet/xx_dotnet.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/dotnet/xx_dotnet_inspect.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/dotnet/xx_dotnet_data.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/png/xx_png.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/pyc/xx_pyc.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/tar/xx_tar.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/tar_common/xx_tar_common.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/tar_gz/xx_tar_gz.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/zip/xx_zip.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/zip/xx_zip_inspect.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/zip/xx_zip_legacy_encoder.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/xz/xx_xz.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/xz/xx_xz_writer.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/7zip/xx_7zip_branch.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/installer/apk/xx_apk.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/installer/apk/xx_apk_inspect.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/amigahunk/xx_amigahunk.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/atarist/xx_atarist.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dex/xx_dex.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dex/xx_dex_inspect.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dos16m/xx_dos16m.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/elf/xx_elf_inspect.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/elf/xx_elf.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/elf/xx_elf_symbols.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/elf/xx_elf_resources.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/elf/xx_elf_data.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/gz/xx_gz.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/installer/ipa/xx_ipa.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/filesystem/iso9660/xx_iso9660.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/filesystem/iso9660/xx_iso_zisofs_native.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/jar/xx_jar.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/java_class/xx_java_class.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/other/javascript/xx_javascript.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/image/jpeg/xx_jpeg.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/macho/xx_macho_inspect.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/macho/xx_macho.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/macho/xx_macho_data.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/msdos/xx_msdos.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/ne/xx_ne.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/le/xx_le.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/lx/xx_lx.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/installer/npm/xx_npm.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/document/pdf/xxpdf.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/document/pdf/xxpdf_decode.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_inspect.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_unwind_validate.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_stream_symbols.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_stream_coff.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_stream_metadata.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_stream_common.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_data.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dotnet/xx_dotnet.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dotnet/xx_dotnet_inspect.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dotnet/platforms/xx_dotnet_us_simd.h
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dotnet/platforms/xx_dotnet_us_sse2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dotnet/platforms/xx_dotnet_us_avx2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dotnet/xx_dotnet_data.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/image/png/xx_png.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pyc/xx_pyc.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/rar/xx_rar.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/tar/xx_tar.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/tar_common/xx_tar_common.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/tar_gz/xx_tar_gz.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/zip/xx_zip.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/zip/xx_zip_inspect.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/zip/xx_zip_legacy_encoder.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/xz/xx_xz.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/xz/xx_xz_writer.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/7zip/xx_7zip_branch.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_data_signature.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_memory_map.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format_base.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format_names.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format_streams.c
 
     # Algorithms
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/aes/xx_aes.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/aes/platforms/xx_aes_arm_crypto.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/aes_winzip/xx_aes_winzip.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/adler32/xx_adler32.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/adler32/xx_adler32_io.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/adler32/platforms/xx_adler32_sse2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/adler32/platforms/xx_adler32_avx2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/adler32/platforms/xx_adler32_neon.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/adler32/platforms/xx_adler32_arm_dotprod.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/bzip2/xx_bzip2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/bzip2/xx_bzip2_bwt.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/bzip2/xx_bzip2_dec.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/bzip2/xx_bzip2_enc.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/bzip2/xx_bzip2_huffman.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/bzip2/xx_bzip2_mtf.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/blake2/xx_blake2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/cmpsc/xx_cmpsc.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/cmpsc/xx_cmpsc_enc.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/crc/xx_crc.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/crc/xx_crc8.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/crc/xx_crc16.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/crc/xx_crc32.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/crc/platforms/xx_crc32_arm_pmull.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/crc/platforms/xx_crc32_arm.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/crc/xx_crc_io.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/crc/platforms/xx_crc32c_sse42.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/crc/xx_crc64.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/crc/platforms/xx_crc64_sse2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/crc/platforms/xx_crc64_avx2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/crc/platforms/xx_crc64_vpclmul.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/dcl/xx_dcl.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/deflate/xx_deflate.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/deflate/xx_deflate_dec.c
@@ -105,10 +142,12 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/deflate/xx_zlib_stream.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/deflate/platforms/xx_deflate_sse2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/deflate/platforms/xx_deflate_avx2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/deflate/platforms/xx_deflate_neon.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/entropy/xx_entropy.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/entropy/platforms/xx_entropy_sse2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/entropy/platforms/xx_entropy_avx2.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/algo/hash/xx_hash.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/entropy/platforms/xx_entropy_neon.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/md5/xx_md5.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/implode/xx_implode.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/kpa/xx_kpa.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/lzma/xx_lzma.c
@@ -118,6 +157,7 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/lzma/xx_lzma2_filters.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/lzma/platforms/xx_lzma_sse2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/lzma/platforms/xx_lzma_avx2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/lzma/platforms/xx_lzma_neon.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/packmp3/xx_packmp3.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/ppmd7/xx_ppmd7.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/ppmd7/xx_ppmd7_common.c
@@ -128,8 +168,15 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/ppmd8/xx_ppmd8_dec.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/ppmd8/xx_ppmd8_enc.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/reduce/xx_reduce.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/rar/xx_rarx.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/rar/xx_rarx15.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/rar/xx_rarx20.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/rar/xx_rarx29.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/rar/xx_rarx50.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/sha/xx_sha.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/sha/xx_sha_simd.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/sha/platforms/xx_sha_neon.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/sha/platforms/xx_sha_arm_crypto.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/shrink/xx_shrink.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/store/xx_store.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/wavpack/xx_wavpack.c
@@ -141,16 +188,24 @@ set(XXFC_DIE_ENGINE_SOURCES
 
     # Runtime
     ${CMAKE_CURRENT_LIST_DIR}/src/rt/xx_rt.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sort/xx_sort.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sort/platforms/xx_sort_sse2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sort/platforms/xx_sort_avx2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sort/platforms/xx_sort_neon.c
     ${CMAKE_CURRENT_LIST_DIR}/src/rt/xx_rt_fp.c
     ${CMAKE_CURRENT_LIST_DIR}/src/rt/xx_rt_math.c
     ${CMAKE_CURRENT_LIST_DIR}/src/buf/xx_buf.c
     ${CMAKE_CURRENT_LIST_DIR}/src/json/xx_json.c
     ${CMAKE_CURRENT_LIST_DIR}/src/list/xx_list.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/threads/xx_threads.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/sort/xx_sort_list.c
     ${CMAKE_CURRENT_LIST_DIR}/src/fs/xx_fs.c
     ${CMAKE_CURRENT_LIST_DIR}/src/global/xx_global.c
     ${CMAKE_CURRENT_LIST_DIR}/src/global/platforms/xx_global_cpu.c
     ${CMAKE_CURRENT_LIST_DIR}/src/terminal/xx_terminal.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/terminal/xx_terminal_color.c
     ${CMAKE_CURRENT_LIST_DIR}/src/io/xx_io.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/io/xx_io_buffer.c
     ${CMAKE_CURRENT_LIST_DIR}/src/io/xx_io_file.c
     ${CMAKE_CURRENT_LIST_DIR}/src/io/xx_io_mem.c
     ${CMAKE_CURRENT_LIST_DIR}/src/io/xx_io_memory_only.c
@@ -159,6 +214,7 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/memory/xx_memory_rt.c
     ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_sse2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_avx2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_neon.c
     ${CMAKE_CURRENT_LIST_DIR}/src/strings/xx_string.c
     ${CMAKE_CURRENT_LIST_DIR}/src/var/xx_var.c
     ${CMAKE_CURRENT_LIST_DIR}/src/data/xx_pd.c
@@ -166,6 +222,7 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/data/xx_data_io.c
     ${CMAKE_CURRENT_LIST_DIR}/src/data/platforms/xx_data_sse2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/data/platforms/xx_data_avx2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/data/platforms/xx_data_neon.c
 )
 
 if(WIN32)
@@ -176,7 +233,9 @@ if(WIN32)
         ${CMAKE_CURRENT_LIST_DIR}/src/strings/platforms/xx_string_windows.c
         ${CMAKE_CURRENT_LIST_DIR}/src/fs/platforms/xx_fs_windows.c
         ${CMAKE_CURRENT_LIST_DIR}/src/rt/platforms/xx_rt_windows.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/sort/platforms/xx_sort_windows.c
         ${CMAKE_CURRENT_LIST_DIR}/src/global/platforms/xx_global_windows.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/threads/platforms/xx_threads_windows.c
         ${CMAKE_CURRENT_LIST_DIR}/src/terminal/platforms/xx_terminal_windows.c
     )
 else()
@@ -187,7 +246,22 @@ else()
         ${CMAKE_CURRENT_LIST_DIR}/src/strings/platforms/xx_string_posix.c
         ${CMAKE_CURRENT_LIST_DIR}/src/fs/platforms/xx_fs_posix.c
         ${CMAKE_CURRENT_LIST_DIR}/src/rt/platforms/xx_rt_posix.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/sort/platforms/xx_sort_posix.c
         ${CMAKE_CURRENT_LIST_DIR}/src/global/platforms/xx_global_posix.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/threads/platforms/xx_threads_posix.c
         ${CMAKE_CURRENT_LIST_DIR}/src/terminal/platforms/xx_terminal_posix.c
     )
 endif()
+
+# SIMD flags apply only to the runtime-dispatched sorting translation units.
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/xxfclib_sort_simd.cmake")
+xxfclib_configure_sort_simd_sources("${CMAKE_CURRENT_LIST_DIR}")
+
+# SIMD flags apply only to the runtime-dispatched .NET #US backends.
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/xxfclib_dotnet_simd.cmake")
+xxfclib_configure_dotnet_simd_sources("${CMAKE_CURRENT_LIST_DIR}")
+
+# ARM feature flags apply only to runtime-dispatched CRC, Dot Product and
+# AES/SHA crypto translation units. Baseline NEON sources need no extra flag.
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/xxfclib_arm_accel.cmake")
+xxfclib_configure_arm_accel_sources("${CMAKE_CURRENT_LIST_DIR}")

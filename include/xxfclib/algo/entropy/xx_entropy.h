@@ -24,8 +24,8 @@ extern "C" {
 /**
  * @brief Calculate Shannon entropy in bits per byte [0.0 .. 8.0].
  *
- * Uses 4-way ILP multi-histogram table accumulation to maximize memory
- * bandwidth and eliminate store-to-load forwarding stalls.
+ * Uses ILP multi-histogram table accumulation to maximize memory bandwidth
+ * and reduce indexed counter dependency stalls.
  *
  * @param data Pointer to input data buffer.
  * @param size Size of data in bytes.
@@ -37,6 +37,16 @@ XXFC_API double xx_entropy_calculate(const void *data, size_t size);
  * @brief Alias for xx_entropy_calculate.
  */
 XXFC_API double xx_entropy(const void *data, size_t size);
+
+struct xx_io_device;
+
+/** Calculate Shannon entropy over a device range, in bits per byte.
+ * Negative size means the remaining bytes; oversized ranges stop at EOF.
+ * Invalid/unknown-size devices, invalid offsets, empty ranges, allocation
+ * failures, and read failures return 0.0. The device is borrowed. Buffered
+ * inputs keep their logical cursor; ordinary inputs use a temporary buffer
+ * whose reads reposition the source. */
+XXFC_API double xx_entropy_calculate_device(struct xx_io_device *dev, int64_t offset, int64_t size);
 
 /* --------------------------------------------- Entropy Coding Primitives  */
 

@@ -4,6 +4,24 @@
  */
 
 XX_FORMAT_PROBE_READ(4100U)
+XX_FORMAT_READER_PROBE(qnx_lmf, XX_FILE_TYPE_QNX_LMF,
+    (header_size >= 54U && header[0] == 0U && header[1] == 0U && header[4] == 0U && header[5] == 0U &&
+     xx_data_get_u16(header, header_size, 2U, false) >= XX_QNX_LMF_HEADER_SIZE &&
+     xx_data_get_u16(header, header_size, 2U, false) <= XX_QNX_LMF_MAX_RECORD_DATA_SIZE))
+XX_FORMAT_READER_PROBE(nintendo_rel, XX_FILE_TYPE_NINTENDO_REL,
+    (header_size >= XX_NINTENDO_REL_HEADER_SIZE &&
+     xx_data_get_u32(header, header_size, 12U, true) > 0U &&
+     xx_data_get_u32(header, header_size, 12U, true) <= XX_NINTENDO_REL_MAX_SECTIONS &&
+     xx_data_get_u32(header, header_size, 16U, true) >= XX_NINTENDO_REL_HEADER_SIZE &&
+     xx_data_get_u32(header, header_size, 28U, true) <= 3U &&
+     (xx_data_get_u32(header, header_size, 44U, true) & 7U) == 0U))
+XX_FORMAT_READER_PROBE(gns1, XX_FILE_TYPE_GNS1,
+    (header_size >= XX_GNS1_MIN_FILE_SIZE &&
+     ((xx_data_get_u32(header, header_size, 0U, false) > 0U &&
+       xx_data_get_u32(header, header_size, 8U, false) >= XX_GNS1_MIN_DATA_OFFSET &&
+       ((xx_data_get_u32(header, header_size, 4U, false) & UINT32_C(0xff000000)) == UINT32_C(0x12000000) ||
+        (xx_data_get_u32(header, header_size, 4U, false) & UINT32_C(0xff000000)) == UINT32_C(0x15000000))) ||
+      (header_size >= 40U && xx_rt_memcmp(header + 32U, "rkosftab", 8U) == 0))))
 XX_FORMAT_READER_PROBE(ntp_message, XX_FILE_TYPE_NTP_MESSAGE,
     (header_size >= 48 && (header[0] >> 3 & 7) == 4 && ((header[0] & 7) == 3 || (header[0] & 7) == 4)))
 XX_FORMAT_READER_PROBE(rtp_rtcp, XX_FILE_TYPE_RTP_RTCP,

@@ -34,6 +34,8 @@
 #define XXFCLIB_ALGO_LZFSE_H
 
 #include "xxfclib/xxfc_defs.h"
+#include "xxfclib/io/xx_io.h"
+#include "xxfclib/data/xx_data.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -84,6 +86,16 @@ XXFC_API bool xx_lzfse_decompress_memory(const void *source, size_t source_size,
  *         buffer overflowing.
  */
 XXFC_API bool xx_lzvn_decompress_memory(const void *source, size_t source_size, void *destination, size_t destination_size, size_t *out_written, size_t *out_consumed);
+
+/** Bound for standalone encoded output; input <= INT32_MAX-1; zero on unsupported size/overflow. */
+XXFC_API size_t xx_lzfse_compress_bound(size_t source_size);
+/** Encode a complete LZFSE stream. out_written is reset to zero on failure.
+ * NULL source is accepted only for empty input. Input/output must not overlap. */
+XXFC_API bool xx_lzfse_compress_memory(const void *source,size_t source_size,void *destination,size_t destination_capacity,size_t *out_written);
+/** Buffered device packing (up to INT32_MAX-1 input bytes). offset<0 reads at
+ * current position; exact size required. Devices remain owned by the caller.
+ * Cancellation is checked between I/O chunks and before/after encoding. */
+XXFC_API bool xx_lzfse_pack_device(xx_io_device *source,int64_t offset,int64_t size,xx_io_device *destination,xx_pd_struct *pd);
 
 #ifdef __cplusplus
 }

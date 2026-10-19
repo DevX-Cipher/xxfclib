@@ -476,9 +476,15 @@ static bool xx_zstd_read_variable(const uint8_t **input, const uint8_t *end, uns
 }
 
 /* The exact API keeps its existing length contract; container readers may
- * instead supply a bounded output buffer for frames with shorter content. */
+ * instead supply a bounded output buffer for frames with shorter content.
+ * With cut, the input may end inside a frame: the call then fails with *cut
+ * set and *out_written the bytes of the whole blocks before that point (and
+ * of the part there is of a cut raw block), whose frame checksum is not
+ * there to check them. *checked (optional) gets the bytes from the start
+ * that frame checksums vouch for: the frames up to the first one without a
+ * checksum, or without all of it. */
 static bool xx_zstd_decode_frames_internal(const void *source, size_t source_size, void *destination, size_t destination_size, size_t *out_written, bool require_exact,
-                                           bool *needs_more_output)
+                                           bool *needs_more_output, bool *cut, size_t *checked)
 {
     const uint8_t *input = (const uint8_t *)source;
     const uint8_t *end;
@@ -490,6 +496,8 @@ static bool xx_zstd_decode_frames_internal(const void *source, size_t source_siz
 
     if (out_written) *out_written = 0U;
     if (needs_more_output) *needs_more_output = false;
+    if (cut) *cut = false;
+    if (checked) *checked = 0U;
     if ((!input && source_size != 0U) || (!output && destination_size != 0U)) {
         return false;
     }
@@ -497,6 +505,12 @@ static bool xx_zstd_decode_frames_internal(const void *source, size_t source_siz
     end = input + source_size;
     context.literals = (uint8_t *)xx_mem_alloc(XX_ZSTD_BLOCK_MAX);
     if (!context.literals) return false;
+/* The input ends here, inside a frame. */
+#define XX_ZSTD_CUT_AT_END()       \
+    do {                           \
+        if (cut) goto input_ended; \
+        goto error;                \
+    } while (0)
 
     while (input < end) {
         uint32_t magic;
@@ -514,19 +528,20 @@ static bool xx_zstd_decode_frames_internal(const void *source, size_t source_siz
         size_t frame_start;
         bool last_block = false;
 
-        if ((size_t)(end - input) < 4U) goto error;
+        if ((size_t)(end - input) < 4U) XX_ZSTD_CUT_AT_END();
         magic = xx_data_get_u32(input, 4, 0, false);
         input += 4;
         if ((magic & UINT32_C(0xFFFFFFF0)) == XX_ZSTD_SKIP_MAGIC) {
             uint32_t skip_size;
-            if ((size_t)(end - input) < 4U) goto error;
+            if ((size_t)(end - input) < 4U) XX_ZSTD_CUT_AT_END();
             skip_size = xx_data_get_u32(input, 4, 0, false);
             input += 4;
-            if ((size_t)(end - input) < skip_size) goto error;
+            if ((size_t)(end - input) < skip_size) XX_ZSTD_CUT_AT_END();
             input += skip_size;
             continue;
         }
-        if (magic != XX_ZSTD_MAGIC || input == end) goto error;
+        if (magic != XX_ZSTD_MAGIC) goto error;
+        if (input == end) XX_ZSTD_CUT_AT_END();
         descriptor = *input++;
         if ((descriptor & UINT8_C(0x18)) != 0U) goto error;
         content_size_flag = descriptor >> 6;
@@ -537,7 +552,7 @@ static bool xx_zstd_decode_frames_internal(const void *source, size_t source_siz
             uint8_t window_descriptor;
             unsigned exponent;
             unsigned mantissa;
-            if (input == end) goto error;
+            if (input == end) XX_ZSTD_CUT_AT_END();
             window_descriptor = *input++;
             exponent = window_descriptor >> 3;
             mantissa = window_descriptor & 7U;
@@ -548,10 +563,12 @@ static bool xx_zstd_decode_frames_internal(const void *source, size_t source_siz
             window_size64 = 0U;
         }
         dictionary_size = dictionary_flag == 0U ? 0U : dictionary_flag == 1U ? 1U : dictionary_flag == 2U ? 2U : 4U;
+        if ((size_t)(end - input) < dictionary_size) XX_ZSTD_CUT_AT_END();
         if (!xx_zstd_read_variable(&input, end, dictionary_size, &dictionary_id) || dictionary_id != 0U) {
             goto error;
         }
         content_size_bytes = content_size_flag == 0U ? (single_segment ? 1U : 0U) : content_size_flag == 1U ? 2U : content_size_flag == 2U ? 4U : 8U;
+        if ((size_t)(end - input) < content_size_bytes) XX_ZSTD_CUT_AT_END();
         if (!xx_zstd_read_variable(&input, end, content_size_bytes, &frame_content_size)) goto error;
         if (content_size_bytes == 2U) frame_content_size += 256U;
         if (single_segment) window_size64 = frame_content_size;
@@ -572,7 +589,7 @@ static bool xx_zstd_decode_frames_internal(const void *source, size_t source_siz
             size_t block_size;
             size_t block_limit = window_size < XX_ZSTD_BLOCK_MAX ? window_size : XX_ZSTD_BLOCK_MAX;
             size_t block_start = output_position;
-            if ((size_t)(end - input) < 3U) goto error;
+            if ((size_t)(end - input) < 3U) XX_ZSTD_CUT_AT_END();
             header = xx_data_get_u24(input, 3, 0, false);
             input += 3;
             last_block = (header & 1U) != 0U;
@@ -580,7 +597,13 @@ static bool xx_zstd_decode_frames_internal(const void *source, size_t source_siz
             block_size = header >> 3;
             if (block_type == 3U || block_size > XX_ZSTD_BLOCK_MAX) goto error;
             if (block_type == 0U) {
-                if (block_size > (size_t)(end - input) || block_size > block_limit) goto error;
+                if (block_size > block_limit) goto error;
+                if (block_size > (size_t)(end - input) && cut && block_size <= destination_size - output_position) {
+                    /* A raw block is its data: what there is of it is kept. */
+                    while (input < end) output[output_position++] = *input++;
+                    goto input_ended;
+                }
+                if (block_size > (size_t)(end - input)) goto error;
                 if (block_size > destination_size - output_position) {
                     if (needs_more_output) *needs_more_output = true;
                     goto error;
@@ -590,7 +613,8 @@ static bool xx_zstd_decode_frames_internal(const void *source, size_t source_siz
                 }
                 input += block_size;
             } else if (block_type == 1U) {
-                if (input == end || block_size > block_limit) goto error;
+                if (block_size > block_limit) goto error;
+                if (input == end) XX_ZSTD_CUT_AT_END();
                 if (block_size > destination_size - output_position) {
                     if (needs_more_output) *needs_more_output = true;
                     goto error;
@@ -600,9 +624,9 @@ static bool xx_zstd_decode_frames_internal(const void *source, size_t source_siz
                 }
                 ++input;
             } else {
-                if (block_size == 0U || block_size > (size_t)(end - input) ||
-                    !xx_zstd_decode_compressed_block(&context, input, block_size, output, destination_size, frame_start, &output_position, window_size, block_limit,
-                                                     needs_more_output))
+                if (block_size != 0U && block_size > (size_t)(end - input)) XX_ZSTD_CUT_AT_END();
+                if (block_size == 0U || !xx_zstd_decode_compressed_block(&context, input, block_size, output, destination_size, frame_start, &output_position,
+                                                                         window_size, block_limit, needs_more_output))
                     goto error;
                 input += block_size;
             }
@@ -610,17 +634,26 @@ static bool xx_zstd_decode_frames_internal(const void *source, size_t source_siz
         }
         if (content_size_bytes != 0U && frame_content_size != output_position - frame_start) goto error;
         if (checksum) {
-            if ((size_t)(end - input) < 4U || xx_data_get_u32(input, 4, 0, false) != (uint32_t)xx_zstd_xxh64(output + frame_start, output_position - frame_start)) {
+            if ((size_t)(end - input) < 4U) XX_ZSTD_CUT_AT_END();
+            if (xx_data_get_u32(input, 4, 0, false) != (uint32_t)xx_zstd_xxh64(output + frame_start, output_position - frame_start)) {
                 goto error;
             }
             input += 4;
+            if (checked && *checked == frame_start) *checked = output_position;
         }
         saw_frame = true;
     }
+#undef XX_ZSTD_CUT_AT_END
     xx_mem_free(context.literals);
     if (!saw_frame || (require_exact && output_position != destination_size)) return false;
     if (out_written) *out_written = output_position;
     return true;
+
+input_ended:
+    xx_mem_free(context.literals);
+    *cut = true;
+    if (out_written) *out_written = output_position;
+    return false;
 
 error:
     xx_mem_free(context.literals);
@@ -629,16 +662,21 @@ error:
 
 bool xx_zstd_decode_frames(const void *source, size_t source_size, void *destination, size_t destination_size, size_t *out_written)
 {
-    return xx_zstd_decode_frames_internal(source, source_size, destination, destination_size, out_written, true, NULL);
+    return xx_zstd_decode_frames_internal(source, source_size, destination, destination_size, out_written, true, NULL, NULL, NULL);
 }
 
 bool xx_zstd_decode_frames_bounded(const void *source, size_t source_size, void *destination, size_t destination_capacity, size_t *out_written)
 {
-    return xx_zstd_decode_frames_internal(source, source_size, destination, destination_capacity, out_written, false, NULL);
+    return xx_zstd_decode_frames_internal(source, source_size, destination, destination_capacity, out_written, false, NULL, NULL, NULL);
 }
 
 bool xx_zstd_decode_frames_bounded_retry(const void *source, size_t source_size, void *destination, size_t destination_capacity, size_t *out_written,
                                          bool *needs_more_output)
 {
-    return xx_zstd_decode_frames_internal(source, source_size, destination, destination_capacity, out_written, false, needs_more_output);
+    return xx_zstd_decode_frames_internal(source, source_size, destination, destination_capacity, out_written, false, needs_more_output, NULL, NULL);
+}
+
+bool xx_zstd_decode_frames_prefix(const void *source, size_t source_size, void *destination, size_t destination_size, size_t *out_written, bool *cut, size_t *checked)
+{
+    return cut && xx_zstd_decode_frames_internal(source, source_size, destination, destination_size, out_written, false, NULL, cut, checked);
 }

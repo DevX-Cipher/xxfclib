@@ -391,6 +391,8 @@ extern xx_format_extractor xx_protein_mmcif_extractor;
 extern xx_format_extractor xx_matrix_market_extractor;
 extern xx_format_extractor xx_gromacs_gro_extractor;
 extern xx_format_extractor xx_microsoft_msf_extractor;
+extern xx_format_extractor xx_pef_extractor;
+extern xx_format_extractor xx_rprj_extractor;
 extern xx_format_extractor xx_windows_registry_hive_extractor;
 extern xx_format_extractor xx_windows_evtx_extractor;
 extern xx_format_extractor xx_binary_plist_extractor;
@@ -1655,6 +1657,8 @@ static const struct {
     { XX_FILE_TYPE_MATRIX_MARKET, &xx_matrix_market_extractor },
     { XX_FILE_TYPE_GROMACS_GRO, &xx_gromacs_gro_extractor },
     { XX_FILE_TYPE_MICROSOFT_MSF, &xx_microsoft_msf_extractor },
+    { XX_FILE_TYPE_PEF, &xx_pef_extractor },
+    { XX_FILE_TYPE_RPRJ, &xx_rprj_extractor },
     { XX_FILE_TYPE_WINDOWS_REGISTRY_HIVE, &xx_windows_registry_hive_extractor },
     { XX_FILE_TYPE_WINDOWS_EVTX, &xx_windows_evtx_extractor },
     { XX_FILE_TYPE_BINARY_PLIST, &xx_binary_plist_extractor },

@@ -7,6 +7,7 @@
 #include "xxfclib/algo/lzma_alone/xx_lzma_alone.h"
 
 #include "xxfclib/algo/lzma/xx_lzma.h"
+#include "../lzma/xx_lzma_internal.h"
 
 #include <limits.h>
 #include <string.h>
@@ -18,6 +19,8 @@ typedef struct xx_lzma_alone_counter_s {
     uint64_t maximum_size;
     uint64_t written;
     bool failed;
+    /* Output past the maximum was refused (failed is set too). */
+    bool overflow;
 } xx_lzma_alone_counter;
 
 static bool xx_lzma_alone_read_exact_at(xx_io_device *device, int64_t offset, void *buffer, size_t size, size_t io_capacity)
@@ -69,12 +72,17 @@ static ssize_t xx_lzma_alone_counter_write(xx_io_device *device, const void *dat
 {
     xx_lzma_alone_counter *counter = device ? (xx_lzma_alone_counter *)device->priv : NULL;
     size_t done = 0U;
-    if (!counter || (!data && size != 0U) || (uint64_t)size > counter->maximum_size - counter->written) {
+    size_t accepted;
+    if (!counter || (!data && size != 0U)) {
         if (counter) counter->failed = true;
         return -1;
     }
-    while (done < size && counter->destination) {
-        size_t request = size - done;
+    /* Past the maximum, what still fits is kept and the rest refused: a
+     * stream whose header records its size may run on without an end
+     * marker after it delivered that size. */
+    accepted = (uint64_t)size > counter->maximum_size - counter->written ? (size_t)(counter->maximum_size - counter->written) : size;
+    while (done < accepted && counter->destination) {
+        size_t request = accepted - done;
         ssize_t amount;
         if (request > counter->io_capacity) request = counter->io_capacity;
         amount = xx_io_write(counter->destination, (const uint8_t *)data + done, request);
@@ -84,11 +92,22 @@ static ssize_t xx_lzma_alone_counter_write(xx_io_device *device, const void *dat
         }
         done += (size_t)amount;
     }
-    counter->written += (uint64_t)size;
+    counter->written += (uint64_t)accepted;
+    if (accepted != size) {
+        counter->failed = true;
+        counter->overflow = true;
+        return -1;
+    }
     return (ssize_t)size;
 }
 
 bool xx_lzma_alone_decode_device(xx_io_device *source, int64_t source_offset, int64_t source_size, xx_io_device *destination, int64_t *output_size, xx_pd_struct *pd)
+{
+    return xx_lzma_alone_decode_device_ex(source, source_offset, source_size, destination, output_size, NULL, pd);
+}
+
+bool xx_lzma_alone_decode_device_ex(xx_io_device *source, int64_t source_offset, int64_t source_size, xx_io_device *destination, int64_t *output_size, bool *cut,
+                                    xx_pd_struct *pd)
 {
     const size_t io_capacity = xx_get_file_buffer_size();
     uint8_t header[XX_LZMA_ALONE_HEADER_SIZE];
@@ -98,8 +117,12 @@ bool xx_lzma_alone_decode_device(xx_io_device *source, int64_t source_offset, in
     int64_t compressed_size;
     xx_lzma_alone_counter counter;
     xx_io_device sink;
+    lzma_props properties;
+    lzma_range_dec range;
+    bool decoded;
 
     if (output_size) *output_size = -1;
+    if (cut) *cut = false;
     if (!source || !destination || source_offset < 0 || source_size < (int64_t)XX_LZMA_ALONE_HEADER_SIZE + 5 || (pd && xx_pd_is_stopped(pd))) {
         return false;
     }
@@ -119,9 +142,23 @@ bool xx_lzma_alone_decode_device(xx_io_device *source, int64_t source_offset, in
     sink.write = xx_lzma_alone_counter_write;
     sink.priv = &counter;
     /* Use the end marker rather than stopping at the header's size field.  A
-     * bounded output sink still rejects an inflated or inconsistent claim. */
-    if (!xx_lzma_unpack_device(source, compressed_offset, compressed_size, header, XX_LZMA_PROPS_SIZE, -1, &sink, pd) || counter.failed ||
-        (declared_size != UINT64_MAX && counter.written != declared_size)) {
+     * bounded output sink still rejects an inflated or inconsistent claim.
+     * xx_lzma_unpack_device, with the range decoder at hand, which tells an
+     * input that ends inside the stream (a cut file) from damaged data. */
+    if (compressed_size <= 0 || !lzma_parse_props(header, XX_LZMA_PROPS_SIZE, &properties) || xx_io_seek64(source, compressed_offset, SEEK_SET) != 0 ||
+        !lzma_rd_init(&range, source, NULL, 0, compressed_size)) {
+        return false;
+    }
+    decoded = xx_lzma_decompress_stream(&range, &properties, -1, &sink, NULL, 0, NULL, pd);
+    /* A stream with no end marker after the size its header records is
+     * whole once it delivered that size, however its input ends. */
+    if (!decoded && declared_size != UINT64_MAX && counter.written == declared_size && (!counter.failed || counter.overflow) && !(pd && xx_pd_is_stopped(pd))) {
+        decoded = true;
+        counter.failed = false;
+    }
+    if (!decoded && cut && range.eof && !counter.failed && !(pd && xx_pd_is_stopped(pd))) *cut = true;
+    lzma_rd_free(&range);
+    if (!decoded || counter.failed || (declared_size != UINT64_MAX && counter.written != declared_size)) {
         return false;
     }
     if (output_size) *output_size = (int64_t)counter.written;

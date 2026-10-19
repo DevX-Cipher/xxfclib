@@ -17,6 +17,7 @@
 #define XX_ADLER32_H
 
 #include "xxfclib/xxfc_defs.h"
+#include "xxfclib/io/xx_io.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,6 +35,15 @@ XXFC_API uint32_t xx_adler32_update(uint32_t adler, const void *data, size_t siz
 
 /** @brief Adler-32 of a whole buffer. */
 XXFC_API uint32_t xx_adler32(const void *data, size_t size);
+
+/**
+ * @brief Adler-32 over a clamped device range, starting with XX_ADLER32_INIT.
+ * Negative or oversized size reads to EOF. Invalid or empty ranges return
+ * XX_ADLER32_INIT; a read failure returns the checksum of completed cache
+ * windows. Buffered devices retain their logical cursor. Ordinary devices are
+ * borrowed through a temporary cache and their underlying cursor may advance.
+ */
+XXFC_API uint32_t xx_adler32_device(xx_io_device *device, int64_t offset, int64_t size);
 
 #ifdef __cplusplus
 }

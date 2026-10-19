@@ -9,6 +9,11 @@
 #include <emmintrin.h>
 #endif
 
+#if (defined(_M_ARM64) && !defined(_M_ARM64EC)) || defined(__aarch64__)
+#define XX_DEFLATE_DEC_NEON 1
+#include <arm_neon.h>
+#endif
+
 #if defined(_MSC_VER)
 #define XX_DEFLATE_DEC_NOINLINE __declspec(noinline)
 #elif defined(__GNUC__) || defined(__clang__)

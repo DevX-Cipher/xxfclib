@@ -30,6 +30,7 @@
 #include "../xx_io_policy.h"
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <errno.h>
 
 #ifndef SEEK_SET
 #define SEEK_SET 0
@@ -84,6 +85,29 @@ static wchar_t *xx_win_utf8_path(const char *path, wchar_t *stack, size_t stack_
 static void xx_win_free_path(wchar_t *path, wchar_t *stack)
 {
     if (path && path != stack) HeapFree(GetProcessHeap(), 0, path);
+}
+
+/* A failed change's Win32 error as the errno value an extraction scope keeps
+ * (see xx_io_extract_begin). */
+static int xx_win_errno(DWORD error)
+{
+    switch (error) {
+        case ERROR_ACCESS_DENIED:
+        case ERROR_SHARING_VIOLATION:
+        case ERROR_LOCK_VIOLATION: return EACCES;
+        case ERROR_DISK_FULL:
+        case ERROR_HANDLE_DISK_FULL: return ENOSPC;
+        case ERROR_FILENAME_EXCED_RANGE:
+        case ERROR_BUFFER_OVERFLOW: return ENAMETOOLONG;
+        case ERROR_FILE_EXISTS:
+        case ERROR_ALREADY_EXISTS: return EEXIST;
+        case ERROR_WRITE_PROTECT: return EROFS;
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_PATH_NOT_FOUND: return ENOENT;
+        case ERROR_DIRECTORY: return ENOTDIR;
+        case ERROR_INVALID_NAME: return EINVAL;
+        default: return EIO;
+    }
 }
 
 static wchar_t *xx_win_copy_path(const wchar_t *path, size_t length, wchar_t *stack, size_t stack_count)
@@ -205,6 +229,34 @@ cleanup:
     return result == INVALID_HANDLE_VALUE ? NULL : (void *)result;
 }
 
+/* A file opened for writing with truncation inside an extraction scope: a
+ * link (a reparse point) or a file with other hard links already at api is
+ * replaced by a new file, never written through. Returns the creation
+ * disposition to use, 0 when that entry cannot be removed. */
+static DWORD xx_win_replace_entry(const wchar_t *api, DWORD disposition)
+{
+    DWORD attributes = GetFileAttributesW(api);
+    BY_HANDLE_FILE_INFORMATION info;
+    HANDLE handle;
+    bool replace = false;
+    if (attributes == INVALID_FILE_ATTRIBUTES) return disposition;
+    if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+        replace = true;
+    } else if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        handle = CreateFileW(api, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        if (handle != INVALID_HANDLE_VALUE) {
+            replace = GetFileInformationByHandle(handle, &info) && info.nNumberOfLinks > 1U;
+            CloseHandle(handle);
+        }
+    }
+    if (!replace) return disposition;
+    if (!((attributes & FILE_ATTRIBUTE_DIRECTORY) ? RemoveDirectoryW(api) : DeleteFileW(api))) {
+        xx_io_extract_fail(xx_win_errno(GetLastError()));
+        return 0U;
+    }
+    return CREATE_NEW;
+}
+
 void *xx_io_platform_file_open(const char *path, const char *mode)
 {
     if (!xx_io_policy_file_open_allowed(mode)) return NULL;
@@ -246,6 +298,7 @@ void *xx_io_platform_file_open(const char *path, const char *mode)
     wchar_t text_stack[MAX_PATH], api_stack[MAX_PATH];
     wchar_t *text, *api;
     HANDLE hFile = INVALID_HANDLE_VALUE;
+    DWORD error = ERROR_SUCCESS;
     unsigned int attempt;
     /* Retain the legacy ANSI retry used by file_open, including short paths. */
     for (attempt = 0U; attempt < 2U; ++attempt) {
@@ -253,13 +306,26 @@ void *xx_io_platform_file_open(const char *path, const char *mode)
         if (!text) continue;
         api = xx_win_api_path(text, api_stack, MAX_PATH, false);
         if (api) {
-            hFile = CreateFileW(api, dwDesiredAccess, dwShareMode, NULL, dwCreationDisposition, FILE_ATTRIBUTE_NORMAL, NULL);
+            DWORD disposition = dwCreationDisposition;
+            if (disposition == CREATE_ALWAYS && xx_io_extract_root()) disposition = xx_win_replace_entry(api, disposition);
+            if (disposition) {
+                DWORD flags_and_attrs = FILE_ATTRIBUTE_NORMAL;
+                if (xx_win_mode_has_char(mode, 'S') || !xx_win_mode_has_char(mode, '+')) {
+                    flags_and_attrs |= FILE_FLAG_SEQUENTIAL_SCAN;
+                }
+                hFile = CreateFileW(api, dwDesiredAccess, dwShareMode, NULL, disposition, flags_and_attrs, NULL);
+                if (hFile == INVALID_HANDLE_VALUE) error = GetLastError();
+            }
             xx_win_free_path(api, api_stack);
         }
         xx_win_free_path(text, text_stack);
         if (hFile != INVALID_HANDLE_VALUE) break;
     }
-    if (hFile == INVALID_HANDLE_VALUE) return NULL;
+    if (hFile == INVALID_HANDLE_VALUE) {
+        if (dwDesiredAccess != GENERIC_READ && error != ERROR_SUCCESS) xx_io_extract_fail(xx_win_errno(error));
+        return NULL;
+    }
+    if (dwDesiredAccess != GENERIC_READ) xx_io_extract_opened();
 
     if (append) {
         LARGE_INTEGER liZero;
@@ -307,6 +373,7 @@ ssize_t xx_io_platform_file_write(void *handle, const void *buf, size_t n)
     DWORD bytes_written = 0;
 
     if (!WriteFile((HANDLE)handle, buf, bytes_to_write, &bytes_written, NULL)) {
+        xx_io_extract_fail(xx_win_errno(GetLastError()));
         return -1;
     }
 
@@ -363,23 +430,17 @@ int64_t xx_io_platform_file_tell(void *handle)
 
 int xx_io_platform_file_close(void *handle)
 {
-    BOOL flushed = TRUE;
-    DWORD flush_error = ERROR_SUCCESS;
+    DWORD close_error = ERROR_SUCCESS;
     BOOL closed;
     if (!handle || handle == INVALID_HANDLE_VALUE) {
         return -1;
     }
 
-    /* FlushFileBuffers is meaningful for disk files.  Device handles such as
-     * NUL/CONOUT$ reject it, while named-pipe flushing has blocking semantics
-     * that an ordinary file close must not acquire. */
-    if (GetFileType((HANDLE)handle) == FILE_TYPE_DISK) {
-        flushed = FlushFileBuffers((HANDLE)handle);
-        if (!flushed) flush_error = GetLastError();
-    }
     closed = CloseHandle((HANDLE)handle);
-    /* Read-only file handles cannot be flushed and report ACCESS_DENIED. */
-    return closed && (flushed || flush_error == ERROR_ACCESS_DENIED) ? 0 : -1;
+    if (!closed) close_error = GetLastError();
+    if (closed) return 0;
+    xx_io_extract_fail(xx_win_errno(close_error));
+    return -1;
 }
 
 int64_t xx_io_platform_file_size(void *handle)
@@ -436,13 +497,14 @@ bool xx_io_platform_file_remove_a(const char *path)
 bool xx_io_platform_file_replace_w(const wchar_t *source, const wchar_t *destination, bool overwrite)
 {
     if (!xx_io_policy_mutation_allowed()) return false;
-    DWORD flags = MOVEFILE_WRITE_THROUGH;
+    DWORD flags = 0;
     wchar_t source_stack[MAX_PATH], destination_stack[MAX_PATH];
     wchar_t *source_api = xx_win_api_path(source, source_stack, MAX_PATH, false);
     wchar_t *destination_api = xx_win_api_path(destination, destination_stack, MAX_PATH, false);
     bool result;
     if (overwrite) flags |= MOVEFILE_REPLACE_EXISTING;
     result = source_api && destination_api && MoveFileExW(source_api, destination_api, flags) != 0;
+    if (!result && source_api && destination_api) xx_io_extract_fail(xx_win_errno(GetLastError()));
     xx_win_free_path(source_api, source_stack);
     xx_win_free_path(destination_api, destination_stack);
     return result;
@@ -519,14 +581,63 @@ static bool xx_win_check_root(const wchar_t *path)
     return result;
 }
 
-static bool xx_win_ensure_directory(const wchar_t *path)
+/* One folder of a path: made, or there already. follow: the folder may be a
+ * reparse point that leads to one (a part of the extraction root). */
+static bool xx_win_ensure_directory(const wchar_t *path, bool follow, bool *made)
 {
-    DWORD attributes = GetFileAttributesW(path);
+    DWORD attributes = GetFileAttributesW(path), error = ERROR_SUCCESS;
+    *made = false;
     if (attributes == INVALID_FILE_ATTRIBUTES) {
-        if (!CreateDirectoryW(path, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) return false;
+        if (CreateDirectoryW(path, NULL)) {
+            *made = true;
+        } else if ((error = GetLastError()) != ERROR_ALREADY_EXISTS) {
+            xx_io_extract_fail(xx_win_errno(error));
+            return false;
+        }
         attributes = GetFileAttributesW(path);
+        if (attributes == INVALID_FILE_ATTRIBUTES) error = GetLastError();
     }
-    return xx_win_directory_attributes_ok(attributes);
+    if (follow ? attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0U : xx_win_directory_attributes_ok(attributes)) return true;
+    xx_io_extract_fail(attributes == INVALID_FILE_ATTRIBUTES ? xx_win_errno(error) : (attributes & FILE_ATTRIBUTE_REPARSE_POINT) ? ELOOP : ENOTDIR);
+    return false;
+}
+
+/* Where an API path's own text starts without its extended prefix:
+ * \\?\C:\x is C:\x, and \\?\UNC\srv\x is \\srv\x, both from "C" or "srv". */
+static size_t xx_win_plain_start(const wchar_t *path)
+{
+    if (path[0] == L'\\' && path[1] == L'\\' && path[2] == L'?' && path[3] == L'\\') {
+        if ((path[4] == L'U' || path[4] == L'u') && (path[5] == L'N' || path[5] == L'n') && (path[6] == L'C' || path[6] == L'c') && path[7] == L'\\') return 8U;
+        return 4U;
+    }
+    return path[0] == L'\\' && path[1] == L'\\' ? 2U : 0U;
+}
+
+/* How much of temp, an absolute API path, is the extraction root (see
+ * xx_io_extract_begin), ending at a separator or at its end; 0 outside a
+ * scope or below another folder. */
+static size_t xx_win_root_part(const wchar_t *temp)
+{
+    const char *root = xx_io_extract_root();
+    wchar_t text_stack[MAX_PATH], api_stack[MAX_PATH];
+    wchar_t *text, *api = NULL;
+    size_t result = 0U, length = 0U, a, b, i = 0U;
+    if (!root) return 0U;
+    text = xx_win_utf8_path(root, text_stack, MAX_PATH);
+    if (text) api = xx_win_api_path(text, api_stack, MAX_PATH, true);
+    if (api) {
+        while (api[length]) ++length;
+        while (length > 1U && (api[length - 1U] == L'\\' || api[length - 1U] == L'/')) --length;
+        a = xx_win_plain_start(temp);
+        b = xx_win_plain_start(api);
+        while (b + i < length && temp[a + i] &&
+               (temp[a + i] == api[b + i] || ((temp[a + i] == L'\\' || temp[a + i] == L'/') && (api[b + i] == L'\\' || api[b + i] == L'/'))))
+            ++i;
+        if (b < length && b + i == length && (!temp[a + i] || temp[a + i] == L'\\' || temp[a + i] == L'/')) result = a + i;
+    }
+    xx_win_free_path(api, api_stack);
+    xx_win_free_path(text, text_stack);
+    return result;
 }
 
 bool xx_io_platform_create_dirs_w(const wchar_t *path, bool is_dir)
@@ -534,29 +645,64 @@ bool xx_io_platform_create_dirs_w(const wchar_t *path, bool is_dir)
     if (!xx_io_policy_mutation_allowed()) return false;
     wchar_t stack[MAX_PATH];
     wchar_t *temp = xx_win_api_path(path, stack, MAX_PATH, true);
-    size_t root, length = 0U, i;
-    bool result = false;
+    size_t root, length = 0U, i, start, link_part, end;
+    bool result = false, made;
+    /* made_at[i]: this call made the folder that ends at i. */
+    unsigned char *made_at = NULL;
     wchar_t saved;
     if (!temp) return false;
     while (temp[length]) ++length;
     root = xx_win_root_length(temp);
     if (!root || root > length) goto cleanup;
+    /* A component longer than the 255 units NTFS and FAT take fails here,
+     * before a folder is made that would be left behind empty. */
+    for (start = i = root; i <= length; ++i) {
+        if (i == length || temp[i] == L'/' || temp[i] == L'\\') {
+            if (i - start > 255U) {
+                xx_io_extract_fail(ENAMETOOLONG);
+                goto cleanup;
+            }
+            start = i + 1U;
+        }
+    }
+    made_at = (unsigned char *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, length + 1U);
+    if (!made_at) goto cleanup;
+    link_part = xx_win_root_part(temp);
     saved = temp[root];
     temp[root] = L'\0';
     result = xx_win_check_root(temp);
     temp[root] = saved;
     if (!result) goto cleanup;
+    end = length;
     for (i = root; i < length; ++i) {
         if (temp[i] == L'/' || temp[i] == L'\\') {
             saved = temp[i];
             temp[i] = L'\0';
-            result = xx_win_ensure_directory(temp);
+            result = xx_win_ensure_directory(temp, i <= link_part, &made);
+            made_at[i] = made;
             temp[i] = saved;
-            if (!result) goto cleanup;
+            if (!result) {
+                end = i;
+                break;
+            }
         }
     }
-    if (is_dir && length > root && temp[length - 1U] != L'\\') result = xx_win_ensure_directory(temp);
+    if (result && is_dir && length > root && temp[length - 1U] != L'\\') {
+        result = xx_win_ensure_directory(temp, length <= link_part, &made);
+        made_at[length] = made;
+    }
+    if (!result) {
+        /* The folders made for a path that then failed, deepest first. */
+        for (i = end + 1U; i-- > root;) {
+            if (!made_at[i]) continue;
+            saved = temp[i];
+            temp[i] = L'\0';
+            (void)RemoveDirectoryW(temp);
+            temp[i] = saved;
+        }
+    }
 cleanup:
+    if (made_at) HeapFree(GetProcessHeap(), 0, made_at);
     xx_win_free_path(temp, stack);
     return result;
 }

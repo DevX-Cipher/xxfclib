@@ -214,10 +214,6 @@ static inline int64_t xx_exec_find_string(xx_executable_input *input, int64_t of
         return result;
     }
 }
-static inline uint32_t xx_exec_string_crc32c(const char *string)
-{
-    return xx_crc32c_calc(UINT32_MAX, string, string ? xx_rt_strlen(string) : 0);
-}
 static inline bool xx_exec_map_part(xx_memory_map *map, int64_t offset, int64_t size, uint64_t address, uint64_t virtual_size, xx_file_part_t part, const char *name)
 {
     if (!virtual_size) address = XX_INVALID_ADDRESS;

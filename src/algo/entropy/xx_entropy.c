@@ -24,6 +24,7 @@
 #include "xx_entropy.h"
 #include "platforms/xx_entropy_platform.h"
 #include "xxfclib/global/xx_global.h"
+#include "xxfclib/io/xx_io.h"
 #include "xxfclib/rt/xx_rt.h"
 
 #include <stddef.h>
@@ -483,24 +484,85 @@ bool xx_huf_decompress(const uint8_t *source, size_t source_size, uint8_t *desti
 
 /* -------------------------------------------------------- Shannon Entropy */
 
+#define XX_ENTROPY_STREAM_HISTOGRAM_MIN_SIZE ((size_t)4096U)
+
+static void xx_entropy_histogram_scalar32(const uint8_t *data, size_t size, uint32_t total_counts[256])
+{
+    uint32_t counts[4][256] = {{0}};
+    size_t i = 0U;
+    size_t limit = size & ~((size_t)3U);
+
+    for (; i < limit; i += 4U) {
+        counts[0][data[i]]++;
+        counts[1][data[i + 1U]]++;
+        counts[2][data[i + 2U]]++;
+        counts[3][data[i + 3U]]++;
+    }
+    for (; i < size; ++i) counts[0][data[i]]++;
+    for (i = 0U; i < 256U; ++i) {
+        total_counts[i] = counts[0][i] + counts[1][i] + counts[2][i] + counts[3][i];
+    }
+}
+
+/* Platform histograms use 32-bit bins. Process at most UINT32_MAX bytes per
+ * partial histogram, then widen into the device-wide totals. This keeps the
+ * streaming path accelerated without limiting the supported int64_t range. */
+static void xx_entropy_histogram_update(uint64_t total_counts[256], const uint8_t *data, size_t size)
+{
+    while (size != 0U) {
+        uint32_t partial_counts[256];
+        size_t part = size;
+        size_t i;
+        if (part > (size_t)UINT32_MAX) part = (size_t)UINT32_MAX;
+
+#ifdef XX_ENTROPY_NEON
+        if (xx_is_neon_enabled() && part >= 32U) {
+            xx_entropy_histogram_neon(data, part, partial_counts);
+        } else
+#endif
+        if (xx_is_avx2_enabled() && part >= 64U) {
+            xx_entropy_histogram_avx2(data, part, partial_counts);
+        } else if (xx_is_sse2_enabled() && part >= 32U) {
+            xx_entropy_histogram_sse2(data, part, partial_counts);
+        } else {
+            xx_entropy_histogram_scalar32(data, part, partial_counts);
+        }
+
+        for (i = 0U; i < 256U; ++i) total_counts[i] += (uint64_t)partial_counts[i];
+        data += part;
+        size -= part;
+    }
+}
+
 double xx_entropy_calculate(const void *data, size_t size)
 {
     if (!data || size == 0) {
         return 0.0;
     }
 
-    if (xx_is_avx2_enabled() && size >= 64) {
+#ifdef XX_ENTROPY_NEON
+    if (xx_is_neon_enabled() && size >= 32U && size <= UINT32_MAX) {
+        return xx_entropy_calculate_neon(data, size);
+    }
+#endif
+
+    /* SIMD backends reduce multiple 32-bit partial histograms into 32-bit
+     * totals. Keep their aggregate representable; the scalar path combines
+     * its partial histograms in 64 bits for larger buffers. */
+    if (xx_is_avx2_enabled() && size >= 64 && size <= UINT32_MAX) {
         return xx_entropy_calculate_avx2(data, size);
     }
-    if (xx_is_sse2_enabled() && size >= 32) {
+    if (xx_is_sse2_enabled() && size >= 32 && size <= UINT32_MAX) {
         return xx_entropy_calculate_sse2(data, size);
     }
 
     const uint8_t *p = (const uint8_t *)data;
-    uint32_t c0[256] = {0};
-    uint32_t c1[256] = {0};
-    uint32_t c2[256] = {0};
-    uint32_t c3[256] = {0};
+    /* The scalar fallback also serves buffers larger than UINT32_MAX. Keep
+     * each striped histogram wide enough for those ranges. */
+    uint64_t c0[256] = {0};
+    uint64_t c1[256] = {0};
+    uint64_t c2[256] = {0};
+    uint64_t c3[256] = {0};
 
     size_t i = 0;
     size_t limit = size & ~((size_t)3);
@@ -516,7 +578,7 @@ double xx_entropy_calculate(const void *data, size_t size)
 
     double sum = 0.0;
     for (int k = 0; k < 256; k++) {
-        uint64_t total = (uint64_t)c0[k] + c1[k] + c2[k] + c3[k];
+        uint64_t total = c0[k] + c1[k] + c2[k] + c3[k];
         if (total > 0) {
             double c = (double)total;
             sum += c * xx_rt_log(c);
@@ -534,3 +596,59 @@ double xx_entropy(const void *data, size_t size)
 {
     return xx_entropy_calculate(data, size);
 }
+
+double xx_entropy_calculate_device(xx_io_device *dev, int64_t offset, int64_t size)
+{
+    xx_io_device *temporary = NULL;
+    const unsigned char *whole;
+    uint64_t counts[256] = {0};
+    int64_t done = 0;
+    size_t capacity;
+    double result = 0.0;
+    double sum = 0.0;
+    int k;
+
+    if (!xx_io_range_clamp(dev, offset, &size) || size <= 0) return 0.0;
+    capacity = xx_io_buffer_capacity(dev);
+    if (!capacity) {
+        capacity = xx_get_file_buffer_size();
+        if (!capacity) capacity = XX_DEFAULT_FILE_BUFFER_SIZE;
+        if (capacity > (SIZE_MAX >> 1)) capacity = SIZE_MAX >> 1;
+        temporary = xx_io_buffer_open(dev, capacity, 0, false);
+        if (!temporary) return 0.0;
+        dev = temporary;
+    }
+    whole = xx_io_buffer_whole(dev, (uint64_t)size);
+    /* SIMD histograms use 32-bit totals. Larger ranges need the 64-bit
+     * histogram below even when the file is already resident. */
+    if (whole && (uint64_t)size <= UINT32_MAX && (uint64_t)size <= SIZE_MAX) {
+        result = xx_entropy_calculate(whole + offset, (size_t)size);
+        goto finish;
+    }
+    while (done < size) {
+        size_t count = (uint64_t)(size - done) < capacity ? (size_t)(size - done) : capacity;
+        const unsigned char *view = whole ? whole + (size_t)(offset + done) : xx_io_buffer_view(dev, offset + done, &count);
+        if (!view || !count) goto finish;
+        if (count >= XX_ENTROPY_STREAM_HISTOGRAM_MIN_SIZE) {
+            xx_entropy_histogram_update(counts, view, count);
+        } else {
+            size_t i;
+            /* Building and reducing striped banks costs more than it saves for
+             * deliberately tiny I/O windows. Accumulate those directly. */
+            for (i = 0U; i < count; ++i) ++counts[view[i]];
+        }
+        done += (int64_t)count;
+    }
+    for (k = 0; k < 256; ++k) {
+        if (counts[k]) {
+            double count = (double)counts[k];
+            sum += count * xx_rt_log(count);
+        }
+    }
+    result = (xx_rt_log((double)size) - sum / (double)size) * 1.44269504088896340736;
+finish:
+    if (temporary) xx_io_close(temporary);
+    return result;
+}
+
+#undef XX_ENTROPY_STREAM_HISTOGRAM_MIN_SIZE

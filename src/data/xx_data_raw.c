@@ -29,75 +29,22 @@
 #include "xxfclib/strings/xx_string.h"
 #include "xxfclib/global/xx_global.h"
 
+bool xx_data_to_hex(const void *data, size_t data_size, char *out, size_t out_size)
+{
+    static const char digits[] = "0123456789abcdef";
+    const uint8_t *bytes = (const uint8_t *)data;
+    size_t i;
+
+    if (!data || !out || data_size > (SIZE_MAX - 1U) / 2U || out_size < data_size * 2U + 1U) return false;
+    for (i = 0; i < data_size; ++i) {
+        out[i * 2U] = digits[bytes[i] >> 4U];
+        out[i * 2U + 1U] = digits[bytes[i] & 0x0FU];
+    }
+    out[data_size * 2U] = '\0';
+    return true;
+}
+
 #include "platforms/xx_data_platform.h"
-#if !defined(XXFC_FORMATS_ONLY)
-#include "xx_data_search_internal.h"
-
-bool xx_data_can_fuse_literal_prefix(const uint8_t *pat, size_t pattern_size)
-{
-    return pat && pattern_size >= 2 && xx_is_avx2_enabled() && xx_data_can_fuse_literal_prefix_avx2(pat, pattern_size);
-}
-
-size_t xx_data_collect_prefixes_buffer(const uint8_t *data, size_t size, size_t start, const uint8_t prefix[2], size_t *positions, size_t capacity, size_t *next)
-{
-    if (next) *next = size;
-    if (!data || !prefix || !positions || !next || !capacity || size < 2 || start > size - 2) return 0;
-    if (xx_is_avx2_enabled()) return xx_data_collect_prefixes_avx2(data, size, start, prefix, positions, capacity, next);
-    if (xx_is_sse2_enabled()) return xx_data_collect_prefixes_sse2(data, size, start, prefix, positions, capacity, next);
-
-    while (start < size - 1) {
-        size_t remaining = size - 1 - start;
-        size_t width = remaining < 128 ? remaining : 128;
-        size_t count = 0;
-        for (size_t i = 0; i < width; ++i) {
-            size_t offset = start + i;
-            if (data[offset] == prefix[0] && data[offset + 1] == prefix[1]) {
-                positions[count++] = offset;
-                if (count == capacity) {
-                    *next = offset + 1;
-                    return count;
-                }
-            }
-        }
-        start += width;
-        if (count) {
-            *next = start;
-            return count;
-        }
-    }
-    *next = size - 1;
-    return 0;
-}
-
-bool xx_data_collect_literal_dual_buffer(const uint8_t *data, size_t size, size_t start, const uint8_t prefix[2], XXDataLiteralDualBatch *batch)
-{
-    if (!batch) return false;
-    batch->adjacent_count = batch->skip_count = 0;
-    batch->next = size;
-    if (!data || !prefix || size < 2 || start > size - 2) return false;
-    if (xx_is_avx2_enabled()) return xx_data_collect_literal_dual_avx2(data, size, start, prefix, batch);
-    if (xx_is_sse2_enabled()) return xx_data_collect_literal_dual_sse2(data, size, start, prefix, batch);
-
-    while (start < size - 1) {
-        size_t remaining = size - 1 - start;
-        size_t width = remaining < 128 ? remaining : 128;
-        for (size_t i = 0; i < width; ++i) {
-            size_t offset = start + i;
-            if (data[offset] == prefix[0]) {
-                if (data[offset + 1] == prefix[1]) batch->adjacent[batch->adjacent_count++] = offset;
-                if (size - offset >= 3 && data[offset + 2] == prefix[1]) batch->skip[batch->skip_count++] = offset;
-            }
-        }
-        start += width;
-        if (batch->adjacent_count || batch->skip_count) {
-            batch->next = start;
-            return true;
-        }
-    }
-    batch->next = size - 1;
-    return false;
-}
-#endif
 
 /* ========================================================================= */
 /* --- Reading from Raw Memory Buffer                                    --- */
@@ -646,6 +593,11 @@ int64_t xx_data_find_masked(const uint8_t *data, size_t size, const uint8_t *val
     if (xx_is_sse2_enabled() && size - pattern_size >= 15) {
         return xx_data_find_masked_sse2(data, size, value, mask, pattern_size, idx1, idx2);
     }
+#ifdef XX_DATA_ARM_NEON
+    if (xx_is_neon_enabled() && size - pattern_size >= 15) {
+        return xx_data_find_masked_neon(data, size, value, mask, pattern_size, idx1, idx2);
+    }
+#endif
     return xx_data_find_masked_scalar(data, size, value, mask, pattern_size, idx1, idx2);
 }
 
@@ -684,6 +636,13 @@ int64_t xx_data_find_bytes_buffer_optimize(const void *data, size_t data_size, s
             xx_pd_leave_level(pd, level);
             return found_offset;
         }
+#ifdef XX_DATA_ARM_NEON
+        if (xx_is_neon_enabled() && data_size - start_offset >= 16) {
+            found_offset = xx_data_find_bytes_neon(pdata, data_size, start_offset, pat, 1, pd);
+            xx_pd_leave_level(pd, level);
+            return found_offset;
+        }
+#endif
 
         /* Align to 8-byte boundary */
         while (i <= limit && (((uintptr_t)(pdata + i)) & 7) != 0) {
@@ -744,19 +703,28 @@ int64_t xx_data_find_bytes_buffer_optimize(const void *data, size_t data_size, s
         return found_offset;
     }
 
-    /* AVX2 SIMD First-and-Last Byte Filter (if globally enabled and supported) */
+    /* AVX2 SIMD rare-byte filter (if globally enabled and supported) */
     if (xx_is_avx2_enabled() && (limit >= start_offset + 32)) {
         found_offset = xx_data_find_bytes_avx2(pdata, data_size, start_offset, pat, pattern_size, pd);
         xx_pd_leave_level(pd, level);
         return found_offset;
     }
 
-    /* SSE2 SIMD First-and-Last Byte Filter (if globally enabled and supported) */
+    /* SSE2 SIMD rare-byte filter (if globally enabled and supported) */
     if (xx_is_sse2_enabled() && (limit >= start_offset + 16)) {
         found_offset = xx_data_find_bytes_sse2(pdata, data_size, start_offset, pat, pattern_size, pd);
         xx_pd_leave_level(pd, level);
         return found_offset;
     }
+
+#ifdef XX_DATA_ARM_NEON
+    /* Sixteen possible starts are enough to amortize one NEON rare-byte filter. */
+    if (xx_is_neon_enabled() && limit - start_offset >= 15) {
+        found_offset = xx_data_find_bytes_neon(pdata, data_size, start_offset, pat, pattern_size, pd);
+        xx_pd_leave_level(pd, level);
+        return found_offset;
+    }
+#endif
 
     /* Scalar Sunday Quick-Search algorithm for pattern_size >= 2 (fallback when SIMD is disabled) */
     size_t shift[256];

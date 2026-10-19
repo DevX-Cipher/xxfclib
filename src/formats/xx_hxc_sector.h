@@ -5,7 +5,7 @@
  */
 #ifndef XX_HXC_SECTOR_HELPERS_H
 #define XX_HXC_SECTOR_HELPERS_H
-#include "xxfclib/formats/hxc_sector/xx_hxc_sector.h"
+#include "xxfclib/formats/xx_hxc_sector.h"
 #include "xx_payload_members.h"
 #define HC_MAX_BYTES (16U * 1024U * 1024U)
 #define HC_MAX_MEMBERS 4096U

@@ -6,13 +6,13 @@
 #ifndef XX_APPLE_VOLUMES_PRIVATE_H
 #define XX_APPLE_VOLUMES_PRIVATE_H
 #include "xx_apple_family_private.h"
-#include "xxfclib/formats/prodos/xx_prodos.h"
-#include "xxfclib/formats/apple_pascal/xx_apple_pascal.h"
-#include "xxfclib/formats/apple_dos33/xx_apple_dos33.h"
-#include "xxfclib/formats/apple_dos33_32/xx_apple_dos33_32.h"
-#include "xxfclib/formats/apple_dos32/xx_apple_dos32.h"
-#include "xxfclib/formats/hfs/xx_hfs.h"
-#include "xxfclib/formats/cpm/xx_cpm_presets.h"
+#include "xxfclib/formats/filesystem/prodos/xx_prodos.h"
+#include "xxfclib/formats/filesystem/apple_pascal/xx_apple_pascal.h"
+#include "xxfclib/formats/filesystem/apple_dos33/xx_apple_dos33.h"
+#include "xxfclib/formats/filesystem/apple_dos33_32/xx_apple_dos33_32.h"
+#include "xxfclib/formats/filesystem/apple_dos32/xx_apple_dos32.h"
+#include "xxfclib/formats/filesystem/hfs/xx_hfs.h"
+#include "xxfclib/formats/filesystem/cpm/xx_cpm_presets.h"
 #include "xxfclib/data/xx_data.h"
 typedef bool (*av_extract_fn)(Abstractformat *, xx_archive_record_state *, xx_io_device *, xx_pd_struct *);
 typedef void (*av_free_fn)(void *);

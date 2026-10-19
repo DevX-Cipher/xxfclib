@@ -38,21 +38,105 @@
 #include "../xx_io_policy.h"
 
 #include "xxfclib/rt/xx_rt.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+/* A file opened for writing with truncation inside an extraction scope: an
+ * entry already at path that is not a plain file of its own (a link, a file
+ * with other hard links, a FIFO, ...) is replaced by a new file, never
+ * written through. So is a plain file that this account may not write (one
+ * made read-only), as the rename of a staged file replaces it. O_NOFOLLOW,
+ * where there is one, also refuses a link put there after the look. */
+static FILE *xx_io_posix_open_replacing(const char *path, const char *mode)
+{
+    struct stat info;
+    int update = strchr(mode, '+') != NULL;
+    int flags = O_CREAT | O_TRUNC | (update ? O_RDWR : O_WRONLY);
+    int descriptor;
+    FILE *file;
+    if (lstat(path, &info) == 0 && !S_ISDIR(info.st_mode) && (!S_ISREG(info.st_mode) || info.st_nlink > 1)) {
+        if (unlink(path) != 0) {
+            xx_io_extract_fail(errno);
+            return NULL;
+        }
+        flags |= O_EXCL;
+    }
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    descriptor = open(path, flags, 0666);
+    if (descriptor < 0 && (errno == EACCES || errno == EPERM) && !(flags & O_EXCL) && lstat(path, &info) == 0 && S_ISREG(info.st_mode) && unlink(path) == 0) {
+        descriptor = open(path, flags | O_EXCL, 0666);
+    }
+    if (descriptor < 0) {
+        xx_io_extract_fail(errno);
+        return NULL;
+    }
+    file = fdopen(descriptor, update ? "w+b" : "wb");
+    if (!file) {
+        xx_io_extract_fail(errno);
+        close(descriptor);
+    } else {
+        xx_io_extract_opened();
+    }
+    return file;
+}
 
 void *xx_io_platform_file_open(const char *path, const char *mode)
 {
+    FILE *file;
     if (!xx_io_policy_file_open_allowed(mode)) return NULL;
     if (!path || !mode) {
         return NULL;
     }
-    return (void *)fopen(path, mode);
+    if (mode[0] == 'w' && !strchr(mode, 'x') && xx_io_extract_root()) return (void *)xx_io_posix_open_replacing(path, mode);
+    file = fopen(path, mode);
+    if (mode[0] != 'r' || strchr(mode, '+')) {
+        if (file) xx_io_extract_opened();
+        else xx_io_extract_fail(errno);
+    }
+    return (void *)file;
 }
 
+/* An anonymous temporary file in the folder TMPDIR names, as tmpfile()
+ * itself picks on most systems (glibc's always uses /tmp), else tmpfile()'s.
+ */
 void *xx_io_platform_temp_open(void)
 {
+    static const char name[] = "/xxfcXXXXXX";
+    const char *folder;
     if (!xx_io_policy_mutation_allowed()) return NULL;
+    folder = getenv("TMPDIR");
+    if (folder && folder[0]) {
+        size_t length = strlen(folder);
+        char *path = length <= SIZE_MAX - sizeof(name) ? (char *)xx_rt_malloc(length + sizeof(name)) : NULL;
+        if (path) {
+            int descriptor;
+            memcpy(path, folder, length);
+            memcpy(path + length, name, sizeof(name));
+            descriptor = mkstemp(path);
+            if (descriptor >= 0) {
+                FILE *file;
+                (void)unlink(path);
+                file = fdopen(descriptor, "w+b");
+                if (file) {
+                    xx_rt_free(path);
+                    return (void *)file;
+                }
+                (void)close(descriptor);
+            }
+            xx_rt_free(path);
+        }
+    }
     return (void *)tmpfile();
 }
 
@@ -94,6 +178,7 @@ ssize_t xx_io_platform_file_write(void *handle, const void *buf, size_t n)
 
     FILE *fp = (FILE *)handle;
     size_t bytes_written = fwrite(buf, 1, n, fp);
+    if (bytes_written < n && ferror(fp)) xx_io_extract_fail(errno);
     if (bytes_written == 0 && ferror(fp)) {
         return -1;
     }
@@ -135,7 +220,9 @@ int xx_io_platform_file_close(void *handle)
         return -1;
     }
     FILE *fp = (FILE *)handle;
-    return fclose(fp);
+    int result = fclose(fp);
+    if (result != 0) xx_io_extract_fail(errno);
+    return result;
 }
 
 int64_t xx_io_platform_file_size(void *handle)
@@ -204,8 +291,15 @@ bool xx_io_platform_file_replace_a(const char *source, const char *destination, 
 {
     if (!xx_io_policy_mutation_allowed()) return false;
     if (!source || !source[0] || !destination || !destination[0]) return false;
-    if (overwrite) return rename(source, destination) == 0;
-    if (link(source, destination) != 0) return false;
+    if (overwrite) {
+        if (rename(source, destination) == 0) return true;
+        xx_io_extract_fail(errno);
+        return false;
+    }
+    if (link(source, destination) != 0) {
+        xx_io_extract_fail(errno);
+        return false;
+    }
     (void)unlink(source);
     return true;
 }
@@ -217,39 +311,125 @@ bool xx_io_platform_file_replace_w(const wchar_t *source, const wchar_t *destina
            xx_io_platform_file_replace_a(source_path, destination_path, overwrite);
 }
 
+/* Whether the system can take a path of length bytes: shorter than PATH_MAX,
+ * the limit of a path given to mkdir() or open(). How long one name may be is
+ * the file system's to say: NAME_MAX counts 255 bytes, but HFS+, APFS, exFAT,
+ * NTFS and CIFS take 255 characters. So mkdir() decides for a folder, and
+ * lstat() for the file's own name. */
+static bool xx_io_posix_path_fits(size_t length)
+{
+#ifdef PATH_MAX
+    return length < (size_t)PATH_MAX;
+#else
+    (void)length;
+    return true;
+#endif
+}
+
+/* How much of path is the extraction root (see xx_io_extract_begin), ending
+ * at a separator or at its end; 0 outside a scope or below another folder. */
+static size_t xx_io_posix_root_length(const char *path)
+{
+    const char *root = xx_io_extract_root();
+    size_t length;
+    if (!root) return 0U;
+    length = strlen(root);
+    while (length > 1U && (root[length - 1U] == '/' || root[length - 1U] == '\\')) --length;
+    if (!length || strncmp(path, root, length) != 0) return 0U;
+    return path[length] == '\0' || path[length] == '/' || path[length] == '\\' ? length : 0U;
+}
+
+/* One folder of a path: made, or there already. follow: the folder may be a
+ * link to one (a part of the extraction root). */
+static bool xx_io_posix_make_dir(const char *path, bool follow, bool *made)
+{
+    struct stat info;
+    *made = mkdir(path, 0755) == 0;
+    if (*made) return true;
+    if (errno != EEXIST) {
+        xx_io_extract_fail(errno);
+        return false;
+    }
+    if ((follow ? stat(path, &info) : lstat(path, &info)) != 0) {
+        xx_io_extract_fail(errno);
+        return false;
+    }
+    if (S_ISDIR(info.st_mode)) return true;
+    xx_io_extract_fail(S_ISLNK(info.st_mode) ? ELOOP : ENOTDIR);
+    return false;
+}
+
 bool xx_io_platform_create_dirs_a(const char *path, bool is_dir)
 {
     if (!xx_io_policy_mutation_allowed()) return false;
     if (!path || !path[0]) {
         return false;
     }
-    char temp[1024];
+    /* No buffer here limits the path; the limit is the operating system's
+     * path limit (PATH_MAX, 4096 bytes on Linux and 1024 on macOS), since
+     * every mkdir() below is given the whole prefix. A path beyond it fails
+     * here, before a folder is made that would be left behind empty. */
     size_t len = strlen(path);
-    if (len >= sizeof(temp)) {
+    size_t root = xx_io_posix_root_length(path);
+    char *temp;
+    /* made[i]: this call made the folder that ends at i. */
+    unsigned char *made;
+    bool result = true, created, made_any = false;
+    size_t end = len;
+    if (!xx_io_posix_path_fits(len)) {
+        xx_io_extract_fail(ENAMETOOLONG);
+        return false;
+    }
+    temp = (char *)xx_rt_malloc(len + 1U);
+    made = (unsigned char *)xx_rt_malloc(len + 1U);
+    if (!temp || !made) {
+        xx_rt_free(temp);
+        xx_rt_free(made);
         return false;
     }
     for (size_t i = 0; i < len; ++i) {
         temp[i] = path[i];
+        made[i] = 0U;
     }
     temp[len] = '\0';
+    made[len] = 0U;
 
-    for (size_t i = 0; i < len; ++i) {
+    for (size_t i = 0; i < len && result; ++i) {
         if (temp[i] == '/' || temp[i] == '\\') {
-            struct stat info;
             temp[i] = '\0';
             if (i > 0) {
-                if (mkdir(temp, 0755) != 0) {
-                    if (errno != EEXIST || lstat(temp, &info) != 0 || !S_ISDIR(info.st_mode) || S_ISLNK(info.st_mode)) return false;
-                }
+                result = xx_io_posix_make_dir(temp, i <= root, &created);
+                made[i] = created;
+                made_any = made_any || created;
+                if (!result) end = i;
             }
             temp[i] = '/';
         }
     }
-    if (is_dir) {
+    if (result && is_dir) {
+        result = xx_io_posix_make_dir(temp, len <= root, &created);
+        made[len] = created;
+    } else if (result && made_any) {
+        /* The file's own name, too long for the file system the new folders
+         * are on, fails here, so that they do not stay behind empty. */
         struct stat info;
-        if (mkdir(temp, 0755) != 0 && (errno != EEXIST || lstat(temp, &info) != 0 || !S_ISDIR(info.st_mode) || S_ISLNK(info.st_mode))) return false;
+        if (lstat(temp, &info) != 0 && errno == ENAMETOOLONG) {
+            xx_io_extract_fail(ENAMETOOLONG);
+            result = false;
+        }
     }
-    return true;
+    if (!result) {
+        /* The folders made for a path that then failed, deepest first. */
+        for (size_t i = end + 1U; i-- > 0U;) {
+            if (!made[i]) continue;
+            temp[i] = '\0';
+            (void)rmdir(temp);
+            temp[i] = '/';
+        }
+    }
+    xx_rt_free(made);
+    xx_rt_free(temp);
+    return result;
 }
 
 /* wchar_t is UCS-4 here, so each unit encodes to at most four UTF-8 bytes.

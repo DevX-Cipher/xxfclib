@@ -38,33 +38,6 @@ char *xx_rt_getenv(const char *pName)
     return sValue;
 }
 
-typedef struct xx_rt_plain_sort_context_s {
-    xx_rt_compare_fn fnCompare;
-} xx_rt_plain_sort_context;
-
-static int xx_rt_plain_sort_compare(const void *pLeft, const void *pRight, void *pContext)
-{
-    xx_rt_plain_sort_context *pSort = (xx_rt_plain_sort_context *)pContext;
-
-    return pSort->fnCompare(pLeft, pRight);
-}
-
-void xx_rt_qsort(void *pBase, size_t nCount, size_t nSize, xx_rt_compare_fn fnCompare)
-{
-    if ((pBase == NULL) || (fnCompare == NULL) || (nCount < 2) || (nSize == 0) || (nCount > ((size_t)-1) / nSize)) {
-        return;
-    }
-
-    {
-        xx_rt_plain_sort_context context;
-
-        context.fnCompare = fnCompare;
-        /* The heapsort itself is static in xx_rt.c, so this goes through
-         * the public wrapper rather than reaching across the file. */
-        xx_rt_qsort_context(pBase, nCount, nSize, xx_rt_plain_sort_compare, &context);
-    }
-}
-
 int xx_rt_rand(void)
 {
     /* xorshift32; Math.random() is not used by the signature database, so a

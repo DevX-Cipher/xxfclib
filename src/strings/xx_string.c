@@ -25,6 +25,7 @@
  */
 
 #include "xxfclib/strings/xx_string.h"
+#include "xxfclib/data/xx_data.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/rt/xx_rt.h"
 #include "platforms/xx_string_platform.h"
@@ -372,6 +373,47 @@ bool xx_str_iequals(const char *a, const char *b)
     return xx_str_icmp(a, b) == 0;
 }
 
+bool xx_str_bytes_count_to_string(uint64_t value, uint64_t base, char *buffer, size_t capacity)
+{
+    uint64_t divisor;
+    const char *unit;
+    char number[64];
+    int length;
+
+    if (!buffer || capacity == 0U) {
+        return false;
+    }
+    buffer[0] = '\0';
+
+    base = base == 1024U ? 1024U : 1000U;
+    if (value < base) {
+        length = xx_rt_snprintf(buffer, capacity, "%llu Bytes", (unsigned long long)value);
+        return length >= 0 && (size_t)length < capacity;
+    }
+
+    divisor = base;
+    unit = base == 1024U ? "KiB" : "kB";
+    if (value >= base * base) {
+        divisor *= base;
+        unit = base == 1024U ? "MiB" : "MB";
+    }
+    if (value >= base * base * base) {
+        divisor *= base;
+        unit = base == 1024U ? "GiB" : "GB";
+    }
+    if (value >= base * base * base * base) {
+        divisor *= base;
+        unit = base == 1024U ? "TiB" : "TB";
+    }
+
+    length = xx_rt_dtoa_fixed((double)value / (double)divisor, 2, number, sizeof(number));
+    if (length < 0 || (size_t)length >= sizeof(number)) {
+        return false;
+    }
+    length = xx_rt_snprintf(buffer, capacity, "%s %s", number, unit);
+    return length >= 0 && (size_t)length < capacity;
+}
+
 /* --- Raw Unicode (Wide) String Implementation --- */
 
 size_t xx_str_wlen(const wchar_t *w)
@@ -662,6 +704,107 @@ void xx_str_free_unicode(wchar_t *wstr)
 void xx_str_free_ansi(char *str)
 {
     xx_mem_free(str);
+}
+
+/* --- Strings Read from I/O Devices --- */
+
+char *xx_str_read_ansi(xx_io_device *dev, int64_t offset, int64_t max_size)
+{
+    xx_str_a_t result;
+    int64_t i;
+
+    if (!xx_str_a_init_copy(&result, "")) return NULL;
+    if (max_size <= 0) max_size = 0x10000;
+    for (i = 0; i < max_size; ++i) {
+        uint8_t ch;
+
+        if (!xx_io_check(dev, offset, 1)) break;
+        ch = xx_io_get_u8(dev, offset);
+        if (ch == 0) break;
+        if (result.length >= SIZE_MAX - 1 || !xx_str_a_append_char(&result, (char)ch)) {
+            xx_str_a_free(&result);
+            return NULL;
+        }
+        /* A successful range check leaves room for this increment. */
+        ++offset;
+    }
+    return result.data;
+}
+
+char *xx_str_read_utf8(xx_io_device *dev, int64_t offset, int64_t max_size)
+{
+    return xx_str_read_ansi(dev, offset, max_size);
+}
+
+static bool xx_string_append_utf8(xx_str_a_t *result, uint16_t code)
+{
+    char bytes[4];
+
+    if (code < 0x80) {
+        bytes[0] = (char)code;
+        bytes[1] = '\0';
+    } else if (code < 0x800) {
+        bytes[0] = (char)(0xc0 | (code >> 6));
+        bytes[1] = (char)(0x80 | (code & 0x3f));
+        bytes[2] = '\0';
+    } else {
+        bytes[0] = (char)(0xe0 | (code >> 12));
+        bytes[1] = (char)(0x80 | ((code >> 6) & 0x3f));
+        bytes[2] = (char)(0x80 | (code & 0x3f));
+        bytes[3] = '\0';
+    }
+    return result->length <= SIZE_MAX - 4 && xx_str_a_append(result, bytes);
+}
+
+char *xx_str_read_unicode_n(xx_io_device *dev, int64_t offset, int64_t max_size, bool big_endian, int64_t *units)
+{
+    xx_str_a_t result;
+    int64_t i;
+
+    if (units) *units = 0;
+    if (!xx_str_a_init_copy(&result, "")) return NULL;
+    if (max_size <= 0) max_size = 0x10000;
+    for (i = 0; i < max_size; ++i) {
+        uint16_t ch;
+
+        if (!xx_io_check(dev, offset, 2)) break;
+        ch = xx_io_get_u16(dev, offset, big_endian);
+        if (ch == 0) break;
+        if (!xx_string_append_utf8(&result, ch)) {
+            xx_str_a_free(&result);
+            return NULL;
+        }
+        if (units) *units = i + 1;
+        offset += 2;
+    }
+    return result.data;
+}
+
+char *xx_str_read_unicode(xx_io_device *dev, int64_t offset, int64_t max_size, bool big_endian)
+{
+    return xx_str_read_unicode_n(dev, offset, max_size, big_endian, NULL);
+}
+
+char *xx_str_read_ucsd(xx_io_device *dev, int64_t offset)
+{
+    xx_str_a_t result;
+    unsigned int size, i;
+
+    if (!xx_str_a_init_copy(&result, "")) return NULL;
+    size = xx_io_get_u8(dev, offset);
+    for (i = 0; i < size; ++i) {
+        uint8_t ch = 0;
+
+        if (offset < INT64_MAX) {
+            ++offset;
+            ch = xx_io_get_u8(dev, offset);
+        }
+        if (!xx_str_a_append_char(&result, ch ? (char)ch : ' ')) {
+            xx_str_a_free(&result);
+            return NULL;
+        }
+    }
+    return result.data;
 }
 
 /* --- Dynamic String Struct Implementation (ANSI) --- */

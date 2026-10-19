@@ -57,27 +57,34 @@ fail:
     xx_mem_free(p);
     return false;
 }
-static XXFC_MAYBE_UNUSED bool security_hmac(memory_blob *b, xx_hash_type_t type, const uint8_t *key, size_t kn, const uint8_t *data, size_t n, uint8_t *out)
+static XXFC_MAYBE_UNUSED bool security_hmac(memory_blob *b, bool sha256, const uint8_t *key, size_t kn, const uint8_t *data, size_t n, uint8_t *out)
 {
     uint8_t pad[64], digest[32];
-    xx_hash_context h;
-    size_t dn = xx_hash_digest_size(type);
+    union {
+        xx_sha1_context sha1;
+        xx_sha256_context sha256;
+    } h;
+    size_t dn = sha256 ? XX_SHA256_DIGEST_SIZE : XX_SHA1_DIGEST_SIZE;
     if (kn > 64 || binary_stop(b->pd)) return false;
     for (unsigned i = 0; i < 64; ++i) pad[i] = (uint8_t)((i < kn ? key[i] : 0) ^ 0x36);
-    if (!xx_hash_init(&h, type)) return false;
-    xx_hash_update(&h, pad, 64);
+    if (!(sha256 ? xx_sha256_init(&h.sha256) : xx_sha1_init(&h.sha1))) return false;
+    if (sha256) xx_sha256_update(&h.sha256, pad, 64);
+    else xx_sha1_update(&h.sha1, pad, 64);
     for (size_t at = 0; at < n;) {
         size_t z = n - at > 65536 ? 65536 : n - at;
         if (binary_stop(b->pd)) return false;
-        xx_hash_update(&h, data + at, z);
+        if (sha256) xx_sha256_update(&h.sha256, data + at, z);
+        else xx_sha1_update(&h.sha1, data + at, z);
         at += z;
     }
-    if (!xx_hash_final(&h, digest, sizeof(digest))) return false;
+    if (!(sha256 ? xx_sha256_final(&h.sha256, digest, sizeof(digest)) : xx_sha1_final(&h.sha1, digest, sizeof(digest)))) return false;
     for (unsigned i = 0; i < 64; ++i) pad[i] ^= 0x36 ^ 0x5c;
-    if (!xx_hash_init(&h, type)) return false;
-    xx_hash_update(&h, pad, 64);
-    xx_hash_update(&h, digest, dn);
-    return xx_hash_final(&h, out, 32);
+    if (!(sha256 ? xx_sha256_init(&h.sha256) : xx_sha1_init(&h.sha1))) return false;
+    if (sha256) xx_sha256_update(&h.sha256, pad, 64);
+    else xx_sha1_update(&h.sha1, pad, 64);
+    if (sha256) xx_sha256_update(&h.sha256, digest, dn);
+    else xx_sha1_update(&h.sha1, digest, dn);
+    return sha256 ? xx_sha256_final(&h.sha256, out, 32) : xx_sha1_final(&h.sha1, out, 32);
 }
 static XXFC_MAYBE_UNUSED bool security_hex(memory_blob *b, uint64_t at, uint64_t n, uint8_t *out)
 {

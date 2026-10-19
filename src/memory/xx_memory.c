@@ -116,9 +116,35 @@ void *xx_mem_zero(void *ptr, size_t size)
     return ptr;
 }
 
+void *xx_mem_set(void *dst, int value, size_t size)
+{
+    if (!dst || size == 0) {
+        return dst;
+    }
+    uint8_t *d = (uint8_t *)dst;
+    uint8_t v = (uint8_t)value;
+    size_t at = 0;
+    if (size >= 8) {
+        uint64_t pattern = (uint64_t)v * UINT64_C(0x0101010101010101);
+        for (; size - at >= 8; at += 8) {
+            xx_mem_store64(d + at, pattern);
+        }
+    }
+    for (; at < size; ++at) {
+        d[at] = v;
+    }
+    return dst;
+}
+
 void xx_memory_copy_scalar(uint8_t *destination, const uint8_t *source, size_t size)
 {
-    for (size_t at = 0; at < size; ++at) destination[at] = source[at];
+    size_t at = 0;
+    for (; size - at >= 8; at += 8) {
+        xx_mem_copy64(destination + at, source + at);
+    }
+    for (; at < size; ++at) {
+        destination[at] = source[at];
+    }
 }
 
 void *xx_mem_copy(void *dst, const void *src, size_t size)

@@ -289,3 +289,14 @@ int xx_format_fast_detect_rules(const xx_file_type_t *types, size_t type_count, 
     if (xx_io_seek64(device, saved, SEEK_SET) != 0) return 0;
     return result == 1 ? 1 : unknown ? -1 : 0;
 }
+
+size_t xx_format_fast_signature_types(xx_io_device *dev, int64_t base_address, xx_file_type_t *types, size_t capacity)
+{
+    size_t index, count = 0U;
+    if (!dev || !types || base_address < 0) return 0U;
+    for (index = 0U; index < fast_type_count && count < capacity; ++index) {
+        xx_file_type_t type = fast_types[index].type;
+        if (xx_format_fast_detect_rules(&type, 1U, dev, base_address, false) == 1) types[count++] = type;
+    }
+    return count;
+}

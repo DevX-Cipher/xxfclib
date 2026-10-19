@@ -19,6 +19,10 @@
 typedef size_t (*xx_deflate_match_function)(const uint8_t *, const uint8_t *, size_t);
 size_t xx_deflate_match_sse2(const uint8_t *, const uint8_t *, size_t);
 size_t xx_deflate_match_avx2(const uint8_t *, const uint8_t *, size_t);
+#if (defined(_M_ARM64) && !defined(_M_ARM64EC)) || defined(__aarch64__)
+#define XX_DEFLATE_NEON 1
+size_t xx_deflate_match_neon(const uint8_t *, const uint8_t *, size_t);
+#endif
 
 /* No load crosses the supplied extent, including an allocation/page end.
  * memcpy gives unaligned word loads without violating C aliasing rules. */

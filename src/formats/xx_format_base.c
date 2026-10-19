@@ -42,6 +42,7 @@ void xx_format_init(Abstractformat *fmt, xx_io_device *dev, int64_t base_address
     fmt->overlay_size = 0;
     fmt->endian = XX_ENDIAN_UNKNOWN;
     fmt->file_type = XX_FILE_TYPE_UNKNOWN;
+    fmt->handle_type = XX_HANDLE_TYPE_UNKNOWN;
     fmt->os = XX_OS_UNKNOWN;
     fmt->format_type = XX_FORMAT_TYPE_UNKNOWN;
     fmt->arch = XX_ARCH_UNKNOWN;
@@ -1010,8 +1011,14 @@ void xx_data_struct_record_cleanup(xx_data_struct_record *rec)
     if (rec->type) {
         xx_str_wfree(rec->type);
     }
+    if (rec->raw_value) {
+        xx_str_wfree(rec->raw_value);
+    }
     if (rec->display_value) {
         xx_str_wfree(rec->display_value);
+    }
+    if (rec->comment) {
+        xx_str_wfree(rec->comment);
     }
     xx_var_cleanup(&rec->value);
     xx_mem_zero(rec, sizeof(xx_data_struct_record));
@@ -1066,6 +1073,78 @@ bool xx_data_struct_record_set_value(xx_data_struct_record *rec, const xx_var *v
     return xx_var_copy(&rec->value, value);
 }
 
+bool xx_data_struct_record_set_raw_value(xx_data_struct_record *rec, const wchar_t *raw_value)
+{
+    wchar_t *copy;
+    if (!rec) {
+        return false;
+    }
+    copy = raw_value ? xx_str_wdup(raw_value) : NULL;
+    if (raw_value && !copy) {
+        return false;
+    }
+    if (rec->raw_value) {
+        xx_str_wfree(rec->raw_value);
+    }
+    rec->raw_value = copy;
+    return true;
+}
+
+bool xx_data_struct_record_set_raw_uint(xx_data_struct_record *rec, uint64_t value, int64_t size)
+{
+    static const wchar_t digits[] = L"0123456789ABCDEF";
+    wchar_t raw[19];
+    size_t digit_count;
+    size_t index;
+    if (!rec || size <= 0 || size > 8) {
+        return false;
+    }
+    digit_count = (size_t)size * 2U;
+    raw[0] = L'0';
+    raw[1] = L'x';
+    for (index = 0U; index < digit_count; ++index) {
+        size_t shift = (digit_count - index - 1U) * 4U;
+        raw[index + 2U] = digits[(value >> shift) & UINT64_C(0x0F)];
+    }
+    raw[digit_count + 2U] = L'\0';
+    return xx_data_struct_record_set_raw_value(rec, raw);
+}
+
+bool xx_data_struct_record_set_raw_bytes(xx_data_struct_record *rec, xx_io_device *device, int64_t offset, int64_t size)
+{
+    static const wchar_t digits[] = L"0123456789ABCDEF";
+    wchar_t *raw;
+    size_t byte_count;
+    size_t char_count;
+    size_t index;
+    if (!rec || !device || offset < 0 || size < 0 || !xx_io_check(device, offset, size) ||
+        (uint64_t)size > (uint64_t)(SIZE_MAX - 3U) / 2U) {
+        return false;
+    }
+    byte_count = (size_t)size;
+    char_count = byte_count * 2U + 3U;
+    if (char_count > SIZE_MAX / sizeof(*raw)) {
+        return false;
+    }
+    raw = (wchar_t *)xx_mem_alloc(char_count * sizeof(*raw));
+    if (!raw) {
+        return false;
+    }
+    raw[0] = L'0';
+    raw[1] = L'x';
+    for (index = 0U; index < byte_count; ++index) {
+        uint8_t byte = xx_io_get_u8(device, offset + (int64_t)index);
+        raw[index * 2U + 2U] = digits[byte >> 4U];
+        raw[index * 2U + 3U] = digits[byte & 0x0FU];
+    }
+    raw[char_count - 1U] = L'\0';
+    if (rec->raw_value) {
+        xx_str_wfree(rec->raw_value);
+    }
+    rec->raw_value = raw;
+    return true;
+}
+
 bool xx_data_struct_record_set_display_value(xx_data_struct_record *rec, const wchar_t *display_value)
 {
     if (!rec) {
@@ -1082,8 +1161,42 @@ bool xx_data_struct_record_set_display_value(xx_data_struct_record *rec, const w
     return true;
 }
 
+bool xx_data_struct_record_set_comment(xx_data_struct_record *rec, const wchar_t *comment)
+{
+    wchar_t *copy;
+    if (!rec) {
+        return false;
+    }
+    copy = comment ? xx_str_wdup(comment) : NULL;
+    if (comment && !copy) {
+        return false;
+    }
+    if (rec->comment) {
+        xx_str_wfree(rec->comment);
+    }
+    rec->comment = copy;
+    return true;
+}
+
+static bool xx_data_struct_record_set_size_comment(xx_data_struct_record *rec, uint64_t value)
+{
+    char ascii[96];
+    wchar_t wide[96];
+    size_t index;
+
+    if (!xx_str_bytes_count_to_string(value, 1024U, ascii, sizeof(ascii))) {
+        return false;
+    }
+    for (index = 0U; ascii[index] != '\0'; ++index) {
+        wide[index] = (wchar_t)(unsigned char)ascii[index];
+    }
+    wide[index] = L'\0';
+    return xx_data_struct_record_set_comment(rec, wide);
+}
+
 bool xx_data_struct_record_populate(xx_data_struct_record *rec, xx_io_device *device, int64_t parent_offset, const xx_data_struct_field_desc *field, bool is_big_endian)
 {
+    bool raw_as_bytes;
     if (!rec || !device || !field) {
         return false;
     }
@@ -1095,6 +1208,7 @@ bool xx_data_struct_record_populate(xx_data_struct_record *rec, xx_io_device *de
 
     int64_t abs_offset = parent_offset + field->rel_offset;
     uint64_t raw_value = 0;
+    raw_as_bytes = (field->type && xx_rt_wcschr(field->type, L'[') != NULL) || field->size > 8;
     if (field->size == 1) {
         raw_value = xx_io_get_u8(device, abs_offset);
     } else if (field->size == 2) {
@@ -1111,7 +1225,8 @@ bool xx_data_struct_record_populate(xx_data_struct_record *rec, xx_io_device *de
     wchar_t display_buf[32];
     int display_length;
     size_t display_index;
-    bool as_hex = (field->property & (XX_DATA_STRUCT_RECORD_PROPERTY_ID | XX_DATA_STRUCT_RECORD_PROPERTY_FLAGS)) != 0;
+    bool as_hex =
+        (field->property & (XX_DATA_STRUCT_RECORD_PROPERTY_ID | XX_DATA_STRUCT_RECORD_PROPERTY_FLAGS | XX_DATA_STRUCT_RECORD_PROPERTY_SIGNATURE)) != 0;
     if (as_hex) {
         display_length = xx_rt_snprintf(display_ascii, sizeof(display_ascii), "0x%08llX", (unsigned long long)raw_value);
     } else {
@@ -1124,9 +1239,14 @@ bool xx_data_struct_record_populate(xx_data_struct_record *rec, xx_io_device *de
         display_buf[display_index] = (wchar_t)(unsigned char)display_ascii[display_index];
     }
 
-    xx_data_struct_record_set_name(rec, field->name);
-    xx_data_struct_record_set_type(rec, field->type);
-    xx_data_struct_record_set_display_value(rec, display_buf);
+    if (!xx_data_struct_record_set_name(rec, field->name) || !xx_data_struct_record_set_type(rec, field->type) ||
+        !(raw_as_bytes ? xx_data_struct_record_set_raw_bytes(rec, device, abs_offset, field->size)
+                       : xx_data_struct_record_set_raw_uint(rec, raw_value, field->size)) ||
+        !xx_data_struct_record_set_display_value(rec, display_buf) ||
+        ((field->property & XX_DATA_STRUCT_RECORD_PROPERTY_SIZE) != 0 && !xx_data_struct_record_set_size_comment(rec, raw_value))) {
+        xx_data_struct_record_cleanup(rec);
+        return false;
+    }
 
     return true;
 }

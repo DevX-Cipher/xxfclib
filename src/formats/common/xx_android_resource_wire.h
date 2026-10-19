@@ -14,7 +14,7 @@ static XXFC_MAYBE_UNUSED bool android_wire_read(memory_blob *b, uint64_t at, uin
     c->type = xx_data_get_u16(b->p + (size_t)at, 2, 0, false);
     c->header = xx_data_get_u16(b->p + (size_t)at + 2, 2, 0, false);
     n = xx_data_get_u32(b->p + (size_t)at + 4, 4, 0, false);
-    if (c->header < 8 || c->header > n || (n & 3) || !record_span(at, n, end) || !blob_span(b, at, n)) return false;
+    if (c->header < 8 || c->header > n || !record_span(at, n, end) || !blob_span(b, at, n)) return false;
     c->end = at + n;
     return true;
 }
@@ -60,18 +60,18 @@ static XXFC_MAYBE_UNUSED bool android_wire_pool(memory_blob *b, android_wire_chu
 {
     uint64_t at = c->at, i, table, start, limit, n, p, units, bytes;
     uint32_t styles, flags, styleStart;
-    if (c->type != 1 || c->header != 28 || c->end - at < 28) return false;
+    if (c->type != 1 || c->header < 28 || c->end - at < c->header) return false;
     *count = xx_data_get_u32(b->p + (size_t)at + 8, 4, 0, false);
     styles = xx_data_get_u32(b->p + (size_t)at + 12, 4, 0, false);
     flags = xx_data_get_u32(b->p + (size_t)at + 16, 4, 0, false);
     start = xx_data_get_u32(b->p + (size_t)at + 20, 4, 0, false);
     styleStart = xx_data_get_u32(b->p + (size_t)at + 24, 4, 0, false);
-    table = 28 + (uint64_t)*count * 4;
+    table = c->header + (uint64_t)*count * 4;
     if (*count > 4096 || styles || styleStart || (flags & ~257U) || start < table || !record_span(at, table, c->end) || !record_span(at, start, c->end)) return false;
     limit = c->end;
     n = c->end - at - start;
     for (i = 0; i < *count; ++i) {
-        uint32_t offset = xx_data_get_u32(b->p + (size_t)(at + 28 + i * 4), 4, 0, false);
+        uint32_t offset = xx_data_get_u32(b->p + (size_t)(at + c->header + i * 4), 4, 0, false);
         if (offset >= n) return false;
         p = at + start + offset;
         if (!android_wire_length(b, &p, limit, (flags & 256) != 0, &units)) return false;

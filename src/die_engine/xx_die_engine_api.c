@@ -27,6 +27,14 @@
  * binding table compact and easy to extend.                                */
 
 #include "xx_die_engine_internal.h"
+#include "xxfclib/global/xx_global.h"
+#include "xxfclib/memory/xx_memory.h"
+#include "xxfclib/algo/entropy/xx_entropy.h"
+#include "xxfclib/algo/md5/xx_md5.h"
+#include "xxfclib/algo/adler32/xx_adler32.h"
+#include "xxfclib/algo/crc/xx_crc.h"
+#include "xxfclib/formats/other/javascript/xx_javascript.h"
+#include "xxfclib/formats/executable/pe/xx_pe_unwind_validate.h"
 
 #include "platforms/xx_die_engine_platform.h"
 #include "xx_die_engine_compat.h"
@@ -55,6 +63,7 @@ typedef enum {
     A_readQword,
     A_readSQword,
     A_getString,
+    A_isJavaScriptMinified,
     A_findSignature,
     A_findString,
     A_findByte,
@@ -79,12 +88,14 @@ typedef enum {
     A_calculateEntropy,
     A_isZeroFilled,
     A_scanBufferForEncryptedPe,
+    A_validateAmd64Unwind,
     A_calculateMD5,
     A_calculateCRC32,
     A_crc16,
     A_crc32,
     A_adler32,
     A_isSignatureInSectionPresent,
+    A_isAnySignatureInSectionPresent,
     A_getImageBase,
     A_upperCase,
     A_lowerCase,
@@ -343,7 +354,7 @@ typedef struct {
 
 cd_i64 die_engine_profile_start(DieEngine *pEngine)
 {
-    if (!pEngine->pOptions->bProfiling) {
+    if (!pEngine->pOptions->profiling) {
         return -1;
     }
 
@@ -352,7 +363,7 @@ cd_i64 die_engine_profile_start(DieEngine *pEngine)
 
 void die_engine_profile_text(DieEngine *pEngine, const char *pText)
 {
-    if (!pEngine->pOptions->bProfiling) {
+    if (!pEngine->pOptions->profiling) {
         return;
     }
 
@@ -364,7 +375,7 @@ X_PRINTF_LIKE(3, 4) void die_engine_profile_end(DieEngine *pEngine, cd_i64 nStar
     char sInfo[1024];
     X_VA_LIST args;
 
-    if ((!pEngine->pOptions->bProfiling) || (nStart < 0)) {
+    if ((!pEngine->pOptions->profiling) || (nStart < 0)) {
         return;
     }
 
@@ -472,11 +483,11 @@ static JSVal native_str_take(JSCtx *ctx, char *text)
     xx_str_free(text);
     return result;
 }
-static char *native_iso_identifier(DieFile *file, int64_t offset, size_t size)
+static char *native_iso_identifier(xx_io_device *file, int64_t offset, size_t size)
 {
     xx_iso9660 iso;
     char *text;
-    xx_iso9660_init(&iso, file->pDevice, 0);
+    xx_iso9660_init(&iso, file, 0);
     text = xx_iso9660_get_identifier(&iso, offset, size, NULL);
     xx_iso9660_destroy(&iso);
     return text;
@@ -491,10 +502,8 @@ static JSVal str_take(JSCtx *pCtx, char *pString)
     return result;
 }
 
-/* The same, for a string that came out of xx_fs. The two allocators happen to
- * be the same call on both platforms today, but nothing says they have to be,
- * so the release matches the allocation. */
-static JSVal str_take_fs(JSCtx *pCtx, char *pString)
+/* Release shared-library strings through their native allocator. */
+static JSVal str_take_native(JSCtx *pCtx, char *pString)
 {
     JSVal result = js_str(pCtx, pString ? pString : "");
 
@@ -505,11 +514,11 @@ static JSVal str_take_fs(JSCtx *pCtx, char *pString)
 
 /* The NE target-OS byte (IMAGE_OS2_HEADER::ne_exetyp at NE-header offset 0x36),
  * read straight from the file as XNE does. */
-static cd_u8 ne_target_os(DieFile *pFile)
+static cd_u8 ne_target_os(xx_io_device *pFile)
 {
-    cd_i64 nLfanew = (cd_i64)xx_io_get_u32(pFile->pDevice, 0x3C, false);
+    cd_i64 nLfanew = (cd_i64)xx_io_get_u32(pFile, 0x3C, false);
 
-    return xx_io_get_u8(pFile->pDevice, nLfanew + 0x36);
+    return xx_io_get_u8(pFile, nLfanew + 0x36);
 }
 
 /* XNE::getOsName. */
@@ -635,9 +644,9 @@ static int archive_record_present_exp(DieEngine *pEngine, const char *pPattern)
  * Scripts may pass arbitrary numbers, so the arithmetic is overflow-safe.  */
 static void fix_offset_size(DieEngine *pEngine, cd_i64 *pnOffset, cd_i64 *pnSize)
 {
-    if ((*pnOffset >= 0) && (*pnOffset < pEngine->file.nSize)) {
-        if ((*pnSize < 0) || (*pnSize > pEngine->file.nSize - *pnOffset)) {
-            *pnSize = pEngine->file.nSize - *pnOffset;
+    if ((*pnOffset >= 0) && (*pnOffset < xx_io_total_size(pEngine->device))) {
+        if ((*pnSize < 0) || (*pnSize > xx_io_total_size(pEngine->device) - *pnOffset)) {
+            *pnSize = xx_io_total_size(pEngine->device) - *pnOffset;
         }
     }
 }
@@ -685,10 +694,20 @@ static char *clean_string(const char *pString)
     return cdbuf_detach(&buf, NULL);
 }
 
-/* ---------------------------------------------------------- PE accessors */
+/* ------------------------------------------------------ format accessors */
 
-static cd_i64 pe_entry_point_offset(DieEngine *pEngine)
+static int has_legacy_script_map(const xx_memory_map *map)
 {
+    return map->file_type == XX_FILE_TYPE_NE ||
+           (map->file_type == XX_FILE_TYPE_MSDOS && map->mode == XX_MEMORY_MAP_MODE_SEGMENTS);
+}
+
+static cd_i64 script_entry_point_offset(DieEngine *pEngine)
+{
+    if (has_legacy_script_map(pEngine->pMap)) {
+        return xx_memory_map_address_to_offset(pEngine->pMap, pEngine->pMap->entry_point_address);
+    }
+
     if (pEngine->bHasElf) {
         return pEngine->elf.nEntryPointOffset;
     }
@@ -704,6 +723,21 @@ static cd_i64 pe_entry_point_offset(DieEngine *pEngine)
     /* Binary_Script captures its entry-point cache through addressToOffset,
      * whose reverse physical lookup also maps RVA zero to the image header. */
     return xx_memory_map_address_to_offset(&pEngine->pe.map, pEngine->pe.nImageBase + pEngine->pe.nAddressOfEntryPoint);
+}
+
+static cd_i64 legacy_overlay_offset(const xx_memory_map *map)
+{
+    cd_i64 end = 0;
+    size_t i;
+
+    for (i = 0; i < map->record_count; ++i) {
+        const xx_memory_record *record = &map->records[i];
+        if (record->offset >= 0 && !record->is_virtual && record->file_part != XX_FILE_PART_OVERLAY && record->offset + record->size > end) {
+            end = record->offset + record->size;
+        }
+    }
+    /* The reference returns EOF, rather than -1, for an empty overlay. */
+    return end > 0 && end <= map->binary_size ? end : -1;
 }
 
 static int pe_directory_section(DieEngine *pEngine, int nDirectory)
@@ -872,7 +906,7 @@ static cd_u64 image_optional_header_value(xx_pe_inspection *pPE, const char *pKe
  * are borrowed from globally sized file windows; no separate prefix buffer
  * is needed. Small fixed counters and decoder lookahead are parser state. */
 typedef struct {
-    DieFile *file;
+    xx_io_device *file;
     const unsigned char *bytes, *view;
     cd_i64 size, base, verified;
     size_t capacity, valid;
@@ -882,7 +916,7 @@ typedef struct {
 static int prefix_window(PrefixInput *input, cd_i64 offset)
 {
     size_t count = (cd_u64)(input->size - offset) < input->capacity ? (size_t)(input->size - offset) : input->capacity;
-    input->view = die_file_window(input->file, offset, &count);
+    input->view = xx_io_buffer_view(input->file, offset, &count);
     if (!input->view || !count) {
         input->failed = 1;
         return 0;
@@ -1113,17 +1147,17 @@ static int unicode_type_data(PrefixInput *pInput, cd_i64 nSize)
 /* Preserve both the classifier's original sample and its exact-read error
  * behaviour. Early BOM/rejection decisions still validate the unvisited
  * sample suffix, without allocating a whole-prefix copy. */
-static int classify_file_prefix(DieFile *pFile, cd_i64 nMaximum, int (*classify)(PrefixInput *, cd_i64))
+static int classify_file_prefix(xx_io_device *pFile, cd_i64 nMaximum, int (*classify)(PrefixInput *, cd_i64))
 {
     PrefixInput input;
     int result;
 
-    if (!pFile || pFile->nSize <= 0) return 0;
+    if (!pFile || xx_io_total_size(pFile) <= 0) return 0;
     x_memset(&input, 0, sizeof(input));
     input.file = pFile;
-    input.bytes = die_file_whole(pFile, 0);
-    input.size = pFile->nSize < nMaximum ? pFile->nSize : nMaximum;
-    input.capacity = die_file_buffer_size(pFile);
+    input.bytes = xx_io_buffer_whole(pFile, 0);
+    input.size = xx_io_total_size(pFile) < nMaximum ? xx_io_total_size(pFile) : nMaximum;
+    input.capacity = xx_io_buffer_capacity(pFile);
     if (input.bytes) input.verified = input.size;
     result = classify(&input, input.size);
     while (!input.failed && input.verified < input.size) {
@@ -1132,17 +1166,17 @@ static int classify_file_prefix(DieFile *pFile, cd_i64 nMaximum, int (*classify)
     return input.failed ? 0 : result;
 }
 
-static int is_plain_text(DieFile *pFile)
+static int is_plain_text(xx_io_device *pFile)
 {
     return classify_file_prefix(pFile, 0x8000, is_plain_text_data);
 }
 
-static int is_utf8_text(DieFile *pFile)
+static int is_utf8_text(xx_io_device *pFile)
 {
     return classify_file_prefix(pFile, 0x2000, is_utf8_text_data);
 }
 
-static int unicode_type(DieFile *pFile)
+static int unicode_type(xx_io_device *pFile)
 {
     return classify_file_prefix(pFile, 0x1000, unicode_type_data);
 }
@@ -1212,16 +1246,21 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
 {
     DieEngine *pEngine = engine_of(pCtx);
     ApiId id = (ApiId)(size_t)pUser;
-    DieFile *pFile = &pEngine->file;
+    xx_io_device *pFile = pEngine->device;
     xx_pe_inspection *pPE = &pEngine->pe;
     xx_dotnet_inspection *pDotNet = &pEngine->dotnet;
     xx_memory_map *pMap = pEngine->pMap;
+    xx_memory_map_lookup_t addressLookup = (pEngine->bHasPE || pMap->file_type == XX_FILE_TYPE_NE) ? XX_MEMORY_MAP_LOOKUP_LAST_PHYSICAL
+                                                                                         : XX_MEMORY_MAP_LOOKUP_FIRST_MATCH;
+    /* NE's script base is zero even though its segmented map starts at
+     * 0x10000. XNE's module address and Binary_Script's RVA base differ. */
+    cd_u64 nRvaBase = pMap->file_type == XX_FILE_TYPE_NE ? 0 : pMap->module_address;
 
     (void)thisVal;
 
     switch (id) {
         /* ------------------------------------------------ generic binary */
-        case A_getSize: return js_num((double)pFile->nSize);
+        case A_getSize: return js_num((double)xx_io_total_size(pFile));
 
         case A_compare: {
             char *pSignature = arg_string(pCtx, nArgc, pArgv, 0);
@@ -1236,7 +1275,7 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
         case A_compareEP: {
             char *pSignature = arg_string(pCtx, nArgc, pArgv, 0);
             cd_i64 nOffset = arg_i64(pCtx, nArgc, pArgv, 1, 0);
-            cd_i64 nEntryPoint = pe_entry_point_offset(pEngine);
+            cd_i64 nEntryPoint = script_entry_point_offset(pEngine);
             int bResult = 0;
 
             if (nEntryPoint != -1) {
@@ -1255,6 +1294,11 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
 
             if (pEngine->bHasPE && (pPE->nOverlaySize > 0)) {
                 bResult = die_engine_signature_compare(pEngine, pPE->nOverlayOffset + nOffset, pSignature, 2, pPE->nOverlayOffset);
+            } else if (has_legacy_script_map(pMap)) {
+                cd_i64 nOverlay = legacy_overlay_offset(pMap);
+                if (nOverlay >= 0 && nOffset <= INT64_MAX - nOverlay) {
+                    bResult = die_engine_signature_compare(pEngine, nOverlay + nOffset, pSignature, 2, nOverlay);
+                }
             }
 
             cd_free(pSignature);
@@ -1263,23 +1307,23 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
         }
 
         case A_readByte:
-        case A_read_uint8: return js_num((double)xx_io_get_u8(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0)));
+        case A_read_uint8: return js_num((double)xx_io_get_u8(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0)));
 
         case A_readSByte:
-        case A_read_int8: return js_num((double)xx_io_get_i8(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0)));
+        case A_read_int8: return js_num((double)xx_io_get_i8(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0)));
 
-        case A_readWord: return js_num((double)xx_io_get_u16(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), false));
-        case A_readSWord: return js_num((double)xx_io_get_i16(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), false));
-        case A_readDword: return js_num((double)xx_io_get_u32(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), false));
-        case A_readSDword: return js_num((double)xx_io_get_i32(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), false));
-        case A_readQword: return js_num((double)xx_io_get_u64(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), false));
-        case A_readSQword: return js_num((double)xx_io_get_i64(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), false));
+        case A_readWord: return js_num((double)xx_io_get_u16(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), false));
+        case A_readSWord: return js_num((double)xx_io_get_i16(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), false));
+        case A_readDword: return js_num((double)xx_io_get_u32(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), false));
+        case A_readSDword: return js_num((double)xx_io_get_i32(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), false));
+        case A_readQword: return js_num((double)xx_io_get_u64(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), false));
+        case A_readSQword: return js_num((double)xx_io_get_i64(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), false));
 
-        case A_read_uint16: return js_num((double)xx_io_get_u16(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
-        case A_read_int16: return js_num((double)xx_io_get_i16(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
-        case A_read_uint24: return js_num((double)xx_io_get_u24(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
+        case A_read_uint16: return js_num((double)xx_io_get_u16(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
+        case A_read_int16: return js_num((double)xx_io_get_i16(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
+        case A_read_uint24: return js_num((double)xx_io_get_u24(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
         case A_read_int24: {
-            cd_u32 nValue = xx_io_get_u24(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false);
+            cd_u32 nValue = xx_io_get_u24(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false);
 
             if (nValue & 0x800000u) {
                 return js_num((double)(cd_i32)(nValue | 0xFF000000u));
@@ -1287,19 +1331,19 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
 
             return js_num((double)nValue);
         }
-        case A_read_uint32: return js_num((double)xx_io_get_u32(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
-        case A_read_int32: return js_num((double)xx_io_get_i32(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
-        case A_read_uint64: return js_num((double)xx_io_get_u64(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
-        case A_read_int64: return js_num((double)xx_io_get_i64(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
-        case A_read_float: return js_num((double)xx_io_get_f32(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
-        case A_read_double: return js_num(xx_io_get_f64(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
-        case A_read_float16: return js_num((double)xx_io_get_f16(pFile->pDevice, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
-        case A_read_UUID: return str_take(pCtx, die_uuid(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0)));
-        case A_read_ucsdString: return str_take(pCtx, die_ucsd_string(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0)));
+        case A_read_uint32: return js_num((double)xx_io_get_u32(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
+        case A_read_int32: return js_num((double)xx_io_get_i32(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
+        case A_read_uint64: return js_num((double)xx_io_get_u64(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
+        case A_read_int64: return js_num((double)xx_io_get_i64(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
+        case A_read_float: return js_num((double)xx_io_get_f32(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
+        case A_read_double: return js_num(xx_io_get_f64(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
+        case A_read_float16: return js_num((double)xx_io_get_f16(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_bool(pCtx, nArgc, pArgv, 1, 0) ? true : false));
+        case A_read_UUID: return str_take_native(pCtx, xx_io_get_uuid(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0)));
+        case A_read_ucsdString: return str_take_native(pCtx, xx_str_read_ucsd(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0)));
 
-        case A_isNE: return js_bool(xx_io_get_u16(pFile->pDevice, (cd_i64)xx_io_get_u32(pFile->pDevice, 0x3C, false), false) == 0x454E);
-        case A_isLE: return js_bool(xx_io_get_u16(pFile->pDevice, (cd_i64)xx_io_get_u32(pFile->pDevice, 0x3C, false), false) == 0x454C);
-        case A_isLX: return js_bool(xx_io_get_u16(pFile->pDevice, (cd_i64)xx_io_get_u32(pFile->pDevice, 0x3C, false), false) == 0x584C);
+        case A_isNE: return js_bool(xx_io_get_u16(pFile, (cd_i64)xx_io_get_u32(pFile, 0x3C, false), false) == 0x454E);
+        case A_isLE: return js_bool(xx_io_get_u16(pFile, (cd_i64)xx_io_get_u32(pFile, 0x3C, false), false) == 0x454C);
+        case A_isLX: return js_bool(xx_io_get_u16(pFile, (cd_i64)xx_io_get_u32(pFile, 0x3C, false), false) == 0x584C);
 
         case A_getApplicationIdentifier: return native_str_take(pCtx, native_iso_identifier(pFile, 574, 128));
         case A_getDataPreparerIdentifier: return native_str_take(pCtx, native_iso_identifier(pFile, 446, 128));
@@ -1429,13 +1473,20 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
         }
 
         case A_getString:
-        case A_read_ansiString: return str_take(pCtx, die_ansi_string(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 50)));
+        case A_read_ansiString: return str_take_native(pCtx, xx_str_read_ansi(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 50)));
 
-        case A_read_unicodeString: return str_take(pCtx, die_unicode_string(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 50), 0));
+        case A_isJavaScriptMinified: {
+            cd_i64 nStart = die_engine_profile_start(pEngine);
+            bool bResult = xx_javascript_is_minified(pFile, 0, xx_io_total_size(pFile), pEngine->pd);
+            die_engine_profile_end(pEngine, nStart, "isJavaScriptMinified");
+            return js_bool(bResult);
+        }
 
-        case A_read_utf8String: return str_take(pCtx, die_utf8_string(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 50)));
+        case A_read_unicodeString: return str_take_native(pCtx, xx_str_read_unicode(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 50), 0));
 
-        case A_read_codePageString: return str_take(pCtx, die_ansi_string(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 256)));
+        case A_read_utf8String: return str_take_native(pCtx, xx_str_read_utf8(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 50)));
+
+        case A_read_codePageString: return str_take_native(pCtx, xx_str_read_ansi(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 256)));
 
         case A_findSignature: {
             cd_i64 nOffset = arg_i64(pCtx, nArgc, pArgv, 0, 0);
@@ -1467,13 +1518,20 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
             cd_i64 nOffset = arg_i64(pCtx, nArgc, pArgv, 0, 0);
             cd_i64 nSize = arg_i64(pCtx, nArgc, pArgv, 1, 0);
             char *pString = arg_string(pCtx, nArgc, pArgv, 2);
-            cd_i64 nResult = 0;
+            xx_data_sig_record record = {0};
+            xx_data_signature signature = {&record, 1};
+            cd_i64 nResult = -1;
             /* Only findString is measured; find_ansiString is the same search
              * under a second name and the reference does not profile it. */
             cd_i64 nStart = (id == A_findString) ? die_engine_profile_start(pEngine) : -1;
 
             fix_offset_size(pEngine, &nOffset, &nSize);
-            nResult = die_engine_literal_find(pEngine, nOffset, nSize, (const unsigned char *)pString, (cd_i64)x_strlen(pString));
+            record.kind = XX_DATA_SIG_BYTES;
+            record.data = (const unsigned char *)pString;
+            record.data_size = (cd_i64)x_strlen(pString);
+            if (!pEngine->bStop) {
+                nResult = xx_io_signature_find(pFile, nOffset, nSize, &signature, &pEngine->sigContext, pEngine->pd);
+            }
 
             if (nStart >= 0) {
                 char sOffset[24];
@@ -1496,7 +1554,7 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
             cd_i64 nResult = 0;
 
             fix_offset_size(pEngine, &nOffset, &nSize);
-            nResult = die_find_unicode_string(pFile, nOffset, nSize, pString, 0);
+            nResult = xx_io_find_unicode_bytes_in_range(pFile, nOffset, nSize, pString, false, NULL);
             cd_free(pString);
 
             return js_num((double)nResult);
@@ -1509,7 +1567,7 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
             cd_i64 nResult = 0;
 
             fix_offset_size(pEngine, &nOffset, &nSize);
-            nResult = die_find_ansi_string(pFile, nOffset, nSize, pString);
+            nResult = xx_io_find_ansi_string_in_range(pFile, nOffset, nSize, pString, NULL);
             cd_free(pString);
 
             return js_num((double)nResult);
@@ -1523,7 +1581,7 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
             cd_i64 nStart = die_engine_profile_start(pEngine);
 
             fix_offset_size(pEngine, &nOffset, &nSize);
-            nResult = die_find_u8(pFile, nOffset, nSize, nValue);
+            nResult = xx_io_find_u8_in_range(pFile, nOffset, nSize, nValue, NULL);
 
             if (nStart >= 0) {
                 char sOffset[24];
@@ -1549,7 +1607,7 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
             fix_offset_size(pEngine, &nOffset, &nSize);
             /* Binary_Script passes its non-null PDSTRUCT as find_uint16's
              * endian argument, so the reference slot searches big endian. */
-            nResult = die_find_u16(pFile, nOffset, nSize, (cd_u16)((nValue << 8) | (nValue >> 8)));
+            nResult = xx_io_find_u16_in_range(pFile, nOffset, nSize, nValue, true, NULL);
 
             if (nStart >= 0) {
                 char sOffset[24];
@@ -1575,7 +1633,7 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
             fix_offset_size(pEngine, &nOffset, &nSize);
             /* Same reference slot behavior as findWord; scalar reads remain
              * little endian, and the general search helper is unchanged. */
-            nResult = die_find_u32(pFile, nOffset, nSize, ((nValue & 0xFF) << 24) | ((nValue & 0xFF00) << 8) | ((nValue >> 8) & 0xFF00) | ((nValue >> 24) & 0xFF));
+            nResult = xx_io_find_u32_in_range(pFile, nOffset, nSize, nValue, true, NULL);
 
             if (nStart >= 0) {
                 char sOffset[24];
@@ -1591,8 +1649,9 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
             return js_num((double)nResult);
         }
 
-        case A_getEntryPointOffset: return js_num((double)pe_entry_point_offset(pEngine));
+        case A_getEntryPointOffset: return js_num((double)script_entry_point_offset(pEngine));
         case A_getOverlayOffset:
+            if (has_legacy_script_map(pMap)) return js_num((double)legacy_overlay_offset(pMap));
             if (pEngine->bHasElf) {
                 return js_num((double)pEngine->elf.nOverlayOffset);
             }
@@ -1600,6 +1659,10 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
             return js_num((double)(pEngine->bHasPE ? pPE->nOverlayOffset : -1));
 
         case A_getOverlaySize:
+            if (has_legacy_script_map(pMap)) {
+                cd_i64 nOverlay = legacy_overlay_offset(pMap);
+                return js_num((double)(nOverlay >= 0 ? pMap->binary_size - nOverlay : 0));
+            }
             if (pEngine->bHasElf) {
                 return js_num((double)pEngine->elf.nOverlaySize);
             }
@@ -1607,12 +1670,18 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
             return js_num((double)(pEngine->bHasPE ? pPE->nOverlaySize : 0));
 
         case A_isOverlayPresent:
+            if (has_legacy_script_map(pMap)) {
+                cd_i64 nOverlay = legacy_overlay_offset(pMap);
+                return js_bool(nOverlay >= 0 && nOverlay < pMap->binary_size);
+            }
             if (pEngine->bHasElf) {
                 return js_bool(pEngine->elf.nOverlaySize != 0);
             }
 
             return js_bool(pEngine->bHasPE && (pPE->nOverlaySize != 0));
-        case A_getAddressOfEntryPoint: return js_num((double)(pEngine->bHasPE ? pPE->nEntryPointAddress : 0));
+        case A_getAddressOfEntryPoint:
+            if (has_legacy_script_map(pMap)) return js_num((double)pMap->entry_point_address);
+            return js_num((double)(pEngine->bHasPE ? pPE->nEntryPointAddress : 0));
 
         case A_isSignaturePresent: {
             cd_i64 nOffset = arg_i64(pCtx, nArgc, pArgv, 0, 0);
@@ -1645,43 +1714,39 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
         }
 
         case A_RVAToOffset:
-            return js_num((double)xx_memory_map_address_to_offset_ex(pMap, pMap->module_address + (cd_u64)arg_i64(pCtx, nArgc, pArgv, 0, 0),
-                                                                     pEngine->bHasPE ? XX_MEMORY_MAP_LOOKUP_LAST_PHYSICAL : XX_MEMORY_MAP_LOOKUP_FIRST_MATCH));
+            return js_num((double)xx_memory_map_address_to_offset_ex(pMap, nRvaBase + (cd_u64)arg_i64(pCtx, nArgc, pArgv, 0, 0), addressLookup));
         case A_VAToOffset:
-            return js_num((double)xx_memory_map_address_to_offset_ex(pMap, (cd_u64)arg_i64(pCtx, nArgc, pArgv, 0, 0),
-                                                                     pEngine->bHasPE ? XX_MEMORY_MAP_LOOKUP_LAST_PHYSICAL : XX_MEMORY_MAP_LOOKUP_FIRST_MATCH));
+            return js_num((double)xx_memory_map_address_to_offset_ex(pMap, (cd_u64)arg_i64(pCtx, nArgc, pArgv, 0, 0), addressLookup));
         case A_OffsetToVA:
-            return js_num((double)(cd_i64)xx_memory_map_offset_to_address_ex(pMap, arg_i64(pCtx, nArgc, pArgv, 0, 0),
-                                                                             pEngine->bHasPE ? XX_MEMORY_MAP_LOOKUP_LAST_PHYSICAL : XX_MEMORY_MAP_LOOKUP_FIRST_MATCH));
+            return js_num((double)(cd_i64)xx_memory_map_offset_to_address_ex(pMap, arg_i64(pCtx, nArgc, pArgv, 0, 0), addressLookup));
         case A_OffsetToRVA: {
-            cd_i64 nAddress = xx_memory_map_offset_to_address_ex(pMap, arg_i64(pCtx, nArgc, pArgv, 0, 0),
-                                                                 pEngine->bHasPE ? XX_MEMORY_MAP_LOOKUP_LAST_PHYSICAL : XX_MEMORY_MAP_LOOKUP_FIRST_MATCH);
+            cd_i64 nAddress = xx_memory_map_offset_to_address_ex(pMap, arg_i64(pCtx, nArgc, pArgv, 0, 0), addressLookup);
 
             if (nAddress == -1) {
                 return js_num(-1);
             }
 
-            return js_num((double)(nAddress - (cd_i64)pMap->module_address));
+            return js_num((double)(nAddress - (cd_i64)nRvaBase));
         }
 
-        case A_getFileDirectory: return str_take_fs(pCtx, xx_fs_path_dir(pFile->pFileName));
-        case A_getFileBaseName: return str_take_fs(pCtx, xx_fs_path_base_name(pFile->pFileName));
+        case A_getFileDirectory: return str_take_native(pCtx, xx_fs_path_dir(pEngine->file_name));
+        case A_getFileBaseName: return str_take_native(pCtx, xx_fs_path_base_name(pEngine->file_name));
         /* false: cdie counts a leading dot, so ".hidden.txt" has no complete
          * suffix here. The signature databases were written against that. */
-        case A_getFileCompleteSuffix: return str_take_fs(pCtx, xx_fs_path_complete_suffix_ex(pFile->pFileName, false));
-        case A_getFileSuffix: return str_take_fs(pCtx, xx_fs_path_suffix(pFile->pFileName));
+        case A_getFileCompleteSuffix: return str_take_native(pCtx, xx_fs_path_complete_suffix_ex(pEngine->file_name, false));
+        case A_getFileSuffix: return str_take_native(pCtx, xx_fs_path_suffix(pEngine->file_name));
 
-        case A_getSignature: return str_take(pCtx, die_signature_hex(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 0)));
+        case A_getSignature: return str_take_native(pCtx, xx_io_get_signature_hex(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 0)));
 
         case A_calculateEntropy: {
             cd_i64 nStart = die_engine_profile_start(pEngine);
             cd_i64 nOffset = arg_i64(pCtx, nArgc, pArgv, 0, 0);
             cd_i64 nSize = arg_i64(pCtx, nArgc, pArgv, 1, 0);
-            double dEntropy = die_entropy(pFile, nOffset, nSize);
+            double dEntropy = xx_entropy_calculate_device(pFile, nOffset, nSize);
             die_engine_profile_end(pEngine, nStart, "calculateEntropy: %lld %lld", (long long)nOffset, (long long)nSize);
             return js_num(dEntropy);
         }
-        case A_isZeroFilled: return js_bool(die_is_zero_filled(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 0)));
+        case A_isZeroFilled: return js_bool(xx_io_is_zero_filled(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 0)));
         case A_scanBufferForEncryptedPe: {
             cd_i64 nStart = die_engine_profile_start(pEngine);
             const char *pszAlgo = "";
@@ -1704,19 +1769,19 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
                 cd_i64 nOffset = arg_i64(pCtx, nArgc, pArgv, 0, 0);
                 cd_i64 nSize = arg_i64(pCtx, nArgc, pArgv, 1, 0);
                 if (nSize >= 0x100 && pFile) {
-                    cd_i64 nFileSize = pFile->nSize;
+                    cd_i64 nFileSize = xx_io_total_size(pFile);
                     if (nOffset >= 0 && nOffset < nFileSize) {
                         const unsigned char *pWhole;
                         /* nOffset is inside the file, so this cannot overflow
                          * the way nOffset + nSize can for a huge nSize. */
                         if (nSize > nFileSize - nOffset) nSize = nFileSize - nOffset;
-                        pWhole = die_file_whole(pFile, nSize);
+                        pWhole = xx_io_buffer_whole(pFile, nSize);
                         if (pWhole) {
                             pszAlgo = xx_kpa_scan_buffer_encrypted_pe(pWhole + nOffset, (size_t)nSize);
                         } else {
                             uint8_t *pBytes = (uint8_t *)cd_malloc((size_t)nSize);
                             if (pBytes) {
-                                if (die_file_read_at(pFile, nOffset, pBytes, (size_t)nSize)) {
+                                if (xx_io_read_at(pFile, nOffset, pBytes, (size_t)nSize)) {
                                     pszAlgo = xx_kpa_scan_buffer_encrypted_pe(pBytes, (size_t)nSize);
                                 }
                                 cd_free(pBytes);
@@ -1728,13 +1793,76 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
             die_engine_profile_end(pEngine, nStart, "scanBufferForEncryptedPe: [%s]", pszAlgo ? pszAlgo : "");
             return js_str(pCtx, pszAlgo ? pszAlgo : "");
         }
-        case A_calculateMD5: return str_take(pCtx, die_md5(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 0)));
-        case A_calculateCRC32: return js_num((double)die_crc32(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 0), 0));
+        case A_validateAmd64Unwind: {
+            cd_i64 nRVA = arg_i64(pCtx, nArgc, pArgv, 0, -1);
+            cd_i64 nSize = arg_i64(pCtx, nArgc, pArgv, 1, -1);
+            cd_i64 nStart;
+            xx_pe_amd64_unwind_result validation;
+            JSVal result;
+            int available;
+
+            if (!pEngine->bHasPE || nArgc < 2 || nRVA < 0 || nRVA > UINT32_MAX ||
+                nSize < 0 || nSize > UINT32_MAX) return js_null();
+            nStart = die_engine_profile_start(pEngine);
+            available = xx_pe_inspect_validate_amd64_unwind(pPE, pFile, (uint32_t)nRVA,
+                                                           (uint32_t)nSize, &validation);
+            die_engine_profile_end(pEngine, nStart, "validateAmd64Unwind: %lld %lld",
+                                   (long long)nRVA, (long long)nSize);
+            if (!available) return js_null();
+            result = js_new_object(pCtx);
+            js_set(pCtx, result, "status", js_num((double)validation.status));
+            js_set(pCtx, result, "entryIndex", js_num((double)validation.entry_index));
+            js_set(pCtx, result, "beginRva", js_num((double)validation.begin_rva));
+            js_set(pCtx, result, "endRva", js_num((double)validation.end_rva));
+            js_set(pCtx, result, "unwindRva", js_num((double)validation.unwind_rva));
+            return result;
+        }
+        case A_calculateMD5: {
+            static const char digits[] = "0123456789abcdef";
+            cd_i64 nOffset = arg_i64(pCtx, nArgc, pArgv, 0, 0);
+            cd_i64 nSize = arg_i64(pCtx, nArgc, pArgv, 1, 0);
+            cd_i64 nPosition;
+            unsigned char digest[XX_MD5_DIGEST_SIZE];
+            char hex[XX_MD5_DIGEST_SIZE * 2 + 1];
+            bool bHasDigest;
+            size_t i;
+
+            /* Binary_Script::calculateMD5 uses XBinary::getHash: strict
+             * ranges, lowercase hex, and an empty string on failure.
+             * The native xx_md5 helper has a separate uppercase/clamping
+             * contract, so adapt the script API without changing it. */
+            if (nSize < -1 || xx_io_buffer_failed(pFile) || xx_pd_is_stopped(pEngine->pd)) return js_str(pCtx, "");
+            nPosition = xx_io_tell(pFile);
+            if (nPosition < 0) return js_str(pCtx, "");
+            bHasDigest = xx_md5_device(pFile, nOffset, nSize, digest, sizeof(digest), pEngine->pd);
+            if (xx_io_seek64(pFile, nPosition, SEEK_SET) != 0 || !bHasDigest ||
+                xx_io_buffer_failed(pFile) || xx_pd_is_stopped(pEngine->pd)) return js_str(pCtx, "");
+            for (i = 0; i < sizeof(digest); i++) {
+                hex[i * 2] = digits[digest[i] >> 4];
+                hex[i * 2 + 1] = digits[digest[i] & 0x0f];
+            }
+            hex[sizeof(hex) - 1] = '\0';
+            return js_str(pCtx, hex);
+        }
+        case A_calculateCRC32: return js_num((double)xx_crc32_device(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 0), 0));
         case A_crc32:
-            return js_num((double)die_crc32(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 0), (cd_u32)arg_i64(pCtx, nArgc, pArgv, 2, 0)));
-        case A_crc16:
-            return js_num((double)die_crc16(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 0), (cd_u16)arg_i64(pCtx, nArgc, pArgv, 2, 0)));
-        case A_adler32: return js_num((double)die_adler32(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 0)));
+            return js_num((double)xx_crc32_device(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 0), (cd_u32)arg_i64(pCtx, nArgc, pArgv, 2, 0)));
+        case A_crc16: {
+            cd_i64 nOffset = arg_i64(pCtx, nArgc, pArgv, 0, 0);
+            cd_i64 nSize = arg_i64(pCtx, nArgc, pArgv, 1, 0);
+            cd_u16 nInit = (cd_u16)arg_i64(pCtx, nArgc, pArgv, 2, 0);
+            cd_u16 nResult;
+
+            /* Binary_Script::crc16 uses XBinary's range API: valid, nonempty
+             * reads receive a final XOR; rejected or failed reads return 0.
+             * Keep the native CRC-16/ARC accumulator contract unchanged. */
+            if (nSize < -1 || !xx_io_range_clamp(pFile, nOffset, &nSize) || !nSize ||
+                xx_io_buffer_failed(pFile) || xx_pd_is_stopped(pEngine->pd)) return js_num(0);
+            nResult = xx_crc16_device(pFile, nOffset, nSize, nInit);
+            if (xx_io_buffer_failed(pFile) || xx_pd_is_stopped(pEngine->pd)) return js_num(0);
+            return js_num((double)(nResult ^ 0xffffU));
+        }
+        case A_adler32: return js_num((double)xx_adler32_device(pFile, arg_i64(pCtx, nArgc, pArgv, 0, 0), arg_i64(pCtx, nArgc, pArgv, 1, 0)));
 
         case A_isSignatureInSectionPresent: {
             cd_i64 nNumber = arg_i64(pCtx, nArgc, pArgv, 0, 0);
@@ -1755,7 +1883,7 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
                     bResult = (die_engine_signature_find(pEngine, pPE->nOverlayOffset, pPE->nOverlaySize, pSignature) != -1) ? 1 : 0;
                 }
             } else if (nNumber == 0) {
-                bResult = (die_engine_signature_find(pEngine, 0, pFile->nSize, pSignature) != -1) ? 1 : 0;
+                bResult = (die_engine_signature_find(pEngine, 0, xx_io_total_size(pFile), pSignature) != -1) ? 1 : 0;
             }
 
             /* The reference passes the section number as a plain decimal and
@@ -1763,6 +1891,50 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
             die_engine_profile_end(pEngine, nStart, "isSignatureInSectionPresent[%s]: %lld ", pSignature, (long long)nNumber);
             cd_free(pSignature);
 
+            return js_bool(bResult);
+        }
+
+        case A_isAnySignatureInSectionPresent: {
+            cd_i64 nNumber = arg_i64(pCtx, nArgc, pArgv, 0, 0);
+            cd_i64 nOffset = -1;
+            cd_i64 nSize = 0;
+            cd_i64 nStart = die_engine_profile_start(pEngine);
+            int64_t nLength;
+            size_t i;
+            char **ppSignatures;
+            int bResult = 0;
+
+            if (nArgc < 2 || pArgv[1].tag != JT_OBJ || !pArgv[1].u.o || pArgv[1].u.o->cls != JCLASS_ARRAY) return js_bool(0);
+            nLength = js_array_length(pCtx, pArgv[1]);
+            if (nLength <= 0 || (cd_u64)nLength > (size_t)-1 / sizeof(*ppSignatures)) return js_bool(0);
+            ppSignatures = (char **)xx_mem_calloc((size_t)nLength, sizeof(*ppSignatures));
+            if (!ppSignatures) return js_bool(0);
+            for (i = 0; i < (size_t)nLength; i++) {
+                JSVal value = js_get_index(pCtx, pArgv[1], (int64_t)i);
+                /* No coercion of numbers, holes, or null into signatures. */
+                if (value.tag == JT_STR && x_strlen(js_str_data(value)) == js_str_len(value)) ppSignatures[i] = js_to_cstr(pCtx, value);
+                js_release(pCtx, value);
+                if (!ppSignatures[i] || js_has_exception(pCtx)) goto any_signature_cleanup;
+            }
+
+            if (pEngine->bHasPE) {
+                if (nNumber >= 0 && nNumber < pPE->nSectionCount) {
+                    nOffset = pPE->pSections[nNumber].nMappedOffset;
+                    nSize = pPE->pSections[nNumber].nMappedSize;
+                } else if (nNumber == pPE->nSectionCount && pPE->nOverlaySize > 0) {
+                    nOffset = pPE->nOverlayOffset;
+                    nSize = pPE->nOverlaySize;
+                }
+            } else if (nNumber == 0) {
+                nOffset = 0;
+                nSize = xx_io_total_size(pFile);
+            }
+            bResult = die_engine_signature_find_any(pEngine, nOffset, nSize, (const char *const *)ppSignatures, (size_t)nLength);
+
+any_signature_cleanup:
+            for (i = 0; i < (size_t)nLength; i++) cd_free(ppSignatures[i]);
+            xx_mem_free(ppSignatures);
+            die_engine_profile_end(pEngine, nStart, "isAnySignatureInSectionPresent: %lld (%lld patterns) ", (long long)nNumber, (long long)nLength);
             return js_bool(bResult);
         }
 
@@ -1804,7 +1976,7 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
          * all keeps the empty string the member was constructed with. The
          * length is always qMin(size, 0x1000).                             */
         case A_getHeaderString: {
-            cd_i64 nMaxSize = pFile ? pFile->nSize : 0;
+            cd_i64 nMaxSize = pFile ? xx_io_total_size(pFile) : 0;
             int nUnicode = unicode_type(pFile);
 
             if (nMaxSize > 0x1000) {
@@ -1812,15 +1984,15 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
             }
 
             if (nUnicode != 0) {
-                return str_take(pCtx, die_unicode_string(pFile, 2, nMaxSize, (nUnicode == 2) ? 1 : 0));
+                return str_take_native(pCtx, xx_str_read_unicode(pFile, 2, nMaxSize, (nUnicode == 2) ? 1 : 0));
             }
 
             if (is_utf8_text(pFile)) {
-                return str_take(pCtx, die_utf8_string(pFile, 3, nMaxSize));
+                return str_take_native(pCtx, xx_str_read_utf8(pFile, 3, nMaxSize));
             }
 
             if (is_plain_text(pFile)) {
-                return str_take(pCtx, die_ansi_string(pFile, 0, nMaxSize));
+                return str_take_native(pCtx, xx_str_read_ansi(pFile, 0, nMaxSize));
             }
 
             return js_str(pCtx, "");
@@ -1876,44 +2048,23 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
         case A_is32: return js_bool(pEngine->nBits == 32);
         case A_is64: return js_bool(pEngine->nBits == 64);
 
-        case A_isDeepScan: return js_bool(pEngine->pOptions->bDeepScan);
-        case A_isHeuristicScan: return js_bool(pEngine->pOptions->bHeuristicScan);
+        case A_isDeepScan: return js_bool(pEngine->pOptions->deep_scan);
+        case A_isHeuristicScan: return js_bool(pEngine->pOptions->heuristic_scan);
         case A_isFirstWrapperScan: return js_bool(0);
-        case A_isAggressiveScan: return js_bool(pEngine->pOptions->bAggressiveScan);
-        case A_isRecursiveScan: return js_bool(pEngine->pOptions->bRecursiveScan);
+        case A_isAggressiveScan: return js_bool(pEngine->pOptions->aggressive_scan);
+        case A_isRecursiveScan: return js_bool(pEngine->pOptions->recursive_scan);
         case A_isOverlayScan: return js_bool(0);
-        case A_isVerbose: return js_bool(pEngine->pOptions->bVerbose);
-        case A_isProfiling: return js_bool(pEngine->pOptions->bProfiling);
+        case A_isVerbose: return js_bool(pEngine->pOptions->verbose);
+        case A_isProfiling: return js_bool(pEngine->pOptions->profiling);
         case A_getScanID: return js_str(pCtx, "");
         case A_getStartOffset: return js_num(0);
 
-        /* XBinary::bytesCountToString with the default base of 1024 that
-         * Binary_Script::bytesCountToString leaves in place: the plain byte
-         * count below the base, otherwise the scaled value with exactly two
-         * fraction digits. QString::number(d, 'f', 2) rounds ties away from
-         * zero, which is what x_dtoa_fixed does.                           */
+        /* Binary_Script::bytesCountToString uses XBinary's default base. */
         case A_bytesCountToString: {
             cd_u64 nValue = arg_u64(pCtx, nArgc, pArgv, 0);
-            const cd_u64 nBase = 1024;
-            char sValue[64];
             char sBuf[96];
 
-            if (nValue < nBase) {
-                x_snprintf(sBuf, sizeof(sBuf), "%llu Bytes", (unsigned long long)nValue);
-            } else if (nValue < (nBase * nBase)) {
-                x_dtoa_fixed((double)nValue / (double)nBase, 2, sValue, sizeof(sValue));
-                x_snprintf(sBuf, sizeof(sBuf), "%s KiB", sValue);
-            } else if (nValue < (nBase * nBase * nBase)) {
-                x_dtoa_fixed((double)nValue / (double)(nBase * nBase), 2, sValue, sizeof(sValue));
-                x_snprintf(sBuf, sizeof(sBuf), "%s MiB", sValue);
-            } else if (nValue < (nBase * nBase * nBase * nBase)) {
-                x_dtoa_fixed((double)nValue / (double)(nBase * nBase * nBase), 2, sValue, sizeof(sValue));
-                x_snprintf(sBuf, sizeof(sBuf), "%s GiB", sValue);
-            } else {
-                x_dtoa_fixed((double)nValue / (double)(nBase * nBase * nBase * nBase), 2, sValue, sizeof(sValue));
-                x_snprintf(sBuf, sizeof(sBuf), "%s TiB", sValue);
-            }
-
+            if (!xx_str_bytes_count_to_string(nValue, 1024U, sBuf, sizeof(sBuf))) sBuf[0] = '\0';
             return js_str(pCtx, sBuf);
         }
 
@@ -1939,8 +2090,8 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
                 return js_str(pCtx, "JVM");
             }
 
-            if (pEngine->fileType == XFT_COM) {
-                /* XCOM::getOsName: OSNAME_MSDOS. */
+            if (pEngine->fileType == XFT_COM || pEngine->fileType == XFT_MSDOS) {
+                /* XCOM and XMSDOS: OSNAME_MSDOS. */
                 return js_str(pCtx, "MS-DOS");
             }
 
@@ -2026,8 +2177,8 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
                 return js_str(pCtx, "Universal, Data");
             }
 
-            if (pEngine->fileType == XFT_COM) {
-                /* XCOM: getArch() = "8086", getMode() = MODE_16. */
+            if (pEngine->fileType == XFT_COM || pEngine->fileType == XFT_MSDOS) {
+                /* XCOM and XMSDOS: getArch() = "8086", getMode() = MODE_16. */
                 return js_str(pCtx, "8086, 16-bit");
             }
 
@@ -2258,7 +2409,7 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
             nOffset = (cd_i64)pPE->pDirRVA[XX_PE_INSPECT_DIR_SECURITY];
             nSize = (cd_i64)pPE->pDirSize[XX_PE_INSPECT_DIR_SECURITY];
 
-            return js_bool((nSize > 0) && (nOffset > 0) && (nOffset < pFile->nSize) && (nSize <= pFile->nSize - nOffset));
+            return js_bool((nSize > 0) && (nOffset > 0) && (nOffset < xx_io_total_size(pFile)) && (nSize <= xx_io_total_size(pFile) - nOffset));
         }
 
         case A_cleanString: {
@@ -2277,17 +2428,17 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
             int bReplaceZero = arg_bool(pCtx, nArgc, pArgv, 2, 0);
             JSVal result = js_new_array(pCtx);
             cd_i64 i = 0;
-            size_t nCapacity = die_file_buffer_size(pFile);
+            size_t nCapacity = xx_io_buffer_capacity(pFile);
 
             fix_offset_size(pEngine, &nOffset, &nSize);
 
-            if ((nOffset < 0) || (nOffset >= pFile->nSize) || (nSize < 0)) {
+            if ((nOffset < 0) || (nOffset >= xx_io_total_size(pFile)) || (nSize < 0)) {
                 return result;
             }
 
             while (i < nSize) {
                 size_t nCount = (cd_u64)(nSize - i) < nCapacity ? (size_t)(nSize - i) : nCapacity;
-                const unsigned char *bytes = die_file_window(pFile, nOffset + i, &nCount);
+                const unsigned char *bytes = xx_io_buffer_view(pFile, nOffset + i, &nCount);
                 size_t j;
 
                 if (!bytes || !nCount) break;
@@ -2988,13 +3139,14 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
 
         case A_getPEFileVersion: {
             char *pFileName = arg_string(pCtx, nArgc, pArgv, 0);
-            DieFile other;
+            xx_io_device *source = xx_io_file_open(pFileName, "rb");
+            xx_io_device *other = source ? xx_io_buffer_open_auto(source, 0, xx_get_file_memory_limit(), true) : NULL;
             JSVal result = js_str(pCtx, "");
 
-            if (die_file_open(&other, pFileName)) {
+            if (other) {
                 xx_pe_inspection otherPE = {0};
 
-                if (xx_pe_inspect_analyze_from_device(&otherPE, other.pDevice, 0, NULL)) {
+                if (xx_pe_inspect_analyze_from_device(&otherPE, other, 0, NULL)) {
                     int i = 0;
 
                     for (i = 0; i < otherPE.nVersionCount; i++) {
@@ -3007,7 +3159,9 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
                 }
                 xx_pe_inspect_free(&otherPE);
 
-                die_file_close(&other);
+                xx_io_close(other);
+            } else if (source) {
+                xx_io_close(source);
             }
 
             cd_free(pFileName);
@@ -3229,9 +3383,9 @@ static JSVal fn_is_result_present(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *
     (void)pUser;
 
     for (i = 0; i < pEngine->pResult->nCount; i++) {
-        ScanRecord *pRecord = &pEngine->pResult->pRecords[i];
+        xx_scan_record *pRecord = &pEngine->pResult->pRecords[i];
 
-        if ((cd_stricmp_ascii(pRecord->pType, pType) == 0) && ((cd_stricmp_ascii(pRecord->pName, pName) == 0) || (pName[0] == 0))) {
+        if ((cd_stricmp_ascii(pRecord->type, pType) == 0) && ((cd_stricmp_ascii(pRecord->name, pName) == 0) || (pName[0] == 0))) {
             bResult = 1;
             break;
         }
@@ -3254,7 +3408,7 @@ static JSVal fn_get_number_of_results(JSCtx *pCtx, JSVal thisVal, int nArgc, JSV
     (void)pUser;
 
     for (i = 0; i < pEngine->pResult->nCount; i++) {
-        if ((cd_stricmp_ascii(pEngine->pResult->pRecords[i].pType, pType) == 0) || (pType[0] == 0)) {
+        if ((cd_stricmp_ascii(pEngine->pResult->pRecords[i].type, pType) == 0) || (pType[0] == 0)) {
             nResult++;
         }
     }
@@ -3280,15 +3434,15 @@ static JSVal fn_remove_result(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArg
     pEngine->nBlackListCount++;
 
     for (i = 0; i < pEngine->pResult->nCount; i++) {
-        ScanRecord *pRecord = &pEngine->pResult->pRecords[i];
+        xx_scan_record *pRecord = &pEngine->pResult->pRecords[i];
 
-        if ((cd_stricmp_ascii(pRecord->pType, pType) == 0) && ((cd_stricmp_ascii(pRecord->pName, pName) == 0) || (pRecord->pName[0] == 0))) {
-            cd_free(pRecord->pType);
-            cd_free(pRecord->pName);
-            cd_free(pRecord->pVersion);
-            cd_free(pRecord->pInfo);
-            cd_free(pRecord->pFormatId);
-            x_memmove(pEngine->pResult->pRecords + i, pEngine->pResult->pRecords + i + 1, (size_t)(pEngine->pResult->nCount - i - 1) * sizeof(ScanRecord));
+        if ((cd_stricmp_ascii(pRecord->type, pType) == 0) && ((cd_stricmp_ascii(pRecord->name, pName) == 0) || (pRecord->name[0] == 0))) {
+            cd_free((void *)pRecord->type);
+            cd_free((void *)pRecord->name);
+            cd_free((void *)pRecord->version);
+            cd_free((void *)pRecord->info);
+            cd_free((void *)pRecord->format_id);
+            x_memmove(pEngine->pResult->pRecords + i, pEngine->pResult->pRecords + i + 1, (size_t)(pEngine->pResult->nCount - i - 1) * sizeof(xx_scan_record));
             pEngine->pResult->nCount--;
             break;
         }
@@ -3324,7 +3478,7 @@ static JSVal fn_include_script(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pAr
         }
     }
 
-    if ((!bFound) && pEngine->pOptions->bShowMessages) {
+    if ((!bFound) && pEngine->pOptions->show_messages) {
         x_fprintf(x_stderr(), "Cannot find: %s\n", pScript);
     }
 
@@ -3341,7 +3495,7 @@ static JSVal fn_log(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *p
     (void)thisVal;
     (void)pUser;
 
-    if (pEngine->pOptions->bProfiling) {
+    if (pEngine->pOptions->profiling) {
         static cd_i64 s_nLastLogTime = 0;
         cd_i64 now = (cd_i64)x_clock_ms();
         cd_i64 delta = (s_nLastLogTime > 0) ? (now - s_nLastLogTime) : 0;
@@ -3349,7 +3503,7 @@ static JSVal fn_log(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *p
         x_printf("[WARNING] LOG %s [+%lld ms]\n", pText ? pText : "", (long long)delta);
     }
 
-    if (pEngine->pOptions->bShowMessages) {
+    if (pEngine->pOptions->show_messages) {
         x_fprintf(x_stderr(), "%s\n", pText);
     }
 
@@ -3360,13 +3514,13 @@ static JSVal fn_log(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *p
 
 static JSVal fn_is_stop(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
 {
-    (void)pCtx;
+    DieEngine *pEngine = engine_of(pCtx);
     (void)thisVal;
     (void)nArgc;
     (void)pArgv;
     (void)pUser;
 
-    return js_bool(0);
+    return js_bool(pEngine->bStop || xx_pd_is_stopped(pEngine->pd));
 }
 
 static JSVal fn_break_scan(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
@@ -3428,8 +3582,8 @@ static JSVal fn_noop(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *
 
 static void engine_add_result(DieEngine *pEngine, const char *pType, const char *pName, const char *pVersion, const char *pInfo, const char *pFormatId)
 {
-    ScanResult *pResult = pEngine->pResult;
-    ScanRecord *pRecord = NULL;
+    xx_scan_result *pResult = pEngine->pResult;
+    xx_scan_record *pRecord = NULL;
     int i = 0;
 
     for (i = 0; i < pEngine->nBlackListCount; i++) {
@@ -3441,19 +3595,19 @@ static void engine_add_result(DieEngine *pEngine, const char *pType, const char 
 
     if (pResult->nCount + 1 > pResult->nCapacity) {
         pResult->nCapacity = pResult->nCapacity ? (pResult->nCapacity * 2) : 16;
-        pResult->pRecords = (ScanRecord *)cd_realloc(pResult->pRecords, (size_t)pResult->nCapacity * sizeof(ScanRecord));
+        pResult->pRecords = (xx_scan_record *)cd_realloc(pResult->pRecords, (size_t)pResult->nCapacity * sizeof(xx_scan_record));
     }
 
     pRecord = &pResult->pRecords[pResult->nCount++];
-    x_memset(pRecord, 0, sizeof(*pRecord));
-    pRecord->pType = cd_strdup(pType);
-    pRecord->pName = cd_strdup(pName);
-    pRecord->pVersion = cd_strdup(pVersion);
-    pRecord->pInfo = cd_strdup(pInfo);
-    pRecord->pFormatId = pFormatId ? cd_strdup(pFormatId) : NULL;
-    pRecord->nPrio = die_engine_type_to_prio(pType);
-    pRecord->bIsHeuristic = ((x_strlen(pType) > 1) && (pType[0] == '~')) ? 1 : 0;
-    pRecord->bIsAHeuristic = ((x_strlen(pType) > 1) && (pType[0] == '!')) ? 1 : 0;
+    die_engine_record_init(pEngine, pRecord);
+    pRecord->type = cd_strdup(pType);
+    pRecord->name = cd_strdup(pName);
+    pRecord->version = cd_strdup(pVersion);
+    pRecord->info = cd_strdup(pInfo);
+    pRecord->format_id = pFormatId ? cd_strdup(pFormatId) : NULL;
+    pRecord->priority = xx_scan_type_to_prio(pType);
+    pRecord->is_heuristic = ((x_strlen(pType) > 1) && (pType[0] == '~')) ? 1 : 0;
+    pRecord->is_aggressive_heuristic = ((x_strlen(pType) > 1) && (pType[0] == '!')) ? 1 : 0;
 }
 
 /* ------------------------------------------------------------- install  */
@@ -3473,6 +3627,7 @@ static const ApiEntry g_apiTable[] = {{"getSize", A_getSize, 0},
                                       {"readQword", A_readQword, 1},
                                       {"readSQword", A_readSQword, 1},
                                       {"getString", A_getString, 2},
+                                      {"isJavaScriptMinified", A_isJavaScriptMinified, 0},
                                       {"findSignature", A_findSignature, 3},
                                       {"fSig", A_findSignature, 3},
                                       {"findString", A_findString, 3},
@@ -3499,12 +3654,14 @@ static const ApiEntry g_apiTable[] = {{"getSize", A_getSize, 0},
                                       {"calculateEntropy", A_calculateEntropy, 2},
                                       {"isZeroFilled", A_isZeroFilled, 2},
                                       {"scanBufferForEncryptedPe", A_scanBufferForEncryptedPe, 2},
+                                      {"validateAmd64Unwind", A_validateAmd64Unwind, 2},
                                       {"calculateMD5", A_calculateMD5, 2},
                                       {"calculateCRC32", A_calculateCRC32, 2},
                                       {"crc16", A_crc16, 3},
                                       {"crc32", A_crc32, 3},
                                       {"adler32", A_adler32, 2},
                                       {"isSignatureInSectionPresent", A_isSignatureInSectionPresent, 2},
+                                      {"isAnySignatureInSectionPresent", A_isAnySignatureInSectionPresent, 2},
                                       {"getImageBase", A_getImageBase, 0},
                                       {"upperCase", A_upperCase, 1},
                                       {"lowerCase", A_lowerCase, 1},

@@ -33,22 +33,23 @@
 #include "xxfclib/js/xx_js.h"
 
 #include "xx_die_engine_compat.h"
+#include "xx_die_engine_engine.h"
 
-#include "xx_die_engine_bin.h"
+#include "xxfclib/data/xx_data.h"
 #include "xxfclib/formats/xx_data_signature.h"
 #include "xxfclib/formats/xx_memory_map.h"
-#include "xxfclib/formats/pe/xx_pe.h"
-#include "xxfclib/formats/dotnet/xx_dotnet.h"
-#include "xxfclib/formats/jpeg/xx_jpeg.h"
-#include "xxfclib/formats/png/xx_png.h"
-#include "xxfclib/formats/apk/xx_apk.h"
-#include "xxfclib/formats/pdf/xxpdf.h"
-#include "xxfclib/formats/elf/xx_elf.h"
-#include "xxfclib/formats/dex/xx_dex.h"
-#include "xxfclib/formats/macho/xx_macho.h"
-#include "xxfclib/formats/pyc/xx_pyc.h"
-#include "xxfclib/formats/zip/xx_zip.h"
-#include "xxfclib/formats/iso9660/xx_iso9660.h"
+#include "xxfclib/formats/executable/pe/xx_pe.h"
+#include "xxfclib/formats/executable/dotnet/xx_dotnet.h"
+#include "xxfclib/formats/image/jpeg/xx_jpeg.h"
+#include "xxfclib/formats/image/png/xx_png.h"
+#include "xxfclib/formats/installer/apk/xx_apk.h"
+#include "xxfclib/formats/document/pdf/xxpdf.h"
+#include "xxfclib/formats/executable/elf/xx_elf.h"
+#include "xxfclib/formats/executable/dex/xx_dex.h"
+#include "xxfclib/formats/executable/macho/xx_macho.h"
+#include "xxfclib/formats/executable/pyc/xx_pyc.h"
+#include "xxfclib/formats/archive/zip/xx_zip.h"
+#include "xxfclib/formats/filesystem/iso9660/xx_iso9660.h"
 /* Native format compatibility alias conflicts with DIE public member names. */
 #undef fileType
 
@@ -66,17 +67,14 @@ typedef struct {
     cd_i64 nStart;
 } TimingRecord;
 
-typedef struct DieLiteralSearchCache DieLiteralSearchCache;
-
 struct DieEngine {
     DBase *pDb;
-    ScanOptions *pOptions;
-    ScanResult *pResult;
+    xx_scan_options *pOptions;
+    xx_scan_result *pResult;
+    xx_pd_struct *pd; /* Borrowed progress/cancellation for this synchronous pass. */
 
-    DieFile file;
-    /* Private to this immutable scan buffer; never shared by file readers or
-     * concurrent engines. Released before the engine/file buffer is closed. */
-    DieLiteralSearchCache *pLiteralSearchCache;
+    xx_io_device *device; /* Owned buffered input for this signature pass. */
+    const char *file_name; /* Borrowed scan-option/source name. */
     xx_pe_inspection pe;
     int bHasPE;
     xx_dotnet_inspection dotnet;
@@ -139,17 +137,15 @@ struct DieEngine {
 /* Installs the DIE script API on a JavaScript context. */
 XXFC_API void die_engine_install_api(DieEngine *pEngine);
 
+/* Initialise shared record metadata for the current signature scan pass. */
+void die_engine_record_init(DieEngine *pEngine, xx_scan_record *pRecord);
+
 /* Signature validation with the reference's progress-error handling.
  * Compare kind: 0 = no progress error (entry point/.NET), 1 = header,
  * 2 = overlay. Header/overlay cached comparisons do not report parse errors. */
 XXFC_API int die_engine_signature_compare(DieEngine *pEngine, cd_i64 nOffset, const char *pText, int nKind, cd_i64 nCacheBase);
 XXFC_API cd_i64 die_engine_signature_find(DieEngine *pEngine, cd_i64 nOffset, cd_i64 nSize, const char *pText);
-
-/* Literal searches can reuse a bounded prefix index within an immutable scan.
- * The public DieFile search helpers remain stateless. No explicit init is
- * needed: a newly allocated engine has a NULL cache. */
-XXFC_API cd_i64 die_engine_literal_find(DieEngine *pEngine, cd_i64 nOffset, cd_i64 nSize, const unsigned char *pNeedle, cd_i64 nNeedleSize);
-XXFC_API void die_engine_literal_cache_free(DieEngine *pEngine);
+XXFC_API int die_engine_signature_find_any(DieEngine *pEngine, cd_i64 nOffset, cd_i64 nSize, const char *const *ppTexts, size_t nCount);
 
 /* The reference emits its profiling trace through warningMessage, which the
  * console prints to stdout as "[WARNING] <text>"; a measured step adds

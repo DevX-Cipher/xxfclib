@@ -123,28 +123,7 @@ static void xx_ws_relink(xx_ws_tree *tree, int32_t node, int32_t target)
     }
 }
 
-static void xx_ws_swap_nodes(xx_ws_tree *tree, int32_t first, int32_t second)
-{
-    int32_t weight;
-    int32_t child;
-    uint8_t is_leaf;
-
-    xx_ws_relink(tree, first, second);
-    xx_ws_relink(tree, second, first);
-
-    weight = tree->weight[first];
-    child = tree->child[first];
-    is_leaf = tree->is_leaf[first];
-
-    tree->weight[first] = tree->weight[second];
-    tree->child[first] = tree->child[second];
-    tree->is_leaf[first] = tree->is_leaf[second];
-
-    tree->weight[second] = weight;
-    tree->child[second] = child;
-    tree->is_leaf[second] = is_leaf;
-    /* Parents stay with the slots.  Deliberate. */
-}
+#include "xx_sort_algo_wintersoft_xx_ws_swap_nodes_model.inc"
 
 /* Split the lightest node - always the ESCAPE leaf - to make room for a symbol
  * seen for the first time. */
@@ -187,96 +166,7 @@ static bool xx_ws_tree_add(xx_ws_tree *tree, int32_t symbol)
 /* Nelson RebuildTree: pack the leaves to the end with halved weights, then
  * rebuild the internal nodes back down to the root.  Fires only once the root
  * weight reaches 0x8000, so it is the least travelled path here. */
-static void xx_ws_tree_rebuild(xx_ws_tree *tree)
-{
-    int32_t destination = tree->next_free - 1;
-    int32_t source;
-    int32_t i;
-
-    for (i = tree->next_free - 1; i >= XX_WS_ROOT; i--) {
-        if (tree->is_leaf[i]) {
-            /* (w + 1) >> 1, not w >> 1: a weight of 1 must stay 1. */
-            tree->weight[destination] = (tree->weight[i] + 1) >> 1;
-            tree->parent[destination] = tree->parent[i];
-            tree->child[destination] = tree->child[i];
-            tree->is_leaf[destination] = tree->is_leaf[i];
-            destination--;
-        }
-    }
-
-    source = tree->next_free - 2;
-    while (destination >= XX_WS_ROOT) {
-        int32_t weight;
-        int32_t slot;
-
-        if ((source < 0) || ((source + 1) >= XX_WS_NODES)) {
-            return;
-        }
-
-        weight = tree->weight[source] + tree->weight[source + 1];
-        tree->weight[destination] = weight;
-        tree->is_leaf[destination] = 0;
-
-        slot = destination + 1;
-        while ((slot < XX_WS_NODES) && (weight < tree->weight[slot])) {
-            slot++;
-        }
-        slot--;
-
-        for (i = destination; i < slot; i++) {
-            tree->weight[i] = tree->weight[i + 1];
-            tree->parent[i] = tree->parent[i + 1];
-            tree->child[i] = tree->child[i + 1];
-            tree->is_leaf[i] = tree->is_leaf[i + 1];
-        }
-
-        tree->weight[slot] = weight;
-        tree->child[slot] = source;
-        tree->is_leaf[slot] = 0;
-
-        source -= 2;
-        destination--;
-    }
-
-    for (i = tree->next_free - 1; i >= XX_WS_ROOT; i--) {
-        xx_ws_relink(tree, i, i);
-    }
-}
-
-static void xx_ws_tree_update(xx_ws_tree *tree, int32_t symbol)
-{
-    int32_t current;
-
-    if (tree->weight[XX_WS_ROOT] == XX_WS_MAX_WEIGHT) {
-        xx_ws_tree_rebuild(tree);
-    }
-    if ((symbol < 0) || (symbol >= XX_WS_SYMBOLS)) {
-        return;
-    }
-
-    current = tree->leaf[symbol];
-    while (current != -1) {
-        int32_t fresh;
-
-        if ((current < 0) || (current >= XX_WS_NODES)) {
-            return;
-        }
-        tree->weight[current]++;
-
-        fresh = current;
-        while (fresh > XX_WS_ROOT) {
-            if (tree->weight[fresh - 1] >= tree->weight[current]) {
-                break;
-            }
-            fresh--;
-        }
-        if (current != fresh) {
-            xx_ws_swap_nodes(tree, current, fresh);
-            current = fresh;
-        }
-        current = tree->parent[current];
-    }
-}
+#include "xx_sort_algo_wintersoft_xx_ws_tree_rebuild_model.inc"
 
 bool xx_wintersoft_ahuff_decode_memory(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, size_t *written)
 {

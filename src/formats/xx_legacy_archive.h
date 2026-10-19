@@ -4,12 +4,12 @@
  * each reader; upstream sources are references for wire-format facts only. */
 #ifndef XX_LEGACY_ARCHIVE_HELPERS_H
 #define XX_LEGACY_ARCHIVE_HELPERS_H
-#include "xxfclib/formats/legacy_archive/xx_legacy_archive.h"
+#include "xxfclib/formats/xx_legacy_archive.h"
 #include "xx_payload_members.h"
 #include "xxfclib/algo/ampk/xx_ampk.h"
 #include "xxfclib/algo/lzh/xx_lzh.h"
 #include "xxfclib/algo/compress/xx_compress.h"
-#include "xxfclib/formats/pp20/xx_pp20.h"
+#include "xxfclib/formats/archive/pp20/xx_pp20.h"
 #include "xxfclib/data/xx_data.h"
 #define AC_MAX_BYTES (64U * 1024U * 1024U)
 #define AC_MAX_MEMBERS 65535U

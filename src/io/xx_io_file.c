@@ -52,13 +52,25 @@ static ssize_t xx_io_file_read_cb(xx_io_device *self, void *buf, size_t n)
     return xx_io_platform_file_read(state->handle, buf, n);
 }
 
+/* A failure that a temporary copy (no path) records is kept as
+ * XX_IO_EXTRACT_TEMP_FAILED: no file of the member failed. */
+static void xx_io_file_temp_failed(const xx_io_file_state *state, int kept)
+{
+    if (!state->path && !kept && xx_io_extract_errno()) xx_io_extract_restore(XX_IO_EXTRACT_TEMP_FAILED);
+}
+
 static ssize_t xx_io_file_write_cb(xx_io_device *self, const void *buf, size_t n)
 {
     xx_io_file_state *state = xx_io_file_state_of(self);
+    int kept;
+    ssize_t written;
     if (!state || !state->handle) {
         return -1;
     }
-    return xx_io_platform_file_write(state->handle, buf, n);
+    kept = xx_io_extract_errno();
+    written = xx_io_platform_file_write(state->handle, buf, n);
+    xx_io_file_temp_failed(state, kept);
+    return written;
 }
 
 static int xx_io_file_seek_cb(xx_io_device *self, long off, int whence)
@@ -97,7 +109,11 @@ static int xx_io_file_close_cb(xx_io_device *self)
     }
     state = xx_io_file_state_of(self);
     if (state) {
-        if (state->handle) rc = xx_io_platform_file_close(state->handle);
+        if (state->handle) {
+            int kept = xx_io_extract_errno();
+            rc = xx_io_platform_file_close(state->handle);
+            xx_io_file_temp_failed(state, kept);
+        }
         xx_mem_free(state->path);
         xx_mem_free(state);
     }
@@ -182,8 +198,14 @@ const char *xx_io_source_path(xx_io_device *device)
 {
     xx_io_file_state *state;
     xx_io_volume volume;
+    xx_io_device *buffer_source;
     int64_t child_size;
     while (device) {
+        buffer_source = xx_io_buffer_source(device);
+        if (buffer_source) {
+            device = buffer_source;
+            continue;
+        }
         state = xx_io_file_state_of(device);
         if (state) return state->path;
         if (xx_io_multivolume_count(device) != 1U || !xx_io_multivolume_get_volume(device, 0U, &volume, NULL)) return NULL;
@@ -227,6 +249,60 @@ bool xx_io_file_replace_a(const char *source, const char *destination, bool over
 bool xx_io_file_replace_w(const wchar_t *source, const wchar_t *destination, bool overwrite)
 {
     return xx_io_platform_file_replace_w(source, destination, overwrite);
+}
+
+/* The last name of path, without the trailing dots and spaces that Windows
+ * drops from it. */
+static const char *xx_io_stage_leaf(const char *path, size_t *length)
+{
+    const char *leaf = path;
+    size_t index;
+    for (index = 0U; path[index]; ++index) {
+        if (path[index] == '/' || path[index] == '\\') leaf = path + index + 1U;
+    }
+    *length = (size_t)(path + index - leaf);
+    while (*length && (leaf[*length - 1U] == '.' || leaf[*length - 1U] == ' ')) --*length;
+    return leaf;
+}
+
+/* Whether a file system that folds ASCII case reads both last names as one. */
+static bool xx_io_stage_same_leaf(const char *a, const char *b)
+{
+    size_t length_a, length_b, index;
+    const char *leaf_a = xx_io_stage_leaf(a, &length_a);
+    const char *leaf_b = xx_io_stage_leaf(b, &length_b);
+    if (length_a != length_b) return false;
+    for (index = 0U; index < length_a; ++index) {
+        unsigned char x = (unsigned char)leaf_a[index], y = (unsigned char)leaf_b[index];
+        if (x >= 'A' && x <= 'Z') x = (unsigned char)(x + ('a' - 'A'));
+        if (y >= 'A' && y <= 'Z') y = (unsigned char)(y + ('a' - 'A'));
+        if (x != y) return false;
+    }
+    return true;
+}
+
+xx_io_device *xx_io_stage_open(const char *destination, const char *candidate, bool *retry)
+{
+    int kept = xx_io_extract_errno();
+    bool present;
+    xx_io_device *device;
+    *retry = destination && candidate;
+    if (!*retry || xx_io_stage_same_leaf(destination, candidate) || xx_io_platform_file_exists_a(candidate)) return NULL;
+    present = xx_io_platform_file_exists_a(destination);
+    device = xx_io_file_open(candidate, "wbx");
+    if (!device) {
+        /* Taken meanwhile, which is no failure; else the folder refuses it. */
+        if (xx_io_platform_file_exists_a(candidate)) xx_io_extract_restore(kept);
+        else *retry = false;
+        return NULL;
+    }
+    if (!present && xx_io_platform_file_exists_a(destination)) {
+        /* The file system reads the candidate as the destination. */
+        xx_io_close(device);
+        xx_io_platform_file_remove_a(candidate);
+        return NULL;
+    }
+    return device;
 }
 
 /* ========================================================================= */

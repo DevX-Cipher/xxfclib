@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT. Thread-scoped RAM-only temporary streams.
- * There is deliberately no filesystem fallback or virtual path namespace. */
+ * There is deliberately no filesystem fallback or virtual path namespace.
+ * The thread-scoped extraction policy (xx_io_extract_begin) is kept here too. */
 #include "xx_io_policy.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "../global/xx_tls.h"
@@ -8,6 +9,7 @@ typedef struct xx_io_policy_context {
     struct xx_io_policy_context *parent;
     uintptr_t thread_id;
     uint64_t limit, used, streams;
+    unsigned long refusals; /* Growth over the limit refused. */
     size_t refs;
     uint32_t error;
     bool active;
@@ -27,8 +29,10 @@ static xx_io_policy_context *xx_io_policy_get(void)
 
 static void xx_io_policy_fail(xx_io_policy_context *context, uint32_t error)
 {
-    for (; context; context = context->parent)
+    for (; context; context = context->parent) {
         if (!context->error) context->error = error;
+        if (error == XX_IO_MEMORY_ONLY_LIMIT) ++context->refusals;
+    }
 }
 static void xx_io_policy_release(xx_io_policy_context *context)
 {
@@ -81,10 +85,25 @@ bool xx_io_memory_only_active(void)
 {
     return xx_io_policy_get() != NULL;
 }
+unsigned long xx_io_memory_only_refusals(void)
+{
+    xx_io_policy_context *current = xx_io_policy_get();
+    return current ? current->refusals : 0U;
+}
 uint64_t xx_io_memory_only_used(void)
 {
     xx_io_policy_context *current = xx_io_policy_get();
     return current ? current->used : 0U;
+}
+uint64_t xx_io_memory_only_available(void)
+{
+    xx_io_policy_context *context;
+    uint64_t available = UINT64_MAX;
+    for (context = xx_io_policy_get(); context; context = context->parent) {
+        uint64_t remaining = context->limit > context->used ? context->limit - context->used : 0U;
+        if (remaining < available) available = remaining;
+    }
+    return available;
 }
 xx_io_memory_only_error_t xx_io_memory_only_error(const xx_io_memory_only_scope *scope)
 {
@@ -274,4 +293,81 @@ xx_io_device *xx_io_memory_temp_open(void)
 bool xx_io_memory_temp_is_device(const xx_io_device *device)
 {
     return device && device->priv && device->close == xx_io_ram_close;
+}
+
+/* The extraction scope (xx_io_extract_begin): a separate thread slot, so
+ * that it nests independently of the memory-only scopes. */
+typedef struct xx_io_extract_context {
+    struct xx_io_extract_context *parent;
+    char *root;
+    int error;
+    unsigned long files;
+} xx_io_extract_context;
+static xx_tls_key xx_io_extract_key;
+bool xx_io_extract_begin(xx_io_extract_scope *scope, const char *root)
+{
+    xx_io_extract_context *context;
+    size_t length = 0U;
+    if (!scope || scope->internal || !root) return false;
+    while (root[length]) ++length;
+    context = (xx_io_extract_context *)xx_mem_calloc(1U, sizeof(*context) + length + 1U);
+    if (!context) return false;
+    context->root = (char *)(context + 1);
+    xx_mem_copy(context->root, root, length + 1U);
+    context->parent = (xx_io_extract_context *)xx_tls_get(&xx_io_extract_key);
+    if (!xx_tls_set(&xx_io_extract_key, context)) {
+        xx_mem_free(context);
+        return false;
+    }
+    scope->internal = context;
+    return true;
+}
+bool xx_io_extract_end(xx_io_extract_scope *scope)
+{
+    xx_io_extract_context *context;
+    if (!scope || !scope->internal) return false;
+    context = (xx_io_extract_context *)scope->internal;
+    if (context != xx_tls_get(&xx_io_extract_key)) return false;
+    xx_tls_set(&xx_io_extract_key, context->parent);
+    scope->internal = NULL;
+    xx_mem_free(context);
+    return true;
+}
+void xx_io_extract_clear(void)
+{
+    xx_io_extract_context *context = (xx_io_extract_context *)xx_tls_get(&xx_io_extract_key);
+    if (context) {
+        context->error = 0;
+        context->files = 0U;
+    }
+}
+unsigned long xx_io_extract_files(void)
+{
+    xx_io_extract_context *context = (xx_io_extract_context *)xx_tls_get(&xx_io_extract_key);
+    return context ? context->files : 0U;
+}
+void xx_io_extract_opened(void)
+{
+    xx_io_extract_context *context = (xx_io_extract_context *)xx_tls_get(&xx_io_extract_key);
+    if (context) ++context->files;
+}
+int xx_io_extract_errno(void)
+{
+    xx_io_extract_context *context = (xx_io_extract_context *)xx_tls_get(&xx_io_extract_key);
+    return context ? context->error : 0;
+}
+const char *xx_io_extract_root(void)
+{
+    xx_io_extract_context *context = (xx_io_extract_context *)xx_tls_get(&xx_io_extract_key);
+    return context ? context->root : NULL;
+}
+void xx_io_extract_fail(int error)
+{
+    xx_io_extract_context *context = (xx_io_extract_context *)xx_tls_get(&xx_io_extract_key);
+    if (context && error && !context->error) context->error = error;
+}
+void xx_io_extract_restore(int error)
+{
+    xx_io_extract_context *context = (xx_io_extract_context *)xx_tls_get(&xx_io_extract_key);
+    if (context) context->error = error;
 }

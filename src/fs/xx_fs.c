@@ -133,28 +133,7 @@ static xx_fs_entry_t *xx_fs_entry_create(const char *directory, const char *name
     return entry;
 }
 
-/* By name alone. Used when the caller's order is the directory's own name
- * order rather than a presentation order. */
-static int xx_fs_entry_compare_name(const void *left, const void *right)
-{
-    const xx_fs_entry_t *a = *(const xx_fs_entry_t *const *)left;
-    const xx_fs_entry_t *b = *(const xx_fs_entry_t *const *)right;
-
-    return xx_rt_strcmp(a->name, b->name);
-}
-
-/* Directories first, then by name, so a listing is stable across platforms
- * whose enumeration order differs. */
-static int xx_fs_entry_compare(const void *left, const void *right)
-{
-    const xx_fs_entry_t *a = *(const xx_fs_entry_t *const *)left;
-    const xx_fs_entry_t *b = *(const xx_fs_entry_t *const *)right;
-
-    if (a->type != b->type) {
-        return a->type == XX_FS_ENTRY_DIR ? -1 : 1;
-    }
-    return xx_rt_strcmp(a->name, b->name);
-}
+#include "../sort/xx_sort_fs.inc"
 
 /* Context for xx_fs_collect_entry: where to append, and whether an append has
  * already failed. */

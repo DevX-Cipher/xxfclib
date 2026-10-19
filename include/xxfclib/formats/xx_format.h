@@ -59,6 +59,7 @@ typedef struct Abstractformat xx_format;
 typedef struct Abstractformat xx_format_t;
 typedef struct Abstractformat xx_abstract_format;
 typedef struct Abstractformat AbstractFormat;
+XXFC_API xx_handle_type_t xx_format_get_handle_type(Abstractformat *format);
 
 typedef struct Abstractdetector Abstractdetector;
 typedef struct Abstractdetector xx_abstract_detector;
@@ -126,6 +127,13 @@ struct Abstractextractor {
      * restore the device cursor. The returned string outlives this call and
      * later extractor calls. */
     char *(*get_version)(xx_io_device *device, int64_t base_address, bool is_mapped);
+
+    /** Construct a native reader; release it with free_reader. Internal
+     * descriptor callbacks also support the public native-reader factory. */
+    Abstractformat *(*create_reader)(xx_io_device *device);
+    void (*free_reader)(Abstractformat *format);
+    /** Fixed magic only: 1 match, 0 reject, -1 requires structural analysis. */
+    int (*signature)(xx_io_device *device, int64_t base_address, bool is_mapped);
 };
 
 /** Return the detection, size, version, and streaming callbacks for a file type.
@@ -244,7 +252,14 @@ typedef enum xx_meta_id_e {
     /* Appended rather than filed with the record fields above: these values
      * cross the shared-library boundary, so inserting in the middle would
      * renumber every option for a consumer built against an older header. */
-    XX_META_ID_LINK_TARGET /**< Symlink target path, relative to the archive root (string) */
+    XX_META_ID_LINK_TARGET, /**< Symlink target path, relative to the archive root (string) */
+    XX_META_ID_OWNER_ID,    /**< POSIX owner's user id (uint64_t); the TAR and CPIO writers store it */
+    XX_META_ID_GROUP_ID,    /**< POSIX group id (uint64_t); the TAR and CPIO writers store it */
+    XX_META_ID_COMPRESSION_CANDIDATES, /**< DEFLATE search budget; positive overrides level, zero/absent uses level (uint64_t) */
+    XX_META_ID_COMPRESSION_LAZY_MATCH, /**< DEFLATE lazy match-length threshold; zero/absent is greedy (uint64_t) */
+    XX_META_ID_COMPRESSION_SHORT_MATCH_FILTER, /**< Skip length-3 matches beyond distance 4096 (bool, default false) */
+    XX_META_ID_COMPRESSION_NICE_MATCH, /**< Stop search at this match length; zero disables (uint64_t) */
+    XX_META_ID_COMPRESSION_GOOD_MATCH /**< Reduce candidate budget at this match length; zero disables (uint64_t) */
 } xx_meta_id_t;
 
 typedef enum xx_meta_id_e xx_archive_meta_id_t;
@@ -261,6 +276,17 @@ typedef enum xx_meta_id_e xx_archive_meta_id_t;
 #define XX_ARCHIVE_META_ID_COMPRESSION_METHOD XX_META_ID_COMPRESSION_METHOD
 #define XX_ARCHIVE_META_ID_COMPRESSION_LEVEL XX_META_ID_COMPRESSION_LEVEL
 #define XX_META_ID_OPT_COMPRESSION_LEVEL XX_META_ID_COMPRESSION_LEVEL
+#define XX_META_ID_OPT_COMPRESSION_CANDIDATES XX_META_ID_COMPRESSION_CANDIDATES
+#define XX_ARCHIVE_META_ID_COMPRESSION_CANDIDATES XX_META_ID_COMPRESSION_CANDIDATES
+
+#define XX_META_ID_OPT_COMPRESSION_SHORT_MATCH_FILTER XX_META_ID_COMPRESSION_SHORT_MATCH_FILTER
+#define XX_ARCHIVE_META_ID_COMPRESSION_SHORT_MATCH_FILTER XX_META_ID_COMPRESSION_SHORT_MATCH_FILTER
+#define XX_META_ID_OPT_COMPRESSION_NICE_MATCH XX_META_ID_COMPRESSION_NICE_MATCH
+#define XX_ARCHIVE_META_ID_COMPRESSION_NICE_MATCH XX_META_ID_COMPRESSION_NICE_MATCH
+#define XX_META_ID_OPT_COMPRESSION_GOOD_MATCH XX_META_ID_COMPRESSION_GOOD_MATCH
+#define XX_ARCHIVE_META_ID_COMPRESSION_GOOD_MATCH XX_META_ID_COMPRESSION_GOOD_MATCH
+#define XX_META_ID_OPT_COMPRESSION_LAZY_MATCH XX_META_ID_COMPRESSION_LAZY_MATCH
+#define XX_ARCHIVE_META_ID_COMPRESSION_LAZY_MATCH XX_META_ID_COMPRESSION_LAZY_MATCH
 #define XX_ARCHIVE_META_ID_ENCRYPTION_METHOD XX_META_ID_ENCRYPTION_METHOD
 #define XX_META_ID_OPT_ENCRYPTION_METHOD XX_META_ID_ENCRYPTION_METHOD
 #define XX_ARCHIVE_META_ID_ATTRIBUTES XX_META_ID_ATTRIBUTES
@@ -379,7 +405,7 @@ struct xx_data_struct_state {
 typedef uint32_t xx_data_struct_record_property_t;
 
 #define XX_DATA_STRUCT_RECORD_PROPERTY_NONE 0x00000000u            /**< No specific semantic role */
-#define XX_DATA_STRUCT_RECORD_PROPERTY_ID 0x00000001u              /**< Value is an identifier / signature / magic */
+#define XX_DATA_STRUCT_RECORD_PROPERTY_ID 0x00000001u              /**< Value is an identifier */
 #define XX_DATA_STRUCT_RECORD_PROPERTY_VIRTUAL_ADDRESS 0x00000002u /**< Value is a virtual/mapped address */
 #define XX_DATA_STRUCT_RECORD_PROPERTY_OFFSET 0x00000004u          /**< Value is a file offset */
 #define XX_DATA_STRUCT_RECORD_PROPERTY_SIZE 0x00000008u            /**< Value is a size/length in bytes */
@@ -389,6 +415,7 @@ typedef uint32_t xx_data_struct_record_property_t;
 #define XX_DATA_STRUCT_RECORD_PROPERTY_TIMESTAMP 0x00000080u       /**< Value is a date/time field */
 #define XX_DATA_STRUCT_RECORD_PROPERTY_STRING 0x00000100u          /**< Value is a text string */
 #define XX_DATA_STRUCT_RECORD_PROPERTY_RESERVED 0x00000200u        /**< Value is reserved/padding */
+#define XX_DATA_STRUCT_RECORD_PROPERTY_SIGNATURE 0x00000400u       /**< Value is a format signature or magic */
 
 /**
  * @brief Describes one named field within a fixed-layout data struct
@@ -409,11 +436,13 @@ struct xx_data_struct_field_desc {
 struct xx_data_struct_record {
     wchar_t *name;                             /**< Dynamic Unicode display name of the record (owned, free with xx_str_wfree) */
     wchar_t *type;                             /**< Dynamic Unicode display type of the record (owned, free with xx_str_wfree) */
+    wchar_t *raw_value;                        /**< Dynamic Unicode fixed-width hexadecimal raw value (owned, free with xx_str_wfree) */
     wchar_t *display_value;                    /**< Dynamic Unicode formatted display value of the record (owned, free with xx_str_wfree) */
     int64_t offset;                            /**< Offset of the record within its parent data struct */
     int64_t size;                              /**< Size in bytes of the record */
     xx_data_struct_record_property_t property; /**< Bit flags describing the record's semantic role */
     xx_var value;                              /**< Record value */
+    wchar_t *comment;                          /**< Dynamic Unicode explanatory comment (owned, free with xx_str_wfree) */
 };
 
 /**
@@ -448,6 +477,9 @@ struct Abstractformat {
     xx_endian_t endian;           /**< Format endianness (XX_ENDIAN_LITTLE/BIG/UNKNOWN) */
     xx_file_type_t file_type;     /**< Detected or assigned file type (0: unknown, 1:
                                      binary, 2: ZIP, 3: ZIP64) */
+    xx_handle_type_t handle_type; /**< Unpacking interpretation, independent of file_type.
+                                      Refreshed by successful base-info handling/getter;
+                                      before validation a factory may store the requested handle. */
     xx_os_t os;                   /**< Operating system enum (XX_OS_UNKNOWN, XX_OS_WINDOWS, etc.) */
     xx_format_type_t format_type; /**< Target binary type enum (XX_TYPE_CONSOLE_APPLICATION, XX_TYPE_DRIVER, XX_TYPE_LIBRARY, etc.) */
     xx_arch_t arch;               /**< Architecture enum (XX_ARCH_UNKNOWN, XX_ARCH_X86_64, etc.) */
@@ -479,6 +511,10 @@ struct Abstractformat {
     xx_list_s list_extra_parameters;
 
     void *priv; /**< Implementation-specific private state */
+
+    /** Factory bookkeeping; native constructors leave these NULL. */
+    void (*factory_free_reader)(Abstractformat *format);
+    xx_io_device *factory_owned_device;
 
     /* Function pointer vtable */
     bool (*check_is_valid)(Abstractformat *self, xx_pd_struct *pd);
@@ -761,9 +797,13 @@ static inline bool xx_format_is_valid(Abstractformat *f, xx_pd_struct *pd)
 static inline bool xx_format_handle_base_info(Abstractformat *f, xx_pd_struct *pd)
 {
     if (!xx_format_handle_split_format(f, pd)) return false;
-    if (f->base_info_handled) return true;
+    if (f->base_info_handled) {
+        (void)xx_format_get_handle_type(f);
+        return true;
+    }
     if (f->handle_base_info) {
         f->base_info_handled = f->handle_base_info(f, pd);
+        if (f->base_info_handled) (void)xx_format_get_handle_type(f);
         return f->base_info_handled;
     }
     return false;
@@ -774,6 +814,32 @@ XXFC_API void xx_format_set_type(Abstractformat *f, xx_format_type_t type);
 
 XXFC_API xx_file_type_t xx_format_get_file_type(Abstractformat *f);
 XXFC_API xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev);
+
+/** Native unpacking interpretations are a distinct enum domain. A mapping
+ * identifies the reader; its streaming callbacks and validity still decide
+ * whether an individual input can be unpacked. */
+XXFC_API xx_handle_type_t xx_format_handle_type_from_file_type(xx_file_type_t type);
+XXFC_API xx_file_type_t xx_format_handle_type_file_type(xx_handle_type_t type);
+XXFC_API const char *xx_format_handle_type_to_string(xx_handle_type_t type);
+XXFC_API xx_handle_type_t xx_format_get_handle_type(Abstractformat *format);
+
+/** Caller-owned, deduplicated list of xx_handle_type_t values. Magic and
+ * executable-carrier readers are tried before suffix hints. Structural
+ * readers without a signature are tried only when deep is true and no
+ * shallow interpretation was found. EXECUTABLE_OVERLAY is an explicit/deep
+ * view of adjacent executable images and preserves the bytes after the
+ * outer image without changing physical type or reconstructing packed code.
+ * Preserves the device cursor. */
+XXFC_API xx_list_t *xx_format_get_unpack_handle_types_device(xx_io_device *dev, bool deep);
+/** Caller-owned catalog of compiled readers with complete unpack callbacks. */
+XXFC_API xx_list_t *xx_format_get_supported_unpack_handle_types(void);
+
+/** Construct an unvalidated native reader, including writer-capable readers.
+ * A nonzero base uses an owned view whose reader offset starts at zero.
+ * The caller retains dev and releases the result with xx_format_free_reader. */
+XXFC_API Abstractformat *xx_format_create_reader(xx_file_type_t type, xx_io_device *dev, int64_t base_address);
+XXFC_API Abstractformat *xx_format_create_handle_reader(xx_handle_type_t type, xx_io_device *dev, int64_t base_address);
+XXFC_API void xx_format_free_reader(Abstractformat *format);
 
 /** Return a provisional type from a case-insensitive filename suffix alone.
  * Compound suffixes are tried first. Unknown/shared suffixes return UNKNOWN.
@@ -786,6 +852,12 @@ XXFC_API xx_file_type_t xx_format_get_file_type_extension(const char *source_pat
  * Extension results are hints: validate with the selected reader before use.
  * The legacy xx_format_get_file_type_device() remains content-only. */
 XXFC_API xx_file_type_t xx_format_get_file_type_device_fast(xx_io_device *dev, const char *source_path);
+/** The types whose generated signature rules all match at base_address,
+ * in type order, up to capacity of them; returns how many matched. Only the
+ * fixed signature bytes are read: no reader is constructed and nothing is
+ * validated, so a match is a candidate for its reader, not a result, and a
+ * truncated device (a decoded prefix) can still match. */
+XXFC_API size_t xx_format_fast_signature_types(xx_io_device *dev, int64_t base_address, xx_file_type_t *types, size_t capacity);
 
 /**
  * @brief Longest chain xx_format_get_file_type_chain() can produce.
@@ -807,8 +879,10 @@ XXFC_API xx_file_type_t xx_format_get_parent_file_type(xx_file_type_t type);
 /**
  * @brief Expand a file type into its chain, most generic first.
  *
- * XX_FILE_TYPE_PE64 expands to { BINARY, MSDOS, PE64 }, XX_FILE_TYPE_APK to
- * { BINARY, ZIP, APK }, and XX_FILE_TYPE_NPM to { BINARY, GZ, TAR_GZ, NPM }.
+ * XX_FILE_TYPE_PE64 expands to { BINARY, MSDOS, PE, PE64 }, XX_FILE_TYPE_APK to
+ * { BINARY, ZIP, JAR, APK }, and XX_FILE_TYPE_NPM to
+ * { BINARY, ARCHIVE, GZ, TAR_GZ, NPM }. ELF, Mach-O and supported images
+ * similarly include their generic family before the concrete format.
  *
  * @param type     Most specific file type, typically from
  *                 xx_format_get_file_type_device().
@@ -823,7 +897,7 @@ XXFC_API size_t xx_format_get_file_type_chain(xx_file_type_t type, xx_file_type_
  * @brief Select the most specific type from a list of xx_file_type_t values.
  *
  * Types with deeper parent chains take precedence, independent of list order:
- * { BINARY, MSDOS, PE64 } returns PE64. DOTNET ranks above its PE carrier.
+ * { BINARY, MSDOS, PE, PE64 } returns PE64. DOTNET ranks above its PE carrier.
  * Equal-depth types use the later list entry. UNKNOWN and unrecognised values
  * are ignored. The borrowed list is unchanged; no allocation or I/O occurs.
  *
@@ -837,9 +911,10 @@ XXFC_API xx_file_type_t xx_format_get_pref_type(const xx_list_t *types);
  * @brief Detect a device's file type chain, most generic first.
  *
  * For a 64-bit Windows executable the list holds XX_FILE_TYPE_BINARY,
- * XX_FILE_TYPE_MSDOS and XX_FILE_TYPE_PE64: the file is a binary, it carries a
- * DOS header, and that header introduces a PE64 image. The last element is
- * always what xx_format_get_file_type_device() returns on its own.
+ * XX_FILE_TYPE_MSDOS, XX_FILE_TYPE_PE and XX_FILE_TYPE_PE64: the file is a
+ * binary, it carries a DOS header, and that header introduces a PE64 image.
+ * The last element is always what xx_format_get_file_type_device() returns
+ * on its own.
  * A managed assembly adds XX_FILE_TYPE_DOTNET after its actual PE32/PE64
  * carrier type. This device-aware chain retains the executable width.
  *
@@ -2066,7 +2141,13 @@ XXFC_API void xx_data_struct_record_free_elem(void *element);
 
 XXFC_API bool xx_data_struct_record_set_name(xx_data_struct_record *rec, const wchar_t *name);
 XXFC_API bool xx_data_struct_record_set_type(xx_data_struct_record *rec, const wchar_t *type);
+XXFC_API bool xx_data_struct_record_set_raw_value(xx_data_struct_record *rec, const wchar_t *raw_value);
+/** Store an unsigned value as uppercase hexadecimal using exactly @p size bytes. */
+XXFC_API bool xx_data_struct_record_set_raw_uint(xx_data_struct_record *rec, uint64_t value, int64_t size);
+/** Store exactly @p size source bytes, in file order, as uppercase hexadecimal. */
+XXFC_API bool xx_data_struct_record_set_raw_bytes(xx_data_struct_record *rec, xx_io_device *device, int64_t offset, int64_t size);
 XXFC_API bool xx_data_struct_record_set_display_value(xx_data_struct_record *rec, const wchar_t *display_value);
+XXFC_API bool xx_data_struct_record_set_comment(xx_data_struct_record *rec, const wchar_t *comment);
 XXFC_API bool xx_data_struct_record_set_value(xx_data_struct_record *rec, const xx_var *value);
 
 XXFC_API bool xx_data_struct_record_populate(xx_data_struct_record *rec, xx_io_device *device, int64_t parent_offset, const xx_data_struct_field_desc *field,

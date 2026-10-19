@@ -38,11 +38,4 @@
 #define XX_SHA_HAVE_SHA_NI 1
 #endif
 
-/* Disabled until the backend has been executed against the scalar oracle
- * on a SHA-capable processor or an instruction emulator. SSE2 is always
- * available for independent validation on ordinary x86 systems. */
-#ifndef XX_SHA_ENABLE_SHA_NI_BACKEND
-#define XX_SHA_ENABLE_SHA_NI_BACKEND 0
-#endif
-
 #endif /* XX_SHA_PLATFORM_H */

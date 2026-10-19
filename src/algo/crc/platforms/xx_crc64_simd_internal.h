@@ -19,9 +19,11 @@
 #if (defined(__GNUC__) || defined(__clang__)) && defined(XX_CRC64_X86)
 #define XX_CRC64_TARGET_SSE2 __attribute__((target("sse2,pclmul")))
 #define XX_CRC64_TARGET_AVX2 __attribute__((target("avx2,pclmul")))
+#define XX_CRC64_TARGET_VPCLMUL __attribute__((target("avx2,pclmul,vpclmulqdq")))
 #else
 #define XX_CRC64_TARGET_SSE2
 #define XX_CRC64_TARGET_AVX2
+#define XX_CRC64_TARGET_VPCLMUL
 #endif
 
 #ifdef XX_CRC64_X86

@@ -24,7 +24,7 @@
  */
 #include "xxfclib/formats/xx_format.h"
 #include "xxfclib/data/xx_data.h"
-#include "xxfclib/formats/pe/xx_pe.h"
+#include "xxfclib/formats/executable/pe/xx_pe.h"
 #include "xxfclib/rt/xx_rt.h"
 
 #include <stdio.h>
@@ -113,26 +113,39 @@ xx_file_type_t xx_format_get_parent_file_type(xx_file_type_t type)
         /* ZIP containers. */
         case XX_FILE_TYPE_ZIP64:
         case XX_FILE_TYPE_JAR:
-        case XX_FILE_TYPE_APK:
         case XX_FILE_TYPE_IPA:
         case XX_FILE_TYPE_APKS: return XX_FILE_TYPE_ZIP;
+        case XX_FILE_TYPE_APK: return XX_FILE_TYPE_JAR;
         /* An npm package is a tar.gz with a package/ root, and a tar.gz is a
          * gzip stream, so this walks two levels. */
         case XX_FILE_TYPE_NPM: return XX_FILE_TYPE_TAR_GZ;
         case XX_FILE_TYPE_TAR_GZ: return XX_FILE_TYPE_GZ;
         case XX_FILE_TYPE_TAR_BZ2: return XX_FILE_TYPE_BZ2;
         case XX_FILE_TYPE_TAR_XZ: return XX_FILE_TYPE_XZ;
-        /* The remaining compressed-tar variants have no standalone type for
-         * their outer stream, so they hang directly off BINARY. */
+        case XX_FILE_TYPE_RAR:
+        case XX_FILE_TYPE_GZ: return XX_FILE_TYPE_ARCHIVE;
+        case XX_FILE_TYPE_PNG:
+        case XX_FILE_TYPE_JPEG: return XX_FILE_TYPE_IMAGE;
+        case XX_FILE_TYPE_ELF32:
+        case XX_FILE_TYPE_ELF64: return XX_FILE_TYPE_ELF;
+        case XX_FILE_TYPE_MACHO32:
+        case XX_FILE_TYPE_MACHO64:
+        case XX_FILE_TYPE_MACHOFAT: return XX_FILE_TYPE_MACHO;
+        /* PE images retain their DOS stub and executable family. */
         case XX_FILE_TYPE_PE32:
         case XX_FILE_TYPE_PE64:
-        case XX_FILE_TYPE_DOTNET:
+        case XX_FILE_TYPE_DOTNET: return XX_FILE_TYPE_PE;
+        case XX_FILE_TYPE_PE:
         case XX_FILE_TYPE_NE:
         case XX_FILE_TYPE_LE:
-        case XX_FILE_TYPE_LX: return XX_FILE_TYPE_MSDOS;
+        case XX_FILE_TYPE_LX:
+        case XX_FILE_TYPE_DOS16M:
+        case XX_FILE_TYPE_DOS4G: return XX_FILE_TYPE_MSDOS;
         /* Nothing is more generic than a binary, so this ends the chain. */
         case XX_FILE_TYPE_UNKNOWN:
         case XX_FILE_TYPE_BINARY: return XX_FILE_TYPE_UNKNOWN;
+        /* Other types, including the remaining compressed-tar variants,
+         * have no parent represented by this hierarchy. */
         default: return XX_FILE_TYPE_BINARY;
     }
 }
@@ -182,7 +195,7 @@ xx_file_type_t xx_format_get_pref_type(const xx_list_t *types)
         if (type == XX_FILE_TYPE_UNKNOWN || strcmp(xx_format_file_type_to_string(type), "UNKNOWN") == 0) continue;
         depth = xx_format_get_file_type_chain(type, NULL, 0U);
         /* A managed assembly adds DOTNET after its PE32/PE64 carrier even
-         * though the width-independent parent table points to MSDOS. */
+         * though the width-independent parent table points to PE. */
         if (type == XX_FILE_TYPE_DOTNET) ++depth;
         if (depth >= preferred_depth) {
             preferred = type;
@@ -210,9 +223,10 @@ xx_list_t *xx_format_get_file_types_device(xx_io_device *dev)
         uint16_t magic = xx_io_get_u16(dev, (int64_t)nt_offset + 24, false);
         chain[0] = XX_FILE_TYPE_BINARY;
         chain[1] = XX_FILE_TYPE_MSDOS;
-        chain[2] = magic == XX_PE_MAGIC_64 ? XX_FILE_TYPE_PE64 : XX_FILE_TYPE_PE32;
-        chain[3] = XX_FILE_TYPE_DOTNET;
-        count = 4U;
+        chain[2] = XX_FILE_TYPE_PE;
+        chain[3] = magic == XX_PE_MAGIC_64 ? XX_FILE_TYPE_PE64 : XX_FILE_TYPE_PE32;
+        chain[4] = XX_FILE_TYPE_DOTNET;
+        count = 5U;
         if (saved >= 0) (void)xx_io_seek64(dev, saved, SEEK_SET);
     } else {
         count = xx_format_get_file_type_chain(detected, chain, XX_FILE_TYPE_CHAIN_MAX);

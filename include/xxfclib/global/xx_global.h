@@ -118,7 +118,7 @@ XXFC_API xx_terminal_type_t xx_global_get_terminal_type(void);
 XXFC_API void xx_global_set_terminal_type(xx_terminal_type_t type);
 
 /* ========================================================================= */
-/* --- CPU Feature Detection & Configuration (SSE2 / AVX2)               --- */
+/* --- CPU Feature Detection & Configuration --- */
 /* ========================================================================= */
 
 /**
@@ -128,10 +128,53 @@ XXFC_API void xx_global_set_terminal_type(xx_terminal_type_t type);
 XXFC_API bool xx_has_sse2(void);
 
 /**
+ * @brief Check if SSE4.2 instructions are supported by the CPU.
+ * @return true if SSE4.2 is physically supported, false otherwise.
+ */
+XXFC_API bool xx_has_sse42(void);
+
+/**
  * @brief Check if AVX2 instruction set is supported by both CPU and OS.
  * @return true if AVX2 is physically supported and enabled by OS, false otherwise.
  */
 XXFC_API bool xx_has_avx2(void);
+
+/**
+ * @brief Check if AES-NI instructions are supported by the CPU.
+ * @return true if AES-NI is physically supported, false otherwise.
+ */
+XXFC_API bool xx_has_aes(void);
+
+/**
+ * @brief Check if SHA-NI is available to this build and supported by the CPU.
+ * @return true if the compiled SHA-NI backend can run, false otherwise.
+ */
+XXFC_API bool xx_has_sha(void);
+
+/**
+ * @brief Check if 256-bit VPCLMULQDQ is usable by this build, CPU and OS.
+ * @return true if the compiled CRC backend can run, false otherwise.
+ */
+XXFC_API bool xx_has_vpclmulqdq(void);
+
+/** @brief Check if Arm NEON/Advanced SIMD is supported. */
+XXFC_API bool xx_has_neon(void);
+
+/** @brief Check if Arm CRC32 instructions are supported. */
+XXFC_API bool xx_has_arm_crc32(void);
+
+/** @brief Check if the Armv8 AES/SHA crypto instruction bundle is supported. */
+XXFC_API bool xx_has_arm_crypto(void);
+
+/** @brief Check if Arm integer dot-product instructions are supported. */
+XXFC_API bool xx_has_arm_dotprod(void);
+XXFC_API bool xx_has_arm_pmull(void);
+
+/* Each switch records independent runtime enablement. Composite backends can
+ * require multiple switches (for example, CRC64 AVX2+VPCLMULQDQ needs both).
+ * Backends query the corresponding preference before using optional Arm or
+ * x86 acceleration. Disabling SSE2 does not implicitly disable the other
+ * families. Compiler baseline instructions are unaffected. */
 
 /**
  * @brief Enable or disable SSE2 acceleration globally.
@@ -147,6 +190,19 @@ XXFC_API void xx_enable_sse2(bool enable);
 XXFC_API bool xx_is_sse2_enabled(void);
 
 /**
+ * @brief Enable or disable SSE4.2 acceleration globally.
+ * @param enable true to enable (if supported by CPU), false to disable.
+ */
+XXFC_API void xx_set_sse42_enabled(bool enable);
+XXFC_API void xx_enable_sse42(bool enable);
+
+/**
+ * @brief Check if SSE4.2 acceleration is currently enabled and supported.
+ * @return true if SSE4.2 is enabled and supported, false otherwise.
+ */
+XXFC_API bool xx_is_sse42_enabled(void);
+
+/**
  * @brief Enable or disable AVX2 acceleration globally.
  * @param enable true to enable (if supported by CPU/OS), false to disable.
  */
@@ -159,15 +215,110 @@ XXFC_API void xx_enable_avx2(bool enable);
  */
 XXFC_API bool xx_is_avx2_enabled(void);
 
+/**
+ * @brief Enable or disable AES-NI acceleration globally.
+ * @param enable true to enable (if supported by CPU), false to disable.
+ */
+XXFC_API void xx_set_aes_enabled(bool enable);
+XXFC_API void xx_enable_aes(bool enable);
+
+/**
+ * @brief Check if AES-NI acceleration is currently enabled and supported.
+ * @return true if AES-NI is enabled and supported, false otherwise.
+ */
+XXFC_API bool xx_is_aes_enabled(void);
+
+/**
+ * @brief Enable or disable SHA-NI acceleration globally.
+ * @param enable true to enable (if supported by CPU), false to disable.
+ */
+XXFC_API void xx_set_sha_enabled(bool enable);
+XXFC_API void xx_enable_sha(bool enable);
+
+/**
+ * @brief Check if SHA-NI acceleration is currently enabled and supported.
+ * @return true if SHA-NI is enabled and supported, false otherwise.
+ */
+XXFC_API bool xx_is_sha_enabled(void);
+
+/**
+ * @brief Enable or disable VPCLMULQDQ acceleration globally.
+ * @param enable true to enable (if supported), false to disable.
+ */
+XXFC_API void xx_set_vpclmulqdq_enabled(bool enable);
+XXFC_API void xx_enable_vpclmulqdq(bool enable);
+
+/** @brief Check if VPCLMULQDQ acceleration is enabled and usable. */
+XXFC_API bool xx_is_vpclmulqdq_enabled(void);
+
+/** @brief Enable or disable Arm NEON acceleration globally. */
+XXFC_API void xx_set_neon_enabled(bool enable);
+XXFC_API void xx_enable_neon(bool enable);
+XXFC_API bool xx_is_neon_enabled(void);
+
+/** @brief Enable or disable Arm CRC32 acceleration globally. */
+XXFC_API void xx_set_arm_crc32_enabled(bool enable);
+XXFC_API void xx_enable_arm_crc32(bool enable);
+XXFC_API bool xx_is_arm_crc32_enabled(void);
+
+/** @brief Enable or disable Armv8 AES/SHA crypto acceleration globally. */
+XXFC_API void xx_set_arm_crypto_enabled(bool enable);
+XXFC_API void xx_enable_arm_crypto(bool enable);
+XXFC_API bool xx_is_arm_crypto_enabled(void);
+
+/** @brief Enable or disable Arm integer dot-product acceleration globally. */
+XXFC_API void xx_set_arm_dotprod_enabled(bool enable);
+XXFC_API void xx_set_arm_pmull_enabled(bool enable);
+XXFC_API void xx_enable_arm_dotprod(bool enable);
+XXFC_API void xx_enable_arm_pmull(bool enable);
+XXFC_API bool xx_is_arm_dotprod_enabled(void);
+XXFC_API bool xx_is_arm_pmull_enabled(void);
+
 /* Aliases with xx_global prefix */
 XXFC_API bool xx_global_has_sse2(void);
+XXFC_API bool xx_global_has_sse42(void);
 XXFC_API bool xx_global_has_avx2(void);
+XXFC_API bool xx_global_has_aes(void);
+XXFC_API bool xx_global_has_sha(void);
+XXFC_API bool xx_global_has_vpclmulqdq(void);
+XXFC_API bool xx_global_has_neon(void);
+XXFC_API bool xx_global_has_arm_crc32(void);
+XXFC_API bool xx_global_has_arm_crypto(void);
+XXFC_API bool xx_global_has_arm_dotprod(void);
+XXFC_API bool xx_global_has_arm_pmull(void);
 XXFC_API void xx_global_set_sse2_enabled(bool enable);
 XXFC_API void xx_global_enable_sse2(bool enable);
 XXFC_API bool xx_global_is_sse2_enabled(void);
+XXFC_API void xx_global_set_sse42_enabled(bool enable);
+XXFC_API void xx_global_enable_sse42(bool enable);
+XXFC_API bool xx_global_is_sse42_enabled(void);
 XXFC_API void xx_global_set_avx2_enabled(bool enable);
 XXFC_API void xx_global_enable_avx2(bool enable);
 XXFC_API bool xx_global_is_avx2_enabled(void);
+XXFC_API void xx_global_set_aes_enabled(bool enable);
+XXFC_API void xx_global_enable_aes(bool enable);
+XXFC_API bool xx_global_is_aes_enabled(void);
+XXFC_API void xx_global_set_sha_enabled(bool enable);
+XXFC_API void xx_global_enable_sha(bool enable);
+XXFC_API bool xx_global_is_sha_enabled(void);
+XXFC_API void xx_global_set_vpclmulqdq_enabled(bool enable);
+XXFC_API void xx_global_enable_vpclmulqdq(bool enable);
+XXFC_API bool xx_global_is_vpclmulqdq_enabled(void);
+XXFC_API void xx_global_set_neon_enabled(bool enable);
+XXFC_API void xx_global_enable_neon(bool enable);
+XXFC_API bool xx_global_is_neon_enabled(void);
+XXFC_API void xx_global_set_arm_crc32_enabled(bool enable);
+XXFC_API void xx_global_enable_arm_crc32(bool enable);
+XXFC_API bool xx_global_is_arm_crc32_enabled(void);
+XXFC_API void xx_global_set_arm_crypto_enabled(bool enable);
+XXFC_API void xx_global_enable_arm_crypto(bool enable);
+XXFC_API bool xx_global_is_arm_crypto_enabled(void);
+XXFC_API void xx_global_set_arm_dotprod_enabled(bool enable);
+XXFC_API void xx_global_set_arm_pmull_enabled(bool enable);
+XXFC_API void xx_global_enable_arm_dotprod(bool enable);
+XXFC_API void xx_global_enable_arm_pmull(bool enable);
+XXFC_API bool xx_global_is_arm_dotprod_enabled(void);
+XXFC_API bool xx_global_is_arm_pmull_enabled(void);
 
 /**
  * @brief Give back the per-thread storage slots xxfclib has created.

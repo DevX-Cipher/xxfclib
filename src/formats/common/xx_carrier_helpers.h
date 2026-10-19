@@ -26,33 +26,12 @@ static bool carrier_stop(xx_pd_struct *pd)
 typedef struct carrier_extent {
     int64_t lo, hi;
 } carrier_extent;
-static void carrier_sift(carrier_extent *r, size_t n, size_t p)
-{
-    while (p < n / 2) {
-        size_t c = p * 2 + 1;
-        carrier_extent t;
-        if (c + 1 < n && r[c + 1].lo > r[c].lo) ++c;
-        if (r[p].lo >= r[c].lo) break;
-        t = r[p];
-        r[p] = r[c];
-        r[c] = t;
-        p = c;
-    }
-}
+#include "xx_sort_common_carrier_helpers_01.inc"
 static bool carrier_extents(carrier_extent *r, size_t n, xx_pd_struct *pd)
 {
     size_t i;
     carrier_extent t;
-    for (i = n / 2; i > 0; --i) {
-        carrier_sift(r, n, i - 1);
-    }
-    for (i = n; i > 1; --i) {
-        if (carrier_stop(pd)) return false;
-        t = r[0];
-        r[0] = r[i - 1];
-        r[i - 1] = t;
-        carrier_sift(r, i - 1, 0);
-    }
+#include "xx_sort_carrier_extents.inc"
     for (i = 1; i < n; ++i) {
         if (r[i].lo < r[i - 1].hi) return false;
     }

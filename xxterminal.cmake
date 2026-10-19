@@ -4,6 +4,7 @@
 set(XXTERMINAL_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/include")
 set(XXTERMINAL_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/terminal/xx_terminal.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/terminal/xx_terminal_color.c
     ${CMAKE_CURRENT_LIST_DIR}/src/global/xx_global.c
     ${CMAKE_CURRENT_LIST_DIR}/src/global/platforms/xx_global_cpu.c
 )

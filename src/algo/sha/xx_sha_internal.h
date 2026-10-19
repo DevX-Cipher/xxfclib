@@ -13,13 +13,16 @@ void xx_sha256_blocks_scalar(uint32_t state[8], const uint8_t *blocks, size_t bl
 void xx_sha1_blocks(uint32_t state[5], const uint8_t *blocks, size_t block_count);
 void xx_sha256_blocks(uint32_t state[8], const uint8_t *blocks, size_t block_count);
 
-/* Diagnostics and explicit per-call selection for regression tests. No
- * global override is used, so ordinary callers keep automatic dispatch. */
+/* Diagnostics and explicit per-call selection for regression tests. Explicit
+ * SSE2, SHA-NI, Neon and Arm crypto requests still require their global switches.
+ * No global override is used, so ordinary callers keep automatic dispatch. */
 enum xx_sha_backend {
     XX_SHA_BACKEND_AUTO = 0,
     XX_SHA_BACKEND_SCALAR = 1,
     XX_SHA_BACKEND_SSE2 = 2,
-    XX_SHA_BACKEND_SHA_NI = 3
+    XX_SHA_BACKEND_SHA_NI = 3,
+    XX_SHA_BACKEND_NEON = 4,
+    XX_SHA_BACKEND_ARM_CRYPTO = 5
 };
 unsigned xx_sha_backend_capabilities(void);
 int xx_sha_selected_backend(void);

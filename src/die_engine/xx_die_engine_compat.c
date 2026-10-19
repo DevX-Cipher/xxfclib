@@ -6,10 +6,10 @@
  * @file xx_die_engine_compat.c
  * @brief Bodies for the cdie runtime surface. See xx_die_engine_compat.h.
  *
- * These are lifted from cdie (src/core/cd_common.c, plus the sort out of
- * src/core/utils.c) precisely BECAUSE they differ from xxfclib's nearest
- * equivalents. Editing them to "modernise" them is how the byte-for-byte
- * output guarantee gets lost; the header explains each divergence.
+ * These allocation and container helpers are lifted from cdie
+ * (src/core/cd_common.c) because they differ from xxfclib's nearest equivalents.
+ * Editing them to "modernise" them can lose the byte-for-byte output guarantee;
+ * the header explains each divergence.
  *
  * What did NOT need lifting is the larger half: every string, memory, printf,
  * math and clock primitive was verified byte-identical to its xx_rt_
@@ -17,106 +17,6 @@
  */
 
 #include "xx_die_engine_compat.h"
-
-/* ------------------------------------------------------------- sorting -- */
-
-static void x_swap_bytes(char *pLeft, char *pRight, size_t nSize)
-{
-    size_t i = 0;
-
-    for (i = 0; i < nSize; i++) {
-        char nTemp = pLeft[i];
-
-        pLeft[i] = pRight[i];
-        pRight[i] = nTemp;
-    }
-}
-
-/* Insertion sort for short runs, median-of-three quicksort above that. */
-static void x_qsort_range(char *pBase, size_t nCount, size_t nSize, int (*fnCompare)(const void *, const void *))
-{
-    while (nCount > 12) {
-        char *pLeft = pBase;
-        char *pRight = pBase + (nCount - 1) * nSize;
-        char *pMiddle = pBase + (nCount / 2) * nSize;
-        size_t nLeftCount = 0;
-
-        if (fnCompare(pMiddle, pLeft) < 0) {
-            x_swap_bytes(pMiddle, pLeft, nSize);
-        }
-
-        if (fnCompare(pRight, pMiddle) < 0) {
-            x_swap_bytes(pRight, pMiddle, nSize);
-
-            if (fnCompare(pMiddle, pLeft) < 0) {
-                x_swap_bytes(pMiddle, pLeft, nSize);
-            }
-        }
-
-        /* Park the pivot at the front and partition the rest. */
-        x_swap_bytes(pMiddle, pBase, nSize);
-        pLeft = pBase + nSize;
-        pRight = pBase + (nCount - 1) * nSize;
-
-        for (;;) {
-            while ((pLeft <= pRight) && (fnCompare(pLeft, pBase) <= 0)) {
-                pLeft += nSize;
-            }
-
-            while ((pLeft <= pRight) && (fnCompare(pRight, pBase) > 0)) {
-                pRight -= nSize;
-            }
-
-            if (pLeft > pRight) {
-                break;
-            }
-
-            x_swap_bytes(pLeft, pRight, nSize);
-            pLeft += nSize;
-            pRight -= nSize;
-        }
-
-        x_swap_bytes(pBase, pRight, nSize);
-
-        nLeftCount = (size_t)((pRight - pBase) / (ptrdiff_t)nSize);
-
-        /* Recurse into the smaller side, loop on the larger one. */
-        if (nLeftCount < nCount - nLeftCount - 1) {
-            x_qsort_range(pBase, nLeftCount, nSize, fnCompare);
-            pBase = pRight + nSize;
-            nCount = nCount - nLeftCount - 1;
-        } else {
-            x_qsort_range(pRight + nSize, nCount - nLeftCount - 1, nSize, fnCompare);
-            nCount = nLeftCount;
-        }
-    }
-
-    {
-        size_t i = 0;
-
-        for (i = 1; i < nCount; i++) {
-            size_t j = i;
-
-            while ((j > 0) && (fnCompare(pBase + (j - 1) * nSize, pBase + j * nSize) > 0)) {
-                x_swap_bytes(pBase + (j - 1) * nSize, pBase + j * nSize, nSize);
-                j--;
-            }
-        }
-    }
-}
-
-/* cdie forked here: this sort on Windows, libc qsort on POSIX -- so cdie's own
- * signature order already differed between the two, and the tuning recorded in
- * xx_die_engine_db.c was measured against THIS one. Running it everywhere keeps the measured
- * Windows ordering byte for byte and makes the result platform-independent,
- * which the fork never was. It also keeps the file free of the platform
- * conditional that xxfclib confines to platforms/ directories. */
-void x_qsort(void *pBase, size_t nCount, size_t nSize, int (*fnCompare)(const void *, const void *))
-{
-    if ((nCount > 1) && nSize) {
-        x_qsort_range((char *)pBase, nCount, nSize, fnCompare);
-    }
-}
 
 /* ------------------------------ allocation, containers, strings -------- */
 

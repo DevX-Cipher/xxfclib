@@ -7,10 +7,10 @@
  */
 #include "xx_format_extractor_engine.h"
 #include "xx_format_abstract_extractor_adapter.h"
-#include "xxfclib/formats/fss/xx_fss.h"
-#include "xxfclib/formats/mlb_ft/xx_mlb_ft.h"
-#include "xxfclib/formats/sfx_localzip/xx_sfx_localzip.h"
-#include "xxfclib/formats/thebat_msb/xx_thebat_msb.h"
+#include "xxfclib/formats/image/fss/xx_fss.h"
+#include "xxfclib/formats/archive/mlb_ft/xx_mlb_ft.h"
+#include "xxfclib/formats/archive/sfx_localzip/xx_sfx_localzip.h"
+#include "xxfclib/formats/document/thebat_msb/xx_thebat_msb.h"
 
 #define EXTRA_EXTRACTOR(tag, file_type, anchor_list)                                                                                                \
     static const xx_file_type_t tag##_types[] = {file_type};                                                                                        \

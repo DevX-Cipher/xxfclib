@@ -32,5 +32,10 @@ void xx_lzma_fill_probs_sse2(uint16_t *, size_t);
 size_t xx_lzma_match_length_sse2(const uint8_t *, const uint8_t *, size_t);
 void xx_lzma_fill_probs_avx2(uint16_t *, size_t);
 size_t xx_lzma_match_length_avx2(const uint8_t *, const uint8_t *, size_t);
+#if (defined(_M_ARM64) && !defined(_M_ARM64EC)) || defined(__aarch64__)
+#define XX_LZMA_NEON 1
+void xx_lzma_fill_probs_neon(uint16_t *, size_t);
+size_t xx_lzma_match_length_neon(const uint8_t *, const uint8_t *, size_t);
+#endif
 
 #endif

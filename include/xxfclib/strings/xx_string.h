@@ -88,6 +88,22 @@ XXFC_API bool xx_str_ends_with(const char *s, const char *suffix);
 XXFC_API bool xx_str_equals(const char *a, const char *b);
 XXFC_API bool xx_str_iequals(const char *a, const char *b);
 
+/**
+ * @brief Format a byte count using the same units as XBinary::bytesCountToString.
+ *
+ * A base of 1024 selects binary units (KiB, MiB, GiB, TiB). Any other base
+ * selects decimal units (kB, MB, GB, TB), matching the XBinary API. Values
+ * below the selected base are printed as an integer followed by "Bytes";
+ * scaled values always have two fractional digits.
+ *
+ * @param value Byte count to format.
+ * @param base Unit base; 1024 selects binary units, every other value selects 1000.
+ * @param buffer Destination buffer.
+ * @param capacity Size of @p buffer in bytes, including the terminator.
+ * @return True when the complete null-terminated string was written.
+ */
+XXFC_API bool xx_str_bytes_count_to_string(uint64_t value, uint64_t base, char *buffer, size_t capacity);
+
 /* --- Raw Unicode (Wide) String Functions --- */
 
 XXFC_API size_t xx_str_wlen(const wchar_t *w);
@@ -191,6 +207,29 @@ XXFC_API void xx_str_free_unicode(wchar_t *wstr);
  * @brief Free an ANSI or UTF-8 string allocated by conversion functions.
  */
 XXFC_API void xx_str_free_ansi(char *str);
+
+/* --- Strings Read from I/O Devices --- */
+
+struct xx_io_device;
+
+/* These readers borrow and reposition the device. Returned strings use
+ * xx_str_free; allocation failure returns NULL. Invalid ranges return an
+ * allocated empty string. ANSI and UTF-8 bytes are copied without conversion.
+ * A nonpositive max_size selects a limit of 65536 bytes or UTF-16 code units.
+ * NUL, a failed scalar read, or the end of the known device size stops reading. */
+XXFC_API char *xx_str_read_ansi(struct xx_io_device *dev, int64_t offset, int64_t max_size);
+XXFC_API char *xx_str_read_utf8(struct xx_io_device *dev, int64_t offset, int64_t max_size);
+
+/* Encode each nonzero UTF-16 code unit as one to three UTF-8 bytes, including
+ * surrogate units individually. big_endian selects the on-disk byte order.
+ * units, when non-NULL, receives the number of units emitted, excluding NUL. */
+XXFC_API char *xx_str_read_unicode_n(struct xx_io_device *dev, int64_t offset, int64_t max_size, bool big_endian, int64_t *units);
+XXFC_API char *xx_str_read_unicode(struct xx_io_device *dev, int64_t offset, int64_t max_size, bool big_endian);
+
+/* Read a UCSD/Pascal string: a uint8 length followed by that many bytes.
+ * Embedded zero bytes and unavailable payload bytes are replaced by spaces.
+ * Unlike the NUL-terminated readers, the length byte controls the full output. */
+XXFC_API char *xx_str_read_ucsd(struct xx_io_device *dev, int64_t offset);
 
 /* --- Dynamic String Struct APIs (ANSI) --- */
 

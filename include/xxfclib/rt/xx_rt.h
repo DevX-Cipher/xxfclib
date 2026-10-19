@@ -26,7 +26,8 @@
  * Every wrapped standard-library function is reachable through an `xx_rt_`
  * prefixed stub declared here. Implementations are grouped with the subsystem
  * they serve: process, I/O and formatting live in src/rt, runtime memory
- * primitives in src/memory, and narrow/wide string primitives in src/strings.
+ * primitives in src/memory, sorting in src/sort, and narrow/wide string
+ * primitives in src/strings.
  * Within each, anything that differs by operating system sits in that
  * subsystem's platforms/ directory, so no file outside platforms/ carries a
  * platform conditional. A translation unit that uses this surface can be built
@@ -60,6 +61,8 @@
  * types and macros, and va_list cannot be wrapped.                         */
 #include <stddef.h> /* size_t, NULL, offsetof */
 #include <stdarg.h> /* va_list                */
+#include "xxfclib/xxfc_defs.h"
+#include "xxfclib/sort/xx_sort.h"
 
 /* ------------------------------------------------------------- macros --- */
 
@@ -91,20 +94,20 @@
 
 /* ------------------------------------------------------------ strings --- */
 
-size_t xx_rt_strlen(const char *pString);
-int xx_rt_strcmp(const char *pLeft, const char *pRight);
-int xx_rt_strncmp(const char *pLeft, const char *pRight, size_t nSize);
-char *xx_rt_strncpy(char *pDestination, const char *pSource, size_t nSize);
-char *xx_rt_strchr(const char *pString, int nChar);
-char *xx_rt_strrchr(const char *pString, int nChar);
-char *xx_rt_strstr(const char *pHaystack, const char *pNeedle);
-size_t xx_rt_wcslen(const wchar_t *pString);
-int xx_rt_wcscmp(const wchar_t *pLeft, const wchar_t *pRight);
-int xx_rt_wcsncmp(const wchar_t *pLeft, const wchar_t *pRight, size_t nSize);
-wchar_t *xx_rt_wcschr(const wchar_t *pString, wchar_t nChar);
+XXFC_API size_t xx_rt_strlen(const char *pString);
+XXFC_API int xx_rt_strcmp(const char *pLeft, const char *pRight);
+XXFC_API int xx_rt_strncmp(const char *pLeft, const char *pRight, size_t nSize);
+XXFC_API char *xx_rt_strncpy(char *pDestination, const char *pSource, size_t nSize);
+XXFC_API char *xx_rt_strchr(const char *pString, int nChar);
+XXFC_API char *xx_rt_strrchr(const char *pString, int nChar);
+XXFC_API char *xx_rt_strstr(const char *pHaystack, const char *pNeedle);
+XXFC_API size_t xx_rt_wcslen(const wchar_t *pString);
+XXFC_API int xx_rt_wcscmp(const wchar_t *pLeft, const wchar_t *pRight);
+XXFC_API int xx_rt_wcsncmp(const wchar_t *pLeft, const wchar_t *pRight, size_t nSize);
+XXFC_API wchar_t *xx_rt_wcschr(const wchar_t *pString, wchar_t nChar);
 
 /* Locale-independent ASCII folding. Bytes outside A..Z are unchanged. */
-int xx_rt_ascii_tolower(int nChar);
+XXFC_API int xx_rt_ascii_tolower(int nChar);
 
 /* Memory operations live in src/memory/xx_memory_rt.c, with CPU backends in
  * src/memory/platforms. Allocators remain in the OS platform files; on Windows
@@ -112,52 +115,53 @@ int xx_rt_ascii_tolower(int nChar);
  * returns NULL. */
 /* ------------------------------------------------------------- memory --- */
 
-void *xx_rt_memcpy(void *pDestination, const void *pSource, size_t nSize);
-void *xx_rt_memmove(void *pDestination, const void *pSource, size_t nSize);
-void *xx_rt_memset(void *pDestination, int nValue, size_t nSize);
-int xx_rt_memcmp(const void *pLeft, const void *pRight, size_t nSize);
-void *xx_rt_memchr(const void *pMemory, int nChar, size_t nSize);
+XXFC_API void *xx_rt_memcpy(void *pDestination, const void *pSource, size_t nSize);
+XXFC_API void *xx_rt_memmove(void *pDestination, const void *pSource, size_t nSize);
+XXFC_API void *xx_rt_memset(void *pDestination, int nValue, size_t nSize);
+XXFC_API int xx_rt_memcmp(const void *pLeft, const void *pRight, size_t nSize);
+XXFC_API void *xx_rt_memchr(const void *pMemory, int nChar, size_t nSize);
 
-void *xx_rt_malloc(size_t nSize);
-void *xx_rt_calloc(size_t nCount, size_t nSize);
-void *xx_rt_realloc(void *pPtr, size_t nSize);
-void xx_rt_free(void *pPtr);
+XXFC_API void *xx_rt_malloc(size_t nSize);
+XXFC_API void *xx_rt_calloc(size_t nCount, size_t nSize);
+XXFC_API void *xx_rt_realloc(void *pPtr, size_t nSize);
+XXFC_API void xx_rt_free(void *pPtr);
 
 /* ------------------------------------------------------------ process --- */
 
-XX_RT_NORETURN void xx_rt_exit(int nCode);
-char *xx_rt_getenv(const char *pName);
-typedef int (*xx_rt_compare_fn)(const void *pLeft, const void *pRight);
-typedef int (*xx_rt_compare_context_fn)(const void *pLeft, const void *pRight, void *pContext);
-void xx_rt_qsort(void *pBase, size_t nCount, size_t nSize, xx_rt_compare_fn fnCompare);
-void xx_rt_qsort_context(void *pBase, size_t nCount, size_t nSize, xx_rt_compare_context_fn fnCompare, void *pContext);
+XXFC_API XX_RT_NORETURN void xx_rt_exit(int nCode);
+XXFC_API char *xx_rt_getenv(const char *pName);
+/* Compatibility names; sorting implementations live in src/sort. */
+typedef xx_sort_compare_fn xx_rt_compare_fn;
+typedef xx_sort_compare_context_fn xx_rt_compare_context_fn;
+XXFC_API void xx_rt_qsort(void *pBase, size_t nCount, size_t nSize, xx_rt_compare_fn fnCompare);
+XXFC_API void xx_rt_qsort_context(void *pBase, size_t nCount, size_t nSize, xx_rt_compare_context_fn fnCompare, void *pContext);
 
 /* ---------------------------------------------------------- conversion --- */
 
 /* The end pointer stays const: unlike the C library these never hand back a
  * writable view of the input, so the qualifier is carried through.        */
-double xx_rt_strtod(const char *pString, const char **ppEnd);
-long xx_rt_strtol(const char *pString, const char **ppEnd, int nBase);
-unsigned long long xx_rt_strtoull(const char *pString, const char **ppEnd, int nBase);
+XXFC_API double xx_rt_strtod(const char *pString, const char **ppEnd);
+XXFC_API long xx_rt_strtol(const char *pString, const char **ppEnd, int nBase);
+XXFC_API unsigned long long xx_rt_strtoull(const char *pString, const char **ppEnd, int nBase);
 
-int xx_rt_rand(void);
+XXFC_API int xx_rt_rand(void);
 #define XX_RT_RAND_MAX 32767
 
 /* ---------------------------------------------------------------- I/O --- */
 
 /* Streams are opaque handles so that <stdio.h> stays inside xx_rt.c. */
-void *xx_rt_stdout(void);
-void *xx_rt_stderr(void);
+XXFC_API void *xx_rt_stdout(void);
+XXFC_API void *xx_rt_stderr(void);
 
-XX_RT_PRINTF_LIKE(1, 2) int xx_rt_printf(const char *pFormat, ...);
-XX_RT_PRINTF_LIKE(2, 3) int xx_rt_fprintf(void *pStream, const char *pFormat, ...);
-XX_RT_PRINTF_LIKE(3, 4) int xx_rt_snprintf(char *pBuffer, size_t nSize, const char *pFormat, ...);
-XX_RT_PRINTF_LIKE(3, 0) int xx_rt_vsnprintf(char *pBuffer, size_t nSize, const char *pFormat, XX_RT_VA_LIST args);
-int xx_rt_fflush(void *pStream);
+XXFC_API XX_RT_PRINTF_LIKE(1, 2) int xx_rt_printf(const char *pFormat, ...);
+XXFC_API XX_RT_PRINTF_LIKE(2, 3) int xx_rt_fprintf(void *pStream, const char *pFormat, ...);
+XXFC_API XX_RT_PRINTF_LIKE(3, 4) int xx_rt_snprintf(char *pBuffer, size_t nSize, const char *pFormat, ...);
+XXFC_API XX_RT_PRINTF_LIKE(3, 0) int xx_rt_vsnprintf(char *pBuffer, size_t nSize, const char *pFormat, XX_RT_VA_LIST args);
+XXFC_API int xx_rt_fflush(void *pStream);
 
-void *xx_rt_fopen(const char *pFileName, const char *pMode);
-int xx_rt_fclose(void *pFile);
-int xx_rt_remove(const char *pFileName);
+XXFC_API void *xx_rt_fopen(const char *pFileName, const char *pMode);
+XXFC_API int xx_rt_fclose(void *pFile);
+XXFC_API int xx_rt_remove(const char *pFileName);
 
 #if defined(_WIN32)
 /* UTF-8 <-> UTF-16 at the Win32 boundary. Only defined on Windows; every
@@ -165,52 +169,52 @@ int xx_rt_remove(const char *pFileName);
  * ones so that non-ANSI paths open. The result is a heap-allocated WCHAR* /
  * char* (freed with xx_rt_free); the header keeps them opaque to avoid pulling
  * in <windows.h>. */
-void *xx_rt_utf8_to_utf16(const char *pUtf8);
-char *xx_rt_utf16_to_utf8(const void *pUtf16);
+XXFC_API void *xx_rt_utf8_to_utf16(const char *pUtf8);
+XXFC_API char *xx_rt_utf16_to_utf8(const void *pUtf16);
 #endif
-size_t xx_rt_fread(void *pBuffer, size_t nSize, size_t nCount, void *pFile);
+XXFC_API size_t xx_rt_fread(void *pBuffer, size_t nSize, size_t nCount, void *pFile);
 /* File offsets are 64 bit on every target: `long` is 32 bit on 64-bit
  * Windows, which truncates the size of any file at or above 2 GiB. */
-int xx_rt_fseek(void *pFile, long long nOffset, int nOrigin);
-long long xx_rt_ftell(void *pFile);
-void xx_rt_rewind(void *pFile);
+XXFC_API int xx_rt_fseek(void *pFile, long long nOffset, int nOrigin);
+XXFC_API long long xx_rt_ftell(void *pFile);
+XXFC_API void xx_rt_rewind(void *pFile);
 
 /* ----------------------------------------------------------------- math -- */
 
-double xx_rt_floor(double nValue);
-double xx_rt_ceil(double nValue);
-double xx_rt_fabs(double nValue);
-double xx_rt_sqrt(double nValue);
-double xx_rt_log(double nValue);
-double xx_rt_log10(double nValue);
-double xx_rt_exp(double nValue);
-double xx_rt_sin(double nValue);
-double xx_rt_cos(double nValue);
-double xx_rt_tan(double nValue);
-double xx_rt_pow(double nBase, double nExponent);
-double xx_rt_fmod(double nValue, double nDivisor);
+XXFC_API double xx_rt_floor(double nValue);
+XXFC_API double xx_rt_ceil(double nValue);
+XXFC_API double xx_rt_fabs(double nValue);
+XXFC_API double xx_rt_sqrt(double nValue);
+XXFC_API double xx_rt_log(double nValue);
+XXFC_API double xx_rt_log10(double nValue);
+XXFC_API double xx_rt_exp(double nValue);
+XXFC_API double xx_rt_sin(double nValue);
+XXFC_API double xx_rt_cos(double nValue);
+XXFC_API double xx_rt_tan(double nValue);
+XXFC_API double xx_rt_pow(double nBase, double nExponent);
+XXFC_API double xx_rt_fmod(double nValue, double nDivisor);
 
 /* Quiet NaN and positive infinity, so that <math.h> macros stay internal. */
-double xx_rt_nan(void);
-double xx_rt_inf(void);
-int xx_rt_isnan(double nValue);
-int xx_rt_isinf(double nValue);
+XXFC_API double xx_rt_nan(void);
+XXFC_API double xx_rt_inf(void);
+XXFC_API int xx_rt_isnan(double nValue);
+XXFC_API int xx_rt_isinf(double nValue);
 /* The sign bit, which is not the same question as nValue < 0: -0.0 prints
  * with its sign and compares equal to zero.                                */
-int xx_rt_signbit(double nValue);
+XXFC_API int xx_rt_signbit(double nValue);
 
 /* ------------------------------------------- double <-> decimal string --- */
 
 /* ECMAScript Number::toString: the shortest decimal that reads back as the
  * same double, with the exponent rules of the specification. Returns the
  * number of characters written.                                            */
-int xx_rt_dtoa_shortest(double nValue, char *pBuffer, size_t nBufferSize);
+XXFC_API int xx_rt_dtoa_shortest(double nValue, char *pBuffer, size_t nBufferSize);
 
 /* Number.prototype.toFixed: nDigits digits after the decimal point. */
-int xx_rt_dtoa_fixed(double nValue, int nDigits, char *pBuffer, size_t nBufferSize);
+XXFC_API int xx_rt_dtoa_fixed(double nValue, int nDigits, char *pBuffer, size_t nBufferSize);
 
 /* Number.prototype.toPrecision: nDigits significant digits. */
-int xx_rt_dtoa_precision(double nValue, int nDigits, char *pBuffer, size_t nBufferSize);
+XXFC_API int xx_rt_dtoa_precision(double nValue, int nDigits, char *pBuffer, size_t nBufferSize);
 
 /* printf's %e, %f and %g of the magnitude of nValue - never a sign, the
  * caller owns that - under the C99 rules rather than the ECMAScript ones the
@@ -219,20 +223,20 @@ int xx_rt_dtoa_precision(double nValue, int nDigits, char *pBuffer, size_t nBuff
  * and bAlt is the # flag. Exists for the hand-written formatter in xx_rt.c,
  * whose platform has no printf to fall back on. Returns the number of
  * characters the conversion produces, snprintf-style.                       */
-int xx_rt_dtoa_cformat(double nValue, char nConversion, int nPrecision, int bAlt, char *pBuffer, size_t nBufferSize);
+XXFC_API int xx_rt_dtoa_cformat(double nValue, char nConversion, int nPrecision, int bAlt, char *pBuffer, size_t nBufferSize);
 
 /* ---------------------------------------------------------------- clock --- */
 
 /* Milliseconds counted from an unspecified fixed point, non-decreasing for
  * the lifetime of the process. Only differences of two readings mean
  * anything; the profiling trace and the archive-scan budget are the callers.  */
-long long xx_rt_clock_ms(void);
+XXFC_API long long xx_rt_clock_ms(void);
 
 /* ---------------------------------------------------------- entry point --- */
 
 /* The program entry point. On Windows the real entry is provided by
  * utils_entry.c, which builds argv from GetCommandLineA and calls this; the
  * C runtime is not involved. Elsewhere main() forwards to it.              */
-int xx_rt_main(int nArgc, char *ppArgv[]);
+XXFC_API int xx_rt_main(int nArgc, char *ppArgv[]);
 
 #endif /* XXFCLIB_XX_RT_H */

@@ -19,230 +19,15 @@
  * SOFTWARE.
  */
 
-/* xx_die_engine_scan.c - scan orchestration: pick the file type, run the _init scripts and
+/* xx_die_engine_scan.c - scan orchestration: resolve the file type through xx_scan, run the _init scripts and
  * then every applicable detection script in database order.               */
 
 #include "xx_die_engine_internal.h"
-#include "xx_die_engine_xdisasm.h"
-#include "xxfclib/fs/xx_fs.h"
-#include "xxfclib/list/xx_list.h"
 #include "xxfclib/scan/xx_scan.h"
+#include "xxfclib/sig/xx_sig.h"
 #include "xxfclib/strings/xx_string.h"
-
-typedef struct {
-    int bTypes[XFT_COUNT];
-} DieFileTypeSet;
-
-static const char *g_die_file_type_names[XFT_COUNT] = {
-    "Unknown",    "Binary",          "COM",     "MSDOS",    "NE",       "LE",   "LX",  "PE",  "PE32",     "PE64",       "ELF",
-    "ELF32",      "ELF64",           "Mach-O",  "Mach-O32", "Mach-O64", "ZIP",  "JAR", "APK", "IPA",      "DEX",        "NPM",
-    "Mach-O FAT", "Archive",         "PDF",     "CFBF",     "Image",    "JPEG", "PNG", "RAR", "ISO 9660", "Amiga Hunk", "Atari ST",
-    "Java Class", "Python Bytecode", "DOS/16M", "DOS/4G",   ".NET"};
-
-const char *xft_to_string(XFileType type)
-{
-    if ((cd_u32)type < (cd_u32)XFT_COUNT) return g_die_file_type_names[type];
-    return "Unknown";
-}
-
-int xft_check(XFileType databaseType, XFileType fileType)
-{
-    if (databaseType == fileType) return 1;
-    if (databaseType == XFT_PE && (fileType == XFT_PE32 || fileType == XFT_PE64)) return 1;
-    if (databaseType == XFT_ELF && (fileType == XFT_ELF32 || fileType == XFT_ELF64)) return 1;
-    if (databaseType == XFT_MACHO && (fileType == XFT_MACHO32 || fileType == XFT_MACHO64)) return 1;
-    return 0;
-}
-
-static void die_file_type_add(DieFileTypeSet *set, XFileType type)
-{
-    if ((cd_u32)type < (cd_u32)XFT_COUNT) set->bTypes[type] = 1;
-}
-
-static int die_file_type_contains(const DieFileTypeSet *set, XFileType type)
-{
-    return set && (cd_u32)type < (cd_u32)XFT_COUNT && set->bTypes[type];
-}
-
-static int die_file_type_set_detect(DieFile *file, DieFileTypeSet *set)
-{
-    xx_scan_options options;
-    xx_list_t *types;
-    size_t index;
-    uint8_t signature[2];
-    if (!file || !file->pDevice || !set) return 0;
-    x_memset(set, 0, sizeof(*set));
-    die_file_type_add(set, XFT_BINARY);
-    x_memset(&options, 0, sizeof(options));
-    options.size = -1;
-    options.file_name = file->pFileName;
-    types = xx_scan_get_file_types(NULL, file->pDevice, &options, NULL);
-    if (!types) return 0;
-    if (file->nSize >= 2 && xx_io_read_at(file->pDevice, 0, signature, sizeof(signature)) &&
-        ((signature[0] == 'M' && signature[1] == 'Z') || (signature[0] == 'Z' && signature[1] == 'M')))
-        die_file_type_add(set, XFT_MSDOS);
-    for (index = 0; index < xx_list_count(types); ++index) {
-        xx_file_type_t type = *(xx_file_type_t *)xx_list_at(types, index);
-        switch (type) {
-            case XX_FILE_TYPE_DOTNET: {
-                cd_i64 optional = (cd_i64)xx_io_get_u32(file->pDevice, 0x3c, false) + 24;
-                die_file_type_add(set, XFT_MSDOS);
-                die_file_type_add(set, XFT_PE);
-                die_file_type_add(set, xx_io_get_u16(file->pDevice, optional, false) == XX_PE_MAGIC_64 ? XFT_PE64 : XFT_PE32);
-                die_file_type_add(set, XFT_CLI_ASSEMBLY);
-                break;
-            }
-            case XX_FILE_TYPE_PE32:
-                die_file_type_add(set, XFT_MSDOS);
-                die_file_type_add(set, XFT_PE);
-                die_file_type_add(set, XFT_PE32);
-                break;
-            case XX_FILE_TYPE_PE64:
-                die_file_type_add(set, XFT_MSDOS);
-                die_file_type_add(set, XFT_PE);
-                die_file_type_add(set, XFT_PE64);
-                break;
-            case XX_FILE_TYPE_ELF32:
-                die_file_type_add(set, XFT_ELF);
-                die_file_type_add(set, XFT_ELF32);
-                break;
-            case XX_FILE_TYPE_ELF64:
-                die_file_type_add(set, XFT_ELF);
-                die_file_type_add(set, XFT_ELF64);
-                break;
-            case XX_FILE_TYPE_MACHO32:
-                die_file_type_add(set, XFT_MACHO);
-                die_file_type_add(set, XFT_MACHO32);
-                break;
-            case XX_FILE_TYPE_MACHO64:
-                die_file_type_add(set, XFT_MACHO);
-                die_file_type_add(set, XFT_MACHO64);
-                break;
-            case XX_FILE_TYPE_ZIP:
-                die_file_type_add(set, XFT_ZIP);
-                die_file_type_add(set, XFT_ARCHIVE);
-                break;
-            case XX_FILE_TYPE_JAR:
-                die_file_type_add(set, XFT_ZIP);
-                die_file_type_add(set, XFT_ARCHIVE);
-                die_file_type_add(set, XFT_JAR);
-                break;
-            case XX_FILE_TYPE_APK:
-                die_file_type_add(set, XFT_ZIP);
-                die_file_type_add(set, XFT_ARCHIVE);
-                die_file_type_add(set, XFT_APK);
-                die_file_type_add(set, XFT_JAR);
-                break;
-            case XX_FILE_TYPE_IPA:
-                die_file_type_add(set, XFT_ZIP);
-                die_file_type_add(set, XFT_ARCHIVE);
-                die_file_type_add(set, XFT_IPA);
-                break;
-            case XX_FILE_TYPE_NPM:
-                die_file_type_add(set, XFT_NPM);
-                die_file_type_add(set, XFT_ARCHIVE);
-                break;
-            case XX_FILE_TYPE_DOS16M: die_file_type_add(set, XFT_DOS16M); break;
-            case XX_FILE_TYPE_DOS4G: die_file_type_add(set, XFT_DOS4G); break;
-            case XX_FILE_TYPE_NE: die_file_type_add(set, XFT_NE); break;
-            case XX_FILE_TYPE_LE: die_file_type_add(set, XFT_LE); break;
-            case XX_FILE_TYPE_LX: die_file_type_add(set, XFT_LX); break;
-            case XX_FILE_TYPE_MACHOFAT: die_file_type_add(set, XFT_MACHOFAT); break;
-            case XX_FILE_TYPE_JAVA_CLASS: die_file_type_add(set, XFT_JAVACLASS); break;
-            case XX_FILE_TYPE_DEX: die_file_type_add(set, XFT_DEX); break;
-            case XX_FILE_TYPE_PYC: die_file_type_add(set, XFT_PYC); break;
-            case XX_FILE_TYPE_PDF: die_file_type_add(set, XFT_PDF); break;
-            case XX_FILE_TYPE_CFBF: die_file_type_add(set, XFT_CFBF); break;
-            case XX_FILE_TYPE_JPEG:
-                die_file_type_add(set, XFT_JPEG);
-                die_file_type_add(set, XFT_IMAGE);
-                break;
-            case XX_FILE_TYPE_PNG:
-                die_file_type_add(set, XFT_PNG);
-                die_file_type_add(set, XFT_IMAGE);
-                break;
-            case XX_FILE_TYPE_RAR:
-                die_file_type_add(set, XFT_RAR);
-                die_file_type_add(set, XFT_ARCHIVE);
-                break;
-            case XX_FILE_TYPE_ISO9660: die_file_type_add(set, XFT_ISO9660); break;
-            case XX_FILE_TYPE_AMIGAHUNK: die_file_type_add(set, XFT_AMIGAHUNK); break;
-            case XX_FILE_TYPE_ATARIST: die_file_type_add(set, XFT_ATARIST); break;
-            case XX_FILE_TYPE_COM: die_file_type_add(set, XFT_COM); break;
-            default: break;
-        }
-    }
-    xx_list_destroy(types);
-    return 1;
-}
-
-void scan_options_init(ScanOptions *pOptions)
-{
-    x_memset(pOptions, 0, sizeof(*pOptions));
-    pOptions->bShowType = 1;
-    pOptions->bShowVersion = 1;
-    pOptions->bShowInfo = 1;
-    pOptions->bUseCustomDatabase = 1;
-    pOptions->bUseExtraDatabase = 1;
-    pOptions->bSort = 1;
-}
-
-void scan_options_free(ScanOptions *pOptions)
-{
-    cd_free(pOptions->pMainDatabasePath);
-    cd_free(pOptions->pExtraDatabasePath);
-    cd_free(pOptions->pCustomDatabasePath);
-    x_memset(pOptions, 0, sizeof(*pOptions));
-}
-
-void scan_result_free(ScanResult *pResult)
-{
-    int i = 0;
-
-    for (i = 0; i < pResult->nCount; i++) {
-        cd_free(pResult->pRecords[i].pType);
-        cd_free(pResult->pRecords[i].pName);
-        cd_free(pResult->pRecords[i].pVersion);
-        cd_free(pResult->pRecords[i].pInfo);
-        cd_free(pResult->pRecords[i].pFormatId);
-    }
-
-    cd_free(pResult->pRecords);
-
-    for (i = 0; i < pResult->nErrorCount; i++) {
-        cd_free(pResult->ppErrors[i]);
-    }
-
-    cd_free(pResult->ppErrors);
-    cd_free(pResult->pFileName);
-    x_memset(pResult, 0, sizeof(*pResult));
-}
-
-static void result_add_error(ScanResult *pResult, const char *pText)
-{
-    pResult->ppErrors = (char **)cd_realloc(pResult->ppErrors, (size_t)(pResult->nErrorCount + 1) * sizeof(char *));
-    pResult->ppErrors[pResult->nErrorCount++] = cd_strdup(pText);
-}
-
-static char *signature_normalize(const char *pText)
-{
-    int bInsideQuote = 0;
-    size_t i;
-
-    /* XBinary::convertSignature rejects an unterminated quoted literal.
-     * The general buffer notation intentionally accepts partial literals. */
-    if (pText) {
-        for (i = 0; pText[i]; i++) {
-            if (pText[i] == '\'') {
-                bInsideQuote = !bInsideQuote;
-            }
-        }
-    }
-    if (bInsideQuote) {
-        return cd_strdup("");
-    }
-    return xx_data_sig_normalize(pText);
-}
+#include "xxfclib/global/xx_global.h"
+#include "xxfclib/memory/xx_memory.h"
 
 static void signature_set_error(DieEngine *pEngine, const char *pText)
 {
@@ -259,117 +44,7 @@ static void signature_set_error(DieEngine *pEngine, const char *pText)
     }
 }
 
-/* The general buffer parser retains partial records for its callers. DiE
- * rejects incomplete signatures, including odd nibble/pointer runs, rather
- * than matching the successfully parsed prefix. */
-static int signature_valid(const char *pNormalized, xx_data_signature *pSignature, int *pParserError)
-{
-    int bValid = xx_data_signature_parse(pSignature, pNormalized) ? 1 : 0;
-    size_t i = 0;
-    int j = 0;
-
-    if (pParserError) {
-        *pParserError = !bValid;
-    }
-
-    for (i = 0; pNormalized[i]; i++) {
-        char c = pNormalized[i];
-
-        if ((c == '.') || (c == '*') || (c == '$')) {
-            size_t nStart = i;
-            while (pNormalized[i + 1] == c) {
-                i++;
-            }
-            if ((i - nStart + 1) % 2) {
-                bValid = 0;
-            }
-        } else if (c == '+') {
-            while (pNormalized[i + 1] == '+') {
-                i++;
-            }
-            if (!((pNormalized[i + 1] >= '0' && pNormalized[i + 1] <= '9') || (pNormalized[i + 1] >= 'a' && pNormalized[i + 1] <= 'f'))) {
-                bValid = 0;
-            }
-        } else if (c == '%') {
-            if (pNormalized[i + 1] != '%' && pNormalized[i + 1] != '&') {
-                bValid = 0;
-            } else {
-                i++;
-            }
-        } else if (c == '!' || c == '_') {
-            if (pNormalized[i + 1] != '%') {
-                bValid = 0;
-            } else {
-                i++;
-            }
-        } else if (c == '#') {
-            size_t nAddressChars = 0;
-            int bInBase = 0;
-            size_t k = i;
-
-            for (; pNormalized[k]; k++) {
-                char cAddress = pNormalized[k];
-                if (cAddress == '#') {
-                    nAddressChars++;
-                } else if (cAddress == '[') {
-                    if (bInBase) bValid = 0;
-                    bInBase = 1;
-                } else if (cAddress == ']') {
-                    if (!bInBase) bValid = 0;
-                    bInBase = 0;
-                } else if (bInBase) {
-                    if (!((cAddress >= '0' && cAddress <= '9') || (cAddress >= 'a' && cAddress <= 'f'))) bValid = 0;
-                } else {
-                    break;
-                }
-            }
-            if (bInBase || nAddressChars % 2) bValid = 0;
-            i = k - 1;
-        } else if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-            size_t nStart = i;
-            while ((pNormalized[i + 1] >= '0' && pNormalized[i + 1] <= '9') || (pNormalized[i + 1] >= 'a' && pNormalized[i + 1] <= 'f')) {
-                i++;
-            }
-            if ((i - nStart + 1) % 2) {
-                bValid = 0;
-                if (pParserError) *pParserError = 1;
-            }
-        } else {
-            bValid = 0;
-        }
-    }
-    for (j = 0; j < pSignature->count; j++) {
-        const xx_data_sig_record *pRecord = &pSignature->records[j];
-        if (((pRecord->kind == XX_DATA_SIG_REL_OFFSET) || (pRecord->kind == XX_DATA_SIG_ADDRESS)) && (pRecord->address_size != 1) && (pRecord->address_size != 2) &&
-            (pRecord->address_size != 4) && (pRecord->address_size != 8)) {
-            bValid = 0;
-        }
-    }
-    return bValid;
-}
-
-/* The reference's cached path compares hexadecimal characters, not parsed
- * records. It accepts a single wildcard nibble and odd hexadecimal lengths.
- * QString::mid also clips a negative starting position against the cache. */
-static int signature_compare_nibbles(DieFile *file, cd_i64 offset, const char *text, size_t length)
-{
-    static const char digits[] = "0123456789abcdef";
-    size_t total = length / 2 + length % 2, done = 0;
-    while (done < total) {
-        size_t count = total - done, i;
-        const unsigned char *view = die_file_window(file, offset + (cd_i64)done, &count);
-        if (!view) return 0;
-        for (i = 0; i < count; ++i) {
-            size_t position = (done + i) * 2;
-            if (text[position] != '.' && text[position] != digits[view[i] >> 4]) return 0;
-            if (position + 1 < length && text[position + 1] != '.' && text[position + 1] != digits[view[i] & 15]) return 0;
-        }
-        done += count;
-    }
-    return 1;
-}
-
-static int signature_cached_compare(DieFile *pFile, cd_i64 nBase, cd_u64 nCacheBytes, cd_u64 nDistance, int bNegative, const char *pNormalized, size_t nSliceBytes)
+static int signature_cached_compare(xx_io_device *pFile, cd_i64 nBase, cd_u64 nCacheBytes, cd_u64 nDistance, int bNegative, const char *pNormalized, size_t nSliceBytes)
 {
     size_t nLength = x_strlen(pNormalized);
     cd_u64 nAvailable;
@@ -388,13 +63,13 @@ static int signature_cached_compare(DieFile *pFile, cd_i64 nBase, cd_u64 nCacheB
     }
     if (nAvailable > (cd_u64)nSliceBytes) nAvailable = (cd_u64)nSliceBytes;
     if ((cd_u64)(nLength / 2 + nLength % 2) > nAvailable) return 0;
-    return signature_compare_nibbles(pFile, (cd_i64)nStart, pNormalized, nLength);
+    return xx_sig_compare_nibbles(pFile, (cd_i64)nStart, pNormalized, nLength);
 }
 
 /* A normalized literal needs neither allocated records nor an address map.
  * Return -1 for forms that still need the full signature parser. Cached
  * nibble comparisons must run first because they also accept odd lengths. */
-static int signature_literal_compare(DieFile *pFile, cd_i64 nOffset, const char *pNormalized)
+static int signature_literal_compare(xx_io_device *pFile, cd_i64 nOffset, const char *pNormalized)
 {
     size_t nLength = x_strlen(pNormalized);
     size_t i;
@@ -404,15 +79,15 @@ static int signature_literal_compare(DieFile *pFile, cd_i64 nOffset, const char 
         char c = pNormalized[i];
         if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return -1;
     }
-    if (nOffset < 0 || pFile->nSize < 0 || (cd_u64)nOffset > (cd_u64)pFile->nSize || (cd_u64)(nLength / 2) > (cd_u64)pFile->nSize - (cd_u64)nOffset) {
+    if (nOffset < 0 || xx_io_total_size(pFile) < 0 || (cd_u64)nOffset > (cd_u64)xx_io_total_size(pFile) || (cd_u64)(nLength / 2) > (cd_u64)xx_io_total_size(pFile) - (cd_u64)nOffset) {
         return 0;
     }
-    return signature_compare_nibbles(pFile, nOffset, pNormalized, nLength);
+    return xx_sig_compare_nibbles(pFile, nOffset, pNormalized, nLength);
 }
 
 int die_engine_signature_compare(DieEngine *pEngine, cd_i64 nOffset, const char *pText, int nKind, cd_i64 nCacheBase)
 {
-    char *pNormalized = signature_normalize(pText);
+    char *pNormalized = xx_sig_normalize(pText);
     xx_data_signature signature;
     int bValid = 0;
     int bResult = 0;
@@ -427,8 +102,8 @@ int die_engine_signature_compare(DieEngine *pEngine, cd_i64 nOffset, const char 
     if (!pNormalized) {
         return 0;
     }
-    if (nKind != 3 && nCacheBase >= 0 && nCacheBase < pEngine->file.nSize && (nKind != 2 || nCacheBase > 0)) {
-        nCacheBytes = (cd_u64)(pEngine->file.nSize - nCacheBase);
+    if (nKind != 3 && nCacheBase >= 0 && nCacheBase < xx_io_total_size(pEngine->device) && (nKind != 2 || nCacheBase > 0)) {
+        nCacheBytes = (cd_u64)(xx_io_total_size(pEngine->device) - nCacheBase);
         if (nCacheBytes > 256) nCacheBytes = 256;
         nDistance = bNegative ? (cd_u64)nCacheBase - (cd_u64)nOffset : (cd_u64)nOffset - (cd_u64)nCacheBase;
         nCriterion = nKind == 1 ? nCacheBytes : nCacheBytes * 2;
@@ -443,27 +118,37 @@ int die_engine_signature_compare(DieEngine *pEngine, cd_i64 nOffset, const char 
     nSliceBytes = x_strlen(nKind == 1 ? pNormalized : (pText ? pText : ""));
     if ((cd_u64)nSliceBytes < nCacheLimit && !x_strchr(pNormalized, '$') && !x_strchr(pNormalized, '#') && !x_strchr(pNormalized, '+') && !x_strchr(pNormalized, '%') &&
         !x_strchr(pNormalized, '*')) {
-        bResult = signature_cached_compare(&pEngine->file, nCacheBase, nCacheBytes, nDistance, bNegative, pNormalized, nSliceBytes);
+        bResult = signature_cached_compare(pEngine->device, nCacheBase, nCacheBytes, nDistance, bNegative, pNormalized, nSliceBytes);
         xx_str_free(pNormalized);
         return bResult;
     }
 
-    bResult = signature_literal_compare(&pEngine->file, nOffset, pNormalized);
+    /* Binary_Script's cached QString comparison precedes the overlay range
+     * check. Keep that behavior for short literal patterns, but reject DOS/NE
+     * extended signatures seeking before or beyond the actual overlay. */
+    if (nKind == 2 && (pEngine->pMap->file_type == XX_FILE_TYPE_NE ||
+                       (pEngine->pMap->file_type == XX_FILE_TYPE_MSDOS && pEngine->pMap->mode == XX_MEMORY_MAP_MODE_SEGMENTS)) &&
+        (nCacheBase <= 0 || nOffset < nCacheBase || nOffset >= xx_io_total_size(pEngine->device))) {
+        xx_str_free(pNormalized);
+        return 0;
+    }
+
+    bResult = signature_literal_compare(pEngine->device, nOffset, pNormalized);
     if (bResult >= 0) {
         xx_str_free(pNormalized);
         return bResult;
     }
 
     bResult = 0;
-    bValid = signature_valid(pNormalized, &signature, NULL);
+    bValid = xx_sig_valid(pNormalized, &signature, NULL);
     if (!bValid || signature.count == 0) {
         if (bReport) {
             signature_set_error(pEngine, pNormalized);
         }
     } else {
-        const unsigned char *pWhole = die_file_whole(&pEngine->file, 0);
-        bResult = pWhole ? xx_data_signature_match(pWhole, (size_t)pEngine->file.nSize, nOffset, &signature, &pEngine->sigContext, NULL)
-                         : xx_io_signature_match(pEngine->file.pDevice, nOffset, &signature, &pEngine->sigContext, NULL);
+        const unsigned char *pWhole = xx_io_buffer_whole(pEngine->device, 0);
+        bResult = pWhole ? xx_data_signature_match(pWhole, (size_t)xx_io_total_size(pEngine->device), nOffset, &signature, &pEngine->sigContext, NULL)
+                         : xx_io_signature_match(pEngine->device, nOffset, &signature, &pEngine->sigContext, NULL);
     }
     xx_data_signature_free(&signature);
     xx_str_free(pNormalized);
@@ -480,32 +165,63 @@ cd_i64 die_engine_signature_find(DieEngine *pEngine, cd_i64 nOffset, cd_i64 nSiz
 
     /* The reference rejects an empty search range before parsing. An empty
      * search signature simply has no match and does not set a progress error. */
-    if (nOffset < 0 || nOffset >= pEngine->file.nSize || nSize == 0 || nSize < -1) {
+    if (nOffset < 0 || nOffset >= xx_io_total_size(pEngine->device) || nSize == 0 || nSize < -1) {
         return -1;
     }
-    pNormalized = signature_normalize(pText);
+    pNormalized = xx_sig_normalize(pText);
     if (!pNormalized) {
         return -1;
     }
-    bValid = signature_valid(pNormalized, &signature, &bParserError);
+    bValid = xx_sig_valid(pNormalized, &signature, &bParserError);
     if (!bValid) {
         /* _getSignatureBytes sets the progress message for lexical errors;
          * other invalid record shapes only make isSignatureValid false. */
         if (bParserError) {
             signature_set_error(pEngine, pNormalized);
         }
-    } else if (signature.count == 1 && signature.records[0].kind == XX_DATA_SIG_BYTES) {
-        /* Validation already parsed this literal. Reuse its bytes instead
-         * of normalizing and parsing the same signature a second time. */
-        nResult = die_engine_literal_find(pEngine, nOffset, nSize, signature.records[0].data, signature.records[0].data_size);
     } else if (signature.count > 0) {
-        const unsigned char *pWhole = die_file_whole(&pEngine->file, die_file_search_access(&pEngine->file, nSize < 0 ? pEngine->file.nSize - nOffset : nSize));
-        nResult = pWhole ? xx_data_signature_find_text(pWhole, (size_t)pEngine->file.nSize, nOffset, nSize, pText, &pEngine->sigContext)
-                         : xx_io_signature_find_text(pEngine->file.pDevice, nOffset, nSize, pText, &pEngine->sigContext);
+        nResult = pEngine->bStop ? -1 : xx_io_signature_find(pEngine->device, nOffset, nSize, &signature, &pEngine->sigContext, pEngine->pd);
     }
     xx_data_signature_free(&signature);
     xx_str_free(pNormalized);
     return nResult;
+}
+
+int die_engine_signature_find_any(DieEngine *pEngine, cd_i64 nOffset, cd_i64 nSize, const char *const *ppTexts, size_t nCount)
+{
+    xx_data_signature *pSignatures;
+    size_t i;
+    int bResult = 0;
+
+    if (!pEngine || !pEngine->device || !ppTexts || !nCount || nCount > (size_t)-1 / sizeof(*pSignatures) ||
+        nOffset < 0 || nOffset >= xx_io_total_size(pEngine->device) || nSize == 0 || nSize < -1 ||
+        pEngine->bStop || xx_pd_is_stopped(pEngine->pd)) {
+        return 0;
+    }
+    pSignatures = (xx_data_signature *)xx_mem_calloc(nCount, sizeof(*pSignatures));
+    if (!pSignatures) return 0;
+
+    /* Validate every alternative before searching: a malformed later entry
+     * must not become a successful match through an earlier valid prefix. */
+    for (i = 0; i < nCount; i++) {
+        char *pNormalized;
+        int bParserError = 0;
+        int bValid;
+
+        if (!ppTexts[i] || pEngine->bStop || xx_pd_is_stopped(pEngine->pd)) goto cleanup;
+        pNormalized = xx_sig_normalize(ppTexts[i]);
+        if (!pNormalized) goto cleanup;
+        bValid = xx_sig_valid(pNormalized, &pSignatures[i], &bParserError);
+        if (!bValid && bParserError) signature_set_error(pEngine, pNormalized);
+        xx_str_free(pNormalized);
+        if (!bValid || pSignatures[i].count == 0) goto cleanup;
+    }
+    bResult = xx_io_signature_find_any(pEngine->device, nOffset, nSize, pSignatures, nCount, &pEngine->sigContext, pEngine->pd) ? 1 : 0;
+
+cleanup:
+    for (i = 0; i < nCount; i++) xx_data_signature_free(&pSignatures[i]);
+    xx_mem_free(pSignatures);
+    return bResult;
 }
 
 /* Returns the first path segment of the signature name, uppercased. */
@@ -526,7 +242,7 @@ static void signature_prefix(const char *pName, char *pBuf, size_t nBufSize)
     pBuf[i] = 0;
 }
 
-static int should_execute(DBSignature *pRecord, XFileType fileType, int bIsCliAssembly, ScanOptions *pOptions)
+static int should_execute(DBSignature *pRecord, XFileType fileType, int bIsCliAssembly, xx_scan_options *pOptions)
 {
     char sPrefix[64];
 
@@ -543,11 +259,11 @@ static int should_execute(DBSignature *pRecord, XFileType fileType, int bIsCliAs
 
     signature_prefix(pRecord->pName, sPrefix, sizeof(sPrefix));
 
-    if ((!pOptions->bDeepScan) && ((x_strcmp(sPrefix, "DS") == 0) || (x_strcmp(sPrefix, "EP") == 0))) {
+    if ((!pOptions->deep_scan) && ((x_strcmp(sPrefix, "DS") == 0) || (x_strcmp(sPrefix, "EP") == 0))) {
         return 0;
     }
 
-    if ((!pOptions->bHeuristicScan) && (x_strcmp(sPrefix, "HEUR") == 0)) {
+    if ((!pOptions->heuristic_scan) && (x_strcmp(sPrefix, "HEUR") == 0)) {
         return 0;
     }
 
@@ -559,165 +275,24 @@ static int should_execute(DBSignature *pRecord, XFileType fileType, int bIsCliAs
         return 1;
     }
 
-    if (pOptions->bUseCustomDatabase && (pRecord->databaseType == DB_CUSTOM)) {
+    if (pOptions->use_custom_database && (pRecord->databaseType == DB_CUSTOM)) {
         return 1;
     }
 
-    if (pOptions->bUseExtraDatabase && (pRecord->databaseType == DB_EXTRA)) {
+    if (pOptions->use_extra_database && (pRecord->databaseType == DB_EXTRA)) {
         return 1;
     }
 
     return 0;
 }
 
-static int sort_records(const void *pLeft, const void *pRight)
+void die_engine_record_init(DieEngine *pEngine, xx_scan_record *pRecord)
 {
-    const ScanRecord *pA = (const ScanRecord *)pLeft;
-    const ScanRecord *pB = (const ScanRecord *)pRight;
-
-    if (pA->nPrio != pB->nPrio) {
-        return (pA->nPrio < pB->nPrio) ? -1 : 1;
-    }
-
-    return 0;
-}
-
-/* Stable insertion sort: std::sort in the reference engine behaves like a
- * stable sort for the small result lists produced by a single scan.        */
-static void stable_sort_records(ScanRecord *pRecords, int nCount)
-{
-    int i = 0;
-    int j = 0;
-
-    for (i = 1; i < nCount; i++) {
-        ScanRecord key = pRecords[i];
-
-        j = i - 1;
-
-        while ((j >= 0) && (sort_records(&pRecords[j], &key) > 0)) {
-            pRecords[j + 1] = pRecords[j];
-            j--;
-        }
-
-        pRecords[j + 1] = key;
-    }
-}
-
-/* DOS MZ files can carry an archive after the image.  DiE reports the ZIP
- * overlay even when the executable itself is packed (for example PKLITE).
- * The PE parser already exposes overlays; retain the corresponding DOS case
- * here so the C console produces the same record. */
-static void add_msdos_zip_overlay(DieEngine *pEngine)
-{
-    unsigned char header[6];
-    unsigned char magic[4];
-    cd_i64 nSize = pEngine->file.nSize;
-    cd_i64 nOverlay = -1;
-    cd_u16 nLastPage = 0;
-    cd_u16 nPages = 0;
-    ScanResult *pResult = pEngine->pResult;
-    ScanRecord *pRecord = NULL;
-
-    if ((pEngine->fileType != XFT_MSDOS) || (nSize < 6) || !die_file_read_at(&pEngine->file, 0, header, sizeof(header)) || (header[0] != 'M') || (header[1] != 'Z')) {
-        return;
-    }
-
-    nLastPage = (cd_u16)header[2] | ((cd_u16)header[3] << 8);
-    nPages = (cd_u16)header[4] | ((cd_u16)header[5] << 8);
-    nOverlay = (cd_i64)nPages * 512;
-    if (nLastPage) {
-        nOverlay -= 512 - nLastPage;
-    }
-
-    if ((nOverlay < 0) || (nOverlay > nSize) || (nSize - nOverlay < 4) || !die_file_read_at(&pEngine->file, nOverlay, magic, sizeof(magic)) || (magic[0] != 'P') ||
-        (magic[1] != 'K') || (magic[2] != 3) || (magic[3] != 4)) {
-        return;
-    }
-
-    if (pResult->nCount + 1 > pResult->nCapacity) {
-        pResult->nCapacity = pResult->nCapacity ? (pResult->nCapacity * 2) : 16;
-        pResult->pRecords = (ScanRecord *)cd_realloc(pResult->pRecords, (size_t)pResult->nCapacity * sizeof(ScanRecord));
-    }
-
-    pRecord = &pResult->pRecords[pResult->nCount++];
     x_memset(pRecord, 0, sizeof(*pRecord));
-    pRecord->pType = cd_strdup("Overlay");
-    pRecord->pName = cd_strdup("ZIP archive");
-    pRecord->pVersion = cd_strdup("");
-    pRecord->pInfo = cd_strdup("");
-    pRecord->nPrio = die_engine_type_to_prio("Overlay");
-}
-
-/* XCOM::isValid, whole: a COM image is loaded at 0x100 and has to fit in the
- * 64 KiB segment, so anything no larger than this can be one.              */
-#define XCOM_MAX_SIZE (0x10000 - 0x100)
-
-/* XBinary::getDeviceFileSuffix(getDevice()).toUpper() == "COM". */
-static int has_com_suffix(const char *pFileName)
-{
-    char *pSuffix = NULL;
-    int bResult = 0;
-
-    if (pFileName == NULL) {
-        return 0;
-    }
-
-    pSuffix = xx_fs_path_suffix(pFileName);
-
-    if (pSuffix == NULL) {
-        return 0;
-    }
-
-    bResult = (cd_stricmp_ascii(pSuffix, "COM") == 0) ? 1 : 0;
-    xx_str_free(pSuffix);
-
-    return bResult;
-}
-
-static XFileType pick_file_type(DieFile *pFile, DieFileTypeSet *pSet)
-{
-    if (die_file_type_contains(pSet, XFT_PE32)) return XFT_PE32;
-    if (die_file_type_contains(pSet, XFT_PE64)) return XFT_PE64;
-    if (die_file_type_contains(pSet, XFT_ELF32)) return XFT_ELF32;
-    if (die_file_type_contains(pSet, XFT_ELF64)) return XFT_ELF64;
-    if (die_file_type_contains(pSet, XFT_MACHO32)) return XFT_MACHO32;
-    if (die_file_type_contains(pSet, XFT_MACHO64)) return XFT_MACHO64;
-    if (die_file_type_contains(pSet, XFT_LX)) return XFT_LX;
-    if (die_file_type_contains(pSet, XFT_LE)) return XFT_LE;
-    if (die_file_type_contains(pSet, XFT_NE)) return XFT_NE;
-    if (die_file_type_contains(pSet, XFT_DOS16M)) return XFT_DOS16M;
-    if (die_file_type_contains(pSet, XFT_DOS4G)) return XFT_DOS4G;
-    if (die_file_type_contains(pSet, XFT_MSDOS)) return XFT_MSDOS;
-    if (die_file_type_contains(pSet, XFT_APK)) return XFT_APK;
-    if (die_file_type_contains(pSet, XFT_IPA)) return XFT_IPA;
-    if (die_file_type_contains(pSet, XFT_JAR)) return XFT_JAR;
-    if (die_file_type_contains(pSet, XFT_ZIP)) return XFT_ZIP;
-    if (die_file_type_contains(pSet, XFT_DEX)) return XFT_DEX;
-    if (die_file_type_contains(pSet, XFT_NPM)) return XFT_NPM;
-    if (die_file_type_contains(pSet, XFT_MACHOFAT)) return XFT_MACHOFAT;
-    if (die_file_type_contains(pSet, XFT_AMIGAHUNK)) return XFT_AMIGAHUNK;
-    if (die_file_type_contains(pSet, XFT_PDF)) return XFT_PDF;
-    if (die_file_type_contains(pSet, XFT_CFBF)) return XFT_CFBF;
-    if (die_file_type_contains(pSet, XFT_RAR)) return XFT_RAR;
-    if (die_file_type_contains(pSet, XFT_ISO9660)) return XFT_ISO9660;
-    if (die_file_type_contains(pSet, XFT_JPEG)) return XFT_JPEG;
-    if (die_file_type_contains(pSet, XFT_PNG)) return XFT_PNG;
-    if (die_file_type_contains(pSet, XFT_JAVACLASS)) return XFT_JAVACLASS;
-    if (die_file_type_contains(pSet, XFT_PYC)) return XFT_PYC;
-
-    /* g_arrPrefFileTypeOrder puts FT_COM ahead of FT_TEXT/FT_DATA/FT_BINARY,
-     * and XBinary::getFileTypes inserts FT_COM only when nothing else was
-     * recognised (the set still holds just FT_BINARY) or the file is plain
-     * text, the size leaves room for the 0x100-byte PSP, and the file suffix
-     * uppercases to "COM". Reaching the fallback below is this port's form of
-     * that first condition. A file without the suffix still meets the COM
-     * scripts: scan_engine_run's binary arm runs them the way the reference's
-     * last scanProcess branch does.                                        */
-    if ((pFile->nSize <= XCOM_MAX_SIZE) && has_com_suffix(pFile->pFileName)) {
-        return XFT_COM;
-    }
-
-    return XFT_BINARY;
+    pRecord->file_type = die_engine_native_from_xft(pEngine->fileType);
+    pRecord->size = xx_io_total_size(pEngine->device);
+    pRecord->scan_id = pEngine->pOptions->scan_id;
+    pRecord->parent_id = pEngine->pOptions->parent_id;
 }
 
 static void end_script_profile(DieEngine *pEngine, DBSignature *pRecord, cd_i64 nStart)
@@ -775,7 +350,7 @@ static void run_script(DieEngine *pEngine, DBSignature *pRecord, int bCallDetect
         char sBuf[1024];
 
         x_snprintf(sBuf, sizeof(sBuf), "%s: %s", pRecord->pName, js_error(pCtx));
-        result_add_error(pEngine->pResult, sBuf);
+        (void)xx_scan_result_add_error(pEngine->pResult, sBuf, pEngine->pd);
         js_clear_error(pCtx);
         end_script_profile(pEngine, pRecord, nProfileStart);
 
@@ -797,9 +372,9 @@ static void run_script(DieEngine *pEngine, DBSignature *pRecord, int bCallDetect
         return;
     }
 
-    args[0] = js_bool(pEngine->pOptions->bShowType);
-    args[1] = js_bool(pEngine->pOptions->bShowVersion);
-    args[2] = js_bool(pEngine->pOptions->bShowInfo);
+    args[0] = js_bool(pEngine->pOptions->show_type);
+    args[1] = js_bool(pEngine->pOptions->show_version);
+    args[2] = js_bool(pEngine->pOptions->show_info);
 
     callResult = js_call(pCtx, detect, global, 3, args);
 
@@ -807,7 +382,7 @@ static void run_script(DieEngine *pEngine, DBSignature *pRecord, int bCallDetect
         char sBuf[1024];
 
         x_snprintf(sBuf, sizeof(sBuf), "%s: %s", pRecord->pName, js_error(pCtx));
-        result_add_error(pEngine->pResult, sBuf);
+        (void)xx_scan_result_add_error(pEngine->pResult, sBuf, pEngine->pd);
         js_clear_error(pCtx);
     }
 
@@ -818,27 +393,168 @@ static void run_script(DieEngine *pEngine, DBSignature *pRecord, int bCallDetect
     end_script_profile(pEngine, pRecord, nProfileStart);
 }
 
-/* One detection pass over an already-populated DieFile for a single file type.
- * The file is borrowed, not closed, so the FT_COM arm below can run the pass
- * twice; the caller sorts the merged record list. bAddUnknown mirrors the
+/* XMSDOS uses a signature-visible layout distinct from the native parser:
+ * the page count bounds the image, the header is clipped to it, and the
+ * loadable bytes occupy the synthetic address range beginning at 0x10000000.
+ * Keep malformed last-page and header handling identical to XMSDOS. */
+static int script_msdos_memory_map(xx_io_device *device, xx_memory_map *map, xx_pd_struct *pd)
+{
+    cd_i64 size = xx_io_total_size(device);
+    cd_i64 image_size = size;
+    cd_i64 header_size;
+    cd_u16 magic;
+    cd_u16 pages;
+    cd_u16 last;
+    cd_u32 entry;
+
+    if (size < 2) return 0;
+    magic = xx_io_get_u16(device, 0, false);
+    if (magic != 0x5a4d && magic != 0x4d5a) return 0;
+    pages = size >= 6 ? xx_io_get_u16(device, 4, false) : 0;
+    last = size >= 4 ? xx_io_get_u16(device, 2, false) : 0;
+    if (pages) {
+        image_size = (cd_i64)pages * 512 - ((512 - (last & 511U)) & 511U);
+        if (image_size > size) image_size = size;
+    }
+    header_size = size >= 10 ? (cd_i64)xx_io_get_u16(device, 8, false) * 16 : 0;
+    if (header_size > image_size) header_size = image_size;
+    entry = size >= 24 ? (cd_u32)xx_io_get_u16(device, 22, false) * 16U : 0;
+    entry += size >= 22 ? xx_io_get_u16(device, 20, false) : 0;
+    if (entry >= 0x100000U) entry -= 0x100000U;
+
+    map->binary_size = size;
+    map->module_address = 0;
+    map->entry_point_address = entry;
+    map->start_load_offset = header_size;
+    map->code_base = 0;
+    map->file_type = XX_FILE_TYPE_MSDOS;
+    map->endian = XX_ENDIAN_LITTLE;
+    map->mode = XX_MEMORY_MAP_MODE_SEGMENTS;
+    if (!xx_memory_map_add_part(map, 0, header_size, XX_INVALID_ADDRESS, 0, XX_FILE_PART_HEADER, 0, "MSDOS Header", false) ||
+        !xx_memory_map_add_part(map, header_size, image_size - header_size, UINT64_C(0x10000000), image_size - header_size,
+                                XX_FILE_PART_SEGMENT, 1, "MSDOS image", false) ||
+        !xx_memory_map_add_part(map, image_size, size - image_size, XX_INVALID_ADDRESS, 0, XX_FILE_PART_OVERLAY, 2, "Overlay", false) ||
+        xx_pd_is_stopped(pd) || !xx_memory_map_finalize(map)) return -1;
+    /* Finalization derives a module base from mapped addresses. XMSDOS's
+     * public module base remains zero, independently of the synthetic range. */
+    map->module_address = 0;
+    map->image_size = image_size;
+    return 1;
+}
+
+/* Binary_Script derives its PE overlay from header and section bytes only.
+ * The native reader also counts certificates, debug data and COFF tables in
+ * its format extent. Keep that metadata policy out of the signature cache. */
+static void script_pe_overlay(xx_pe_inspection *pe)
+{
+    cd_i64 size = pe->map.binary_size;
+    cd_i64 end = pe->nSizeOfHeaders < size ? pe->nSizeOfHeaders : size;
+    int i;
+    /* XPE::getFileParts limits the signature map to 96 sections. */
+    for (i = 0; i < pe->nSectionCount && i < 96; ++i) {
+        cd_i64 offset = pe->pSections[i].nPointerToRawData;
+        cd_i64 section_size = pe->pSections[i].nSizeOfRawData;
+        /* XPE retains the raw pointer even for zero-byte sections, which
+         * have no physical record in the native map. Invalid pointers reset
+         * to zero before the section range is clipped to the file. */
+        if (offset > size) offset = 0;
+        if (section_size > size - offset) section_size = size - offset;
+        if (offset + section_size > end) end = offset + section_size;
+    }
+    pe->nOverlayOffset = end > 0 && end <= size ? end : -1;
+    pe->nOverlaySize = pe->nOverlayOffset >= 0 ? size - pe->nOverlayOffset : 0;
+}
+
+/* The script view follows XNE's segmented memory map. The native NE parser
+ * also counts relocation/resource/name tables when finding its format end;
+ * XNE's script overlay starts after the header and physical segments only. */
+static int script_ne_memory_map(xx_io_device *device, xx_memory_map *map, xx_pd_struct *pd)
+{
+    cd_i64 size = xx_io_total_size(device);
+    cd_i64 header;
+    cd_i64 header_size;
+    cd_i64 table;
+    cd_i64 end;
+    cd_u32 csip;
+    unsigned count;
+    unsigned shift;
+    unsigned index;
+    unsigned parts = 1;
+
+    if (size < 0x40) return 0;
+    header = xx_io_get_i32(device, 0x3c, false);
+    if (header < 0 || header > size - 2 || xx_io_get_u16(device, header, false) != 0x454e) return 0;
+    header_size = size - header < 0x40 ? size : header + 0x40;
+    csip = header <= size - 0x18 ? xx_io_get_u32(device, header + 0x14, false) : 0;
+    count = header <= size - 0x1e ? xx_io_get_u16(device, header + 0x1c, false) : 0;
+    table = header + (header <= size - 0x24 ? xx_io_get_u16(device, header + 0x22, false) : 0);
+    shift = header <= size - 0x34 ? xx_io_get_u16(device, header + 0x32, false) : 0;
+    if (table >= size) count = 0;
+    else if ((cd_i64)count > (size - table) / 8) count = (unsigned)((size - table) / 8);
+
+    map->binary_size = size;
+    map->module_address = 0x10000;
+    map->entry_point_address = UINT64_C(0x10000) + csip;
+    map->file_type = XX_FILE_TYPE_NE;
+    map->endian = XX_ENDIAN_LITTLE;
+    map->mode = XX_MEMORY_MAP_MODE_SEGMENTS;
+    if (!xx_memory_map_add_part(map, 0, header_size, 0x10000, 0x200, XX_FILE_PART_HEADER, 0, "Header", false)) return -1;
+    end = header_size;
+    /* XBinary asks XNE for at most 1,000 parts, including the header. Keep
+     * segment indices even when an invalid physical segment is skipped. */
+    for (index = 0; index < count && parts < 1000 && !xx_pd_is_stopped(pd); ++index) {
+        cd_i64 record = table + (cd_i64)index * 8;
+        cd_u64 sector = xx_io_get_u16(device, record, false);
+        cd_i64 offset;
+        cd_i64 length = xx_io_get_u16(device, record + 2, false);
+        cd_u64 address = UINT64_C(0x10000) * (index + 2U);
+        char name[32];
+
+        if (shift > 62 || sector > ((cd_u64)(size - 1) >> shift)) continue;
+        offset = (cd_i64)(sector << shift);
+        if (!length) length = 0x10000;
+        if (length > size - offset) length = size - offset;
+        x_snprintf(name, sizeof(name), "Segment %u", index + 1U);
+        if (!xx_memory_map_add_part(map, offset, length, address, 0x10000, XX_FILE_PART_SEGMENT, (int)parts, name, false)) return -1;
+        ++parts;
+        if (offset + length > end) end = offset + length;
+    }
+    if (parts < 1000 && end < size &&
+        !xx_memory_map_add_part(map, end, size - end, XX_INVALID_ADDRESS, 0, XX_FILE_PART_OVERLAY, (int)parts, "Overlay", false)) return -1;
+    return !xx_pd_is_stopped(pd) && xx_memory_map_finalize(map) ? 1 : -1;
+}
+
+/* One detection pass over a borrowed device for a single file type.
+ * The buffered device is owned by this pass; the source stays open
+ * for subsequent COM/Binary passes. bAddUnknown mirrors the
  * reference's _processDetect flag: when it is 0 an empty pass stays empty
  * instead of gaining the "Unknown" record.                                 */
-static int scan_run_pass(DieFile *pOpenedFile, XFileType fileType, int bIsCliAssembly, DBase *pDb, ScanOptions *pOptions, ScanResult *pResult, int bAddUnknown)
+static int scan_run_pass(xx_io_device *device, XFileType fileType, int bIsCliAssembly, DBase *pDb, xx_scan_options *pOptions, xx_scan_result *pResult, int bAddUnknown, xx_pd_struct *pd)
 {
     /* Heap, not stack: DieEngine embeds every parser state by value and is
-     * over 3 KB on its own. A frame that size walks past the guard page, and
-     * the probe helper MSVC emits to prevent that (__chkstk) is a CRT symbol
-     * the CDIE_NO_CRT link has no source for. cd_calloc never returns NULL
-     * and zeroes, so it replaces the memset too. */
+     * over 3 KB on its own. Keeping it off the stack reduces pressure during
+     * nested scans. cd_calloc never returns NULL and zeroes the allocation. */
     DieEngine *pEngine = (DieEngine *)cd_calloc(1, sizeof(DieEngine));
     xx_memory_map binaryMap;
     int i = 0;
+    int read_failed;
     int nGlobalInit = -1;
     int nTypeInit = -1;
+    int progress;
+    const char *name = pOptions->file_name ? pOptions->file_name : xx_io_source_path(device);
 
-    pEngine->file = *pOpenedFile;
-    /* Each pass owns its decoder cache while borrowing the input bytes. */
-    pEngine->file.pDisasmContext = NULL;
+    if (xx_pd_is_stopped(pd)) {
+        cd_free(pEngine);
+        return 0;
+    }
+    if (xx_io_seek64(device, 0, SEEK_SET) != 0 ||
+        !(pEngine->device = xx_io_buffer_open_auto(device, 0, xx_get_file_memory_limit(), false))) {
+        xx_pd_set_error(pd, XXFC_ERR_IO, "Cannot open DIE signature input");
+        cd_free(pEngine);
+        return 0;
+    }
+    pEngine->file_name = name ? name : "";
+    progress = xx_pd_enter_level(pd, (uint64_t)pDb->nCount, "DIE signatures");
 
     pEngine->fileType = fileType;
     /* A .NET PE is typed both as PE and CLI assembly; the primary type stays
@@ -848,35 +564,36 @@ static int scan_run_pass(DieFile *pOpenedFile, XFileType fileType, int bIsCliAss
     pEngine->pDb = pDb;
     pEngine->pOptions = pOptions;
     pEngine->pResult = pResult;
+    pEngine->pd = pd;
 
     if ((pEngine->fileType == XFT_PE32) || (pEngine->fileType == XFT_PE64)) {
-        pEngine->bHasPE = xx_pe_inspect_analyze_from_device(&pEngine->pe, pEngine->file.pDevice, 0, NULL);
+        pEngine->bHasPE = xx_pe_inspect_analyze_from_device(&pEngine->pe, pEngine->device, 0, NULL);
         if (pEngine->bHasPE && pEngine->bIsCliAssembly) {
-            pEngine->bHasDotNet = xx_dotnet_inspect_analyze_from_device(&pEngine->dotnet, pEngine->file.pDevice, 0, NULL);
+            pEngine->bHasDotNet = xx_dotnet_inspect_analyze_from_device(&pEngine->dotnet, pEngine->device, 0, NULL);
         }
     } else if (pEngine->fileType == XFT_JPEG) {
-        xx_jpeg_init(&pEngine->jpeg, pEngine->file.pDevice, 0);
+        xx_jpeg_init(&pEngine->jpeg, pEngine->device, 0);
         pEngine->bHasJpeg = xx_jpeg_analyze(&pEngine->jpeg, NULL);
     } else if (pEngine->fileType == XFT_PNG) {
-        xx_png_init(&pEngine->png, pEngine->file.pDevice, 0);
+        xx_png_init(&pEngine->png, pEngine->device, 0);
         pEngine->bHasPng = xx_png_analyze(&pEngine->png, NULL);
     } else if (pEngine->fileType == XFT_APK) {
-        xx_apk_init(&pEngine->apk, pEngine->file.pDevice, 0);
+        xx_apk_init(&pEngine->apk, pEngine->device, 0);
         pEngine->bHasApk = xx_apk_analyze(&pEngine->apk, NULL);
     } else if (pEngine->fileType == XFT_PDF) {
         /* The native reader borrows the shared buffered device. Its analysis
          * accepts inspection-only documents separately from archive validation. */
-        xx_pdf_init(&pEngine->pdf, pEngine->file.pDevice, 0);
+        xx_pdf_init(&pEngine->pdf, pEngine->device, 0);
         pEngine->bHasPdf = xx_pdf_analyze(&pEngine->pdf, NULL);
     } else if ((pEngine->fileType == XFT_ELF) || (pEngine->fileType == XFT_ELF32) || (pEngine->fileType == XFT_ELF64)) {
-        pEngine->bHasElf = xx_elf_inspect_analyze_from_device(&pEngine->elf, pEngine->file.pDevice, 0, NULL);
+        pEngine->bHasElf = xx_elf_inspect_analyze_from_device(&pEngine->elf, pEngine->device, 0, NULL);
     } else if (pEngine->fileType == XFT_DEX) {
-        xx_dex_init(&pEngine->dex, pEngine->file.pDevice, 0);
+        xx_dex_init(&pEngine->dex, pEngine->device, 0);
         pEngine->bHasDex = xx_dex_analyze(&pEngine->dex, NULL);
     } else if ((pEngine->fileType == XFT_MACHO) || (pEngine->fileType == XFT_MACHO32) || (pEngine->fileType == XFT_MACHO64)) {
-        pEngine->bHasMach = xx_macho_inspect_analyze_from_device(&pEngine->mach, pEngine->file.pDevice, 0, NULL);
+        pEngine->bHasMach = xx_macho_inspect_analyze_from_device(&pEngine->mach, pEngine->device, 0, NULL);
     } else if (pEngine->fileType == XFT_PYC) {
-        xx_pyc_init(&pEngine->pyc, pEngine->file.pDevice, 0);
+        xx_pyc_init(&pEngine->pyc, pEngine->device, 0);
         pEngine->bHasPyc = xx_pyc_analyze(&pEngine->pyc, NULL);
     }
 
@@ -885,33 +602,45 @@ static int scan_run_pass(DieFile *pOpenedFile, XFileType fileType, int bIsCliAss
      * MANIFEST.MF read for the archive-record and manifest predicates. */
     if ((pEngine->fileType == XFT_APK) || (pEngine->fileType == XFT_JAR) || (pEngine->fileType == XFT_ZIP) || (pEngine->fileType == XFT_NPM) ||
         (pEngine->fileType == XFT_IPA)) {
-        xx_zip_init(&pEngine->zip, pEngine->file.pDevice, 0);
+        xx_zip_init(&pEngine->zip, pEngine->device, 0);
         pEngine->bHasZip = xx_zip_analyze(&pEngine->zip, NULL);
     }
 
     if (pEngine->bHasPE) {
+        script_pe_overlay(&pEngine->pe);
         pEngine->pMap = &pEngine->pe.map;
         pEngine->nBits = pEngine->pe.bIs64 ? 64 : 32;
     } else {
-        pEngine->nBits = 32;
+        int script_map = 0;
         xx_memory_map_init(&binaryMap);
-        binaryMap.binary_size = pEngine->file.nSize;
-        binaryMap.endian = XX_ENDIAN_LITTLE;
-        binaryMap.mode = XX_MEMORY_MAP_MODE_DATA;
-        /* Only the two real-mode types change how a signature is evaluated
-         * -- they make a relative jump wrap inside its segment -- so those
-         * are the ones worth translating out of the engine's own file-type
-         * enum. Everything else evaluates the same either way. */
-        binaryMap.file_type = (pEngine->fileType == XFT_COM) ? XX_FILE_TYPE_COM : (pEngine->fileType == XFT_MSDOS) ? XX_FILE_TYPE_MSDOS : XX_FILE_TYPE_BINARY;
-        die_map_add_part(&binaryMap, 0, pEngine->file.nSize, 0, (cd_u64)pEngine->file.nSize, XX_FILE_PART_DATA, "Data");
+        if (pEngine->fileType == XFT_NE) script_map = script_ne_memory_map(pEngine->device, &binaryMap, pd);
+        else if (pEngine->fileType == XFT_MSDOS) script_map = script_msdos_memory_map(pEngine->device, &binaryMap, pd);
+        if (script_map < 0) {
+            xx_memory_map_cleanup(&binaryMap);
+            xx_io_close(pEngine->device);
+            cd_free(pEngine);
+            xx_pd_leave_level(pd, progress);
+            if (!xx_pd_is_stopped(pd)) xx_pd_set_error(pd, XXFC_ERR_IO, "Cannot initialize executable signature map");
+            return 0;
+        }
+        pEngine->nBits = script_map ? 16 : 32;
+        if (!script_map) {
+            /* Forced-format callbacks still run on nonmatching input. Keep
+             * their previous flat-map fallback when no matching header exists. */
+            binaryMap.binary_size = xx_io_total_size(pEngine->device);
+            binaryMap.endian = XX_ENDIAN_LITTLE;
+            binaryMap.mode = XX_MEMORY_MAP_MODE_DATA;
+            binaryMap.file_type = (pEngine->fileType == XFT_COM) ? XX_FILE_TYPE_COM : (pEngine->fileType == XFT_MSDOS) ? XX_FILE_TYPE_MSDOS : XX_FILE_TYPE_BINARY;
+            xx_memory_map_add_part(&binaryMap, 0, binaryMap.binary_size, 0, binaryMap.binary_size, XX_FILE_PART_DATA, 0, "Data", false);
+        }
         pEngine->pMap = &binaryMap;
     }
 
-    /* FIRST_MATCH and read_past_end_as_zero together are what this engine
-     * has always done, and what the signature databases were written
-     * against; both are off by default in the library because refusing is
-     * the better behaviour for anything new. */
-    xx_data_sig_context_from_memory_map_ex(&pEngine->sigContext, pEngine->pMap, XX_MEMORY_MAP_LOOKUP_FIRST_MATCH, true);
+    /* NE branch/pointer signatures use the same reverse physical lookup as
+     * XBinary's address conversions, including segments overlapping headers.
+     * Other formats retain their existing signature lookup policy. */
+    xx_data_sig_context_from_memory_map_ex(&pEngine->sigContext, pEngine->pMap,
+                                         pEngine->pMap->file_type == XX_FILE_TYPE_NE ? XX_MEMORY_MAP_LOOKUP_LAST_PHYSICAL : XX_MEMORY_MAP_LOOKUP_FIRST_MATCH, true);
 
     pResult->fileType = pEngine->fileType;
 
@@ -939,16 +668,16 @@ static int scan_run_pass(DieFile *pOpenedFile, XFileType fileType, int bIsCliAss
             }
         }
 
-        if (nGlobalInit >= 0 && !die_file_read_failed(&pEngine->file)) {
+        if (nGlobalInit >= 0 && !xx_io_buffer_failed(pEngine->device) && !xx_pd_is_stopped(pd)) {
             run_script(pEngine, &pDb->pRecords[nGlobalInit], 0);
         }
 
-        if (nTypeInit >= 0 && !die_file_read_failed(&pEngine->file)) {
+        if (nTypeInit >= 0 && !xx_io_buffer_failed(pEngine->device) && !xx_pd_is_stopped(pd)) {
             run_script(pEngine, &pDb->pRecords[nTypeInit], 0);
         }
 
         /* The DOTNET _init runs after the PE one, so it can build on it. */
-        if (pEngine->bIsCliAssembly && (nCliInit >= 0) && !die_file_read_failed(&pEngine->file)) {
+        if (pEngine->bIsCliAssembly && (nCliInit >= 0) && !xx_io_buffer_failed(pEngine->device) && !xx_pd_is_stopped(pd)) {
             run_script(pEngine, &pDb->pRecords[nCliInit], 0);
         }
     }
@@ -956,28 +685,32 @@ static int scan_run_pass(DieFile *pOpenedFile, XFileType fileType, int bIsCliAss
     /* cd_alloc_oom() is always false unless the soft out-of-memory policy is
      * armed, which only the shared library does; there it ends the scan at
      * the next script boundary instead of ending the process. */
-    for (i = 0; (i < pDb->nCount) && (!pEngine->bStop) && (!cd_alloc_oom()) && !die_file_read_failed(&pEngine->file); i++) {
+    for (i = 0; (i < pDb->nCount) && (!pEngine->bStop) && (!cd_alloc_oom()) && !xx_io_buffer_failed(pEngine->device) && !xx_pd_is_stopped(pd); i++) {
+        xx_pd_set_current(pd, progress, (uint64_t)i);
+        if (xx_pd_is_stopped(pd)) break;
         if (should_execute(&pDb->pRecords[i], pEngine->fileType, pEngine->bIsCliAssembly, pOptions)) {
             run_script(pEngine, &pDb->pRecords[i], 1);
         }
     }
 
-    if (bAddUnknown && (pResult->nCount == 0) && !die_file_read_failed(&pEngine->file)) {
-        ScanRecord *pRecord = NULL;
+    if (bAddUnknown && (pResult->nCount == 0) && !xx_io_buffer_failed(pEngine->device) && !xx_pd_is_stopped(pd)) {
+        xx_scan_record *pRecord = NULL;
 
-        pResult->pRecords = (ScanRecord *)cd_calloc(1, sizeof(ScanRecord));
+        pResult->pRecords = (xx_scan_record *)cd_calloc(1, sizeof(xx_scan_record));
         pResult->nCapacity = 1;
         pRecord = &pResult->pRecords[0];
-        pRecord->pType = cd_strdup("Unknown");
-        pRecord->pName = cd_strdup("Unknown");
-        pRecord->pVersion = cd_strdup("");
-        pRecord->pInfo = cd_strdup("");
-        pRecord->nPrio = die_engine_type_to_prio("Unknown");
-        pRecord->bIsUnknown = 1;
+        die_engine_record_init(pEngine, pRecord);
+        pRecord->type = cd_strdup("Unknown");
+        pRecord->name = cd_strdup("Unknown");
+        pRecord->version = cd_strdup("");
+        pRecord->info = cd_strdup("");
+        pRecord->priority = xx_scan_type_to_prio("Unknown");
+        pRecord->is_unknown = 1;
         pResult->nCount = 1;
     }
 
-    add_msdos_zip_overlay(pEngine);
+    /* DiE sorts each pass before merging independent interpretations. */
+    if (pOptions->sort) xx_scan_sort_records(pResult->pRecords, pResult->nCount);
 
     if (pEngine->pLastError) {
         static const char sPrefix[] = "Last error: ";
@@ -986,13 +719,12 @@ static int scan_run_pass(DieFile *pOpenedFile, XFileType fileType, int bIsCliAss
 
         x_memcpy(pError, sPrefix, sizeof(sPrefix) - 1);
         x_memcpy(pError + sizeof(sPrefix) - 1, pEngine->pLastError, nLength + 1);
-        result_add_error(pResult, pError);
+        (void)xx_scan_result_add_error(pResult, pError, pd);
         cd_free(pError);
         cd_free(pEngine->pLastError);
     }
 
     js_free(pEngine->pJs);
-    die_engine_literal_cache_free(pEngine);
 
     for (i = 0; i < pEngine->nBlackListCount; i++) {
         cd_free(pEngine->pBlackList[i].pType);
@@ -1028,16 +760,23 @@ static int scan_run_pass(DieFile *pOpenedFile, XFileType fileType, int bIsCliAss
 
     xx_zip_destroy(&pEngine->zip);
 
-    xdisasm_close(&pEngine->file);
+    read_failed = xx_io_buffer_failed(pEngine->device);
+    xx_io_close(pEngine->device);
     cd_free(pEngine);
 
-    return !die_file_read_failed(pOpenedFile);
+    xx_pd_set_current(pd, progress, (uint64_t)i);
+    xx_pd_leave_level(pd, progress);
+    if (read_failed) {
+        (void)xx_scan_result_add_error(pResult, "File read error", pd);
+        xx_pd_set_error(pd, XXFC_ERR_IO, "DIE signature input read failed");
+    }
+    return !read_failed && !xx_pd_is_stopped(pd);
 }
 
 /* Moves every record and error of pFrom into pTo - to the front when bFront
  * is set, otherwise after what is already there - leaving pFrom empty. The
  * record strings change owner, so only the arrays are freed.               */
-static void result_merge(ScanResult *pTo, ScanResult *pFrom, int bFront)
+static void result_merge(xx_scan_result *pTo, xx_scan_result *pFrom, int bFront)
 {
     int nTotal = 0;
 
@@ -1048,14 +787,14 @@ static void result_merge(ScanResult *pTo, ScanResult *pFrom, int bFront)
 
         if (nTotal > pTo->nCapacity) {
             pTo->nCapacity = nTotal;
-            pTo->pRecords = (ScanRecord *)cd_realloc(pTo->pRecords, (size_t)nTotal * sizeof(ScanRecord));
+            pTo->pRecords = (xx_scan_record *)cd_realloc(pTo->pRecords, (size_t)nTotal * sizeof(xx_scan_record));
         }
 
         if (bFront && (pTo->nCount > 0)) {
-            x_memmove(pTo->pRecords + pFrom->nCount, pTo->pRecords, (size_t)pTo->nCount * sizeof(ScanRecord));
+            x_memmove(pTo->pRecords + pFrom->nCount, pTo->pRecords, (size_t)pTo->nCount * sizeof(xx_scan_record));
         }
 
-        x_memcpy(pTo->pRecords + nAt, pFrom->pRecords, (size_t)pFrom->nCount * sizeof(ScanRecord));
+        x_memcpy(pTo->pRecords + nAt, pFrom->pRecords, (size_t)pFrom->nCount * sizeof(xx_scan_record));
         pTo->nCount = nTotal;
     }
 
@@ -1086,12 +825,12 @@ static void result_merge(ScanResult *pTo, ScanResult *pFrom, int bFront)
 /* XScanEngine's hasNonGenericCOMRecords. _COM.0.sg answers for every file
  * that reaches it, so a COM pass only counts when it produced something
  * beyond the operating-system and format lines it always emits.            */
-static int com_has_non_generic(ScanResult *pResult)
+static int com_has_non_generic(xx_scan_result *pResult)
 {
     int i = 0;
 
     for (i = 0; i < pResult->nCount; i++) {
-        char *pType = die_engine_translate_type(pResult->pRecords[i].pType);
+        char *pType = xx_scan_translate_type(pResult->pRecords[i].type);
         int bGeneric = ((cd_stricmp_ascii(pType, "Operation system") == 0) || (cd_stricmp_ascii(pType, "Format") == 0)) ? 1 : 0;
 
         cd_free(pType);
@@ -1104,13 +843,59 @@ static int com_has_non_generic(ScanResult *pResult)
     return 0;
 }
 
-/* The scan proper, over an already-populated DieFile (the struct is taken by
- * value and closed here). Both die_engine_scan_file and die_engine_scan_memory funnel
- * through this so the two entry points share one verified path. */
-static int scan_engine_run(DieFile *pOpenedFile, DBase *pDb, ScanOptions *pOptions, XFileType selectedType, ScanResult *pResult)
+/* Preserve detection I/O failures even when a weak format probe falls back
+ * to Binary. The forwarding device borrows its source and never closes it. */
+typedef struct scan_detection_device {
+    xx_io_device device;
+    xx_io_device *source;
+    bool failed;
+} scan_detection_device;
+
+static ssize_t scan_detection_read(xx_io_device *device, void *buffer, size_t size)
 {
-    DieFileTypeSet set;
+    scan_detection_device *state = (scan_detection_device *)device->priv;
+    int64_t position = xx_io_tell(state->source);
+    ssize_t count = xx_io_read(state->source, buffer, size);
+    if (count < 0 || (uint64_t)count > (uint64_t)size ||
+        (size && !count && position >= 0 && position < xx_io_total_size(state->source))) state->failed = true;
+    return count;
+}
+
+static int scan_detection_seek64(xx_io_device *device, int64_t offset, int whence)
+{
+    scan_detection_device *state = (scan_detection_device *)device->priv;
+    int result = xx_io_seek64(state->source, offset, whence);
+    if (result != 0) state->failed = true;
+    return result;
+}
+
+static int scan_detection_seek(xx_io_device *device, long offset, int whence)
+{
+    return scan_detection_seek64(device, (int64_t)offset, whence);
+}
+
+static int64_t scan_detection_tell(xx_io_device *device)
+{
+    scan_detection_device *state = (scan_detection_device *)device->priv;
+    return xx_io_tell(state->source);
+}
+
+static int64_t scan_detection_size(xx_io_device *device)
+{
+    scan_detection_device *state = (scan_detection_device *)device->priv;
+    return xx_io_total_size(state->source);
+}
+
+/* Orchestrate signature passes over the borrowed, bounded input device.
+ * Type detection, input metadata and pass selection use xx_io directly;
+ * only scan_run_pass creates the buffered input device. */
+static int scan_engine_run(xx_io_device *device, DBase *pDb, xx_scan_options *pOptions, XFileType selectedType, xx_scan_result *pResult, xx_pd_struct *pd)
+{
+    xx_scan_file_type_set set;
+    scan_detection_device detection = {0};
     XFileType fileType = XFT_BINARY;
+    const char *file_name;
+    int64_t device_size;
     int bIsCliAssembly = 0;
     int nResult = 0;
 #if defined(XXFC_BUILD_SHARED)
@@ -1126,37 +911,77 @@ static int scan_engine_run(DieFile *pOpenedFile, DBase *pDb, ScanOptions *pOptio
     int bSoftOom = cd_alloc_begin_soft_oom();
 #endif
 
-    if (!die_file_type_set_detect(pOpenedFile, &set)) goto scan_close;
-    if (die_file_read_failed(pOpenedFile)) goto scan_close;
-    fileType = selectedType == XFT_UNKNOWN ? pick_file_type(pOpenedFile, &set) : selectedType;
-    bIsCliAssembly = die_file_type_contains(&set, XFT_CLI_ASSEMBLY);
+    if (!device || !pDb || !pOptions || !pResult) {
+        xx_pd_set_error(pd, XXFC_ERR_NULL_PARAM, "Missing DIE scan argument");
+        goto scan_done;
+    }
+    if (xx_pd_is_stopped(pd)) goto scan_done;
+    device_size = xx_io_total_size(device);
+    if (device_size < 0) {
+        xx_pd_set_error(pd, XXFC_ERR_IO, "Cannot determine DIE input size");
+        goto scan_done;
+    }
+    pResult->sort = pOptions->sort;
+    file_name = pOptions->file_name ? pOptions->file_name : xx_io_source_path(device);
+    pResult->pFileName = cd_strdup(file_name ? file_name : "");
+    pResult->nFileSize = device_size;
+    detection.source = device;
+    detection.device.priv = &detection;
+    detection.device.read = scan_detection_read;
+    detection.device.seek = scan_detection_seek;
+    detection.device.seek64 = scan_detection_seek64;
+    detection.device.tell = scan_detection_tell;
+    detection.device.total_size = scan_detection_size;
+    if (!xx_scan_file_type_set_detect(&detection.device, file_name, &set) || detection.failed) {
+        xx_pd_set_error(pd, XXFC_ERR_IO, "Cannot detect DIE input type");
+        goto scan_done;
+    }
+    fileType = selectedType == XFT_UNKNOWN ? xx_scan_pick_file_type(device, file_name, &set) : selectedType;
+    if (fileType == XFT_CLI_ASSEMBLY || fileType == XFT_PE) {
+        if (xx_scan_file_type_set_contains(&set, XFT_PE32)) fileType = XFT_PE32;
+        else if (xx_scan_file_type_set_contains(&set, XFT_PE64)) fileType = XFT_PE64;
+        else if (fileType == XFT_CLI_ASSEMBLY) {
+            xx_pd_set_error(pd, XXFC_ERR_INVALID_ARG, "Managed scan requires a PE image");
+            goto scan_done;
+        }
+    } else if (fileType == XFT_ELF) {
+        if (xx_scan_file_type_set_contains(&set, XFT_ELF32)) fileType = XFT_ELF32;
+        else if (xx_scan_file_type_set_contains(&set, XFT_ELF64)) fileType = XFT_ELF64;
+    } else if (fileType == XFT_MACHO) {
+        if (xx_scan_file_type_set_contains(&set, XFT_MACHO32)) fileType = XFT_MACHO32;
+        else if (xx_scan_file_type_set_contains(&set, XFT_MACHO64)) fileType = XFT_MACHO64;
+    }
+    bIsCliAssembly = xx_scan_file_type_set_contains(&set, XFT_CLI_ASSEMBLY);
 
     if (selectedType != XFT_UNKNOWN) {
         /* Choosing Binary must not silently add a COM pass or .NET scripts.
          * Each explicit choice is an independent interpretation of the file. */
         bIsCliAssembly = bIsCliAssembly && (fileType == XFT_PE32 || fileType == XFT_PE64);
-        nResult = scan_run_pass(pOpenedFile, fileType, bIsCliAssembly, pDb, pOptions, pResult, 1);
+        nResult = scan_run_pass(device, fileType, bIsCliAssembly, pDb, pOptions, pResult, 1, pd);
     } else if (fileType == XFT_COM) {
         /* XScanEngine::scanProcess's FT_COM arm is two passes: a deep scan
          * runs the FT_BINARY scripts first, and the FT_COM pass adds its
          * "Unknown" record only when that produced nothing. The binary
-         * records come first in the merged list, and a file that answered as
-         * binary is reported as Binary rather than COM.                    */
-        ScanResult binResult;
+         * records come first in the merged list. Each pass retains its own
+         * output header, while the initial file type remains COM.          */
+        xx_scan_result binResult;
         int bIsBinary = 0;
 
         x_memset(&binResult, 0, sizeof(binResult));
 
-        if (pOptions->bDeepScan) {
-            scan_run_pass(pOpenedFile, XFT_BINARY, bIsCliAssembly, pDb, pOptions, &binResult, 0);
+        if (pOptions->deep_scan) {
+            if (!scan_run_pass(device, XFT_BINARY, bIsCliAssembly, pDb, pOptions, &binResult, 0, pd)) {
+                xx_scan_result_free(&binResult);
+                goto scan_done;
+            }
             bIsBinary = (binResult.nCount > 0);
         }
 
-        nResult = scan_run_pass(pOpenedFile, XFT_COM, bIsCliAssembly, pDb, pOptions, pResult, !bIsBinary);
+        nResult = scan_run_pass(device, XFT_COM, bIsCliAssembly, pDb, pOptions, pResult, !bIsBinary, pd);
 
         result_merge(pResult, &binResult, 1);
-        pResult->fileType = bIsBinary ? XFT_BINARY : XFT_COM;
-    } else if ((fileType == XFT_BINARY) && (pOpenedFile->nSize <= XCOM_MAX_SIZE)) {
+        pResult->fileType = XFT_COM;
+    } else if ((fileType == XFT_BINARY) && (device_size <= XX_SCAN_COM_MAX_SIZE)) {
         /* XScanEngine::scanProcess's last arm - everything no format claimed
          * - offers the file to the COM scripts before the binary ones, which
          * is the only way the 248 COM signatures run on a file that is not
@@ -1168,41 +993,36 @@ static int scan_engine_run(DieFile *pOpenedFile, DBase *pDb, ScanOptions *pOptio
          * lets it add "Unknown". Its records are kept only when one of them
          * is neither an operating system nor a format, and that same answer
          * is what suppresses the binary pass's own "Unknown".              */
-        ScanResult comResult;
-        ScanOptions comOptions = *pOptions;
+        xx_scan_result comResult;
+        xx_scan_options comOptions = *pOptions;
         int bIsCom = 0;
 
         x_memset(&comResult, 0, sizeof(comResult));
-        comOptions.bVerbose = 0;
+        comOptions.verbose = 0;
 
-        scan_run_pass(pOpenedFile, XFT_COM, bIsCliAssembly, pDb, &comOptions, &comResult, 0);
+        if (!scan_run_pass(device, XFT_COM, bIsCliAssembly, pDb, &comOptions, &comResult, 0, pd)) {
+            xx_scan_result_free(&comResult);
+            goto scan_done;
+        }
         bIsCom = com_has_non_generic(&comResult);
 
-        nResult = scan_run_pass(pOpenedFile, XFT_BINARY, bIsCliAssembly, pDb, pOptions, pResult, !bIsCom);
+        nResult = scan_run_pass(device, XFT_BINARY, bIsCliAssembly, pDb, pOptions, pResult, !bIsCom, pd);
 
         if (bIsCom) {
             result_merge(pResult, &comResult, 0);
         } else {
-            scan_result_free(&comResult);
+            xx_scan_result_free(&comResult);
         }
     } else {
-        nResult = scan_run_pass(pOpenedFile, fileType, bIsCliAssembly, pDb, pOptions, pResult, 1);
+        nResult = scan_run_pass(device, fileType, bIsCliAssembly, pDb, pOptions, pResult, 1, pd);
     }
 
-    if (pOptions->bSort) {
-        stable_sort_records(pResult->pRecords, pResult->nCount);
-    }
-
-scan_close:
-    if (die_file_read_failed(pOpenedFile)) {
-        result_add_error(pResult, "File read error");
-        nResult = 0;
-    }
-    die_file_close(pOpenedFile);
+scan_done:
 
 #if defined(XXFC_BUILD_SHARED)
     if (bSoftOom) {
         if (cd_alloc_oom()) {
+            xx_pd_set_error(pd, XXFC_ERR_OUT_OF_MEMORY, "Cannot allocate DIE scan state");
             nResult = 0;
         }
 
@@ -1213,125 +1033,43 @@ scan_close:
     return nResult;
 }
 
-int die_engine_scan_file(const char *pFileName, DBase *pDb, ScanOptions *pOptions, ScanResult *pResult)
-{
-    return die_engine_scan_file_type(pFileName, pDb, pOptions, XFT_UNKNOWN, pResult);
-}
-
-int die_engine_scan_file_type(const char *pFileName, DBase *pDb, ScanOptions *pOptions, XFileType fileType, ScanResult *pResult)
-{
-    DieFile file;
-
-    if (!pResult) return 0;
-    x_memset(pResult, 0, sizeof(*pResult));
-
-    if (!pFileName || !pFileName[0] || !pDb || !pOptions || (cd_u32)fileType >= (cd_u32)XFT_COUNT) return 0;
-
-    if (!die_file_open(&file, pFileName)) {
-        return 0;
-    }
-
-    pResult->pFileName = cd_strdup(pFileName);
-    pResult->nFileSize = file.nSize;
-
-    return scan_engine_run(&file, pDb, pOptions, fileType, pResult);
-}
-
 int die_engine_detect_file_types(const char *pFileName, die_engine_file_type_fn pTypeFn, void *pUserData)
 {
-    DieFile file;
-    DieFileTypeSet set;
+    xx_io_device *source;
+    xx_io_device *device;
+    xx_scan_file_type_set set;
     XFileType preferred;
     int i;
     int failed;
 
-    if (!pFileName || !pFileName[0] || !die_file_open(&file, pFileName)) return 0;
-    if (!die_file_type_set_detect(&file, &set)) {
-        die_file_close(&file);
+    if (!pFileName || !pFileName[0]) return 0;
+    source = xx_io_file_open(pFileName, "rb");
+    if (!source) return 0;
+    device = xx_io_buffer_open_auto(source, 0, xx_get_file_memory_limit(), true);
+    if (!device) {
+        xx_io_close(source);
         return 0;
     }
-    preferred = pick_file_type(&file, &set);
-    failed = die_file_read_failed(&file);
-    die_file_close(&file);
+    if (!xx_scan_file_type_set_detect(device, pFileName, &set)) {
+        xx_io_close(device);
+        return 0;
+    }
+    preferred = xx_scan_pick_file_type(device, pFileName, &set);
+    failed = xx_io_buffer_failed(device);
+    xx_io_close(device);
     if (failed) return 0;
 
     if (pTypeFn) {
         pTypeFn(preferred, pUserData);
         for (i = XFT_COUNT - 1; i > XFT_UNKNOWN; --i) {
-            if (i != (int)preferred && die_file_type_contains(&set, (XFileType)i)) pTypeFn((XFileType)i, pUserData);
+            if (i != (int)preferred && xx_scan_file_type_set_contains(&set, (XFileType)i)) pTypeFn((XFileType)i, pUserData);
         }
     }
     return 1;
 }
 
-int die_engine_scan_device(xx_io_device *pDevice, DBase *pDb, ScanOptions *pOptions, ScanResult *pResult)
+int die_engine_scan_pass_device(xx_io_device *device, DBase *database, xx_scan_options *options,
+                                XFileType type, xx_scan_result *result, xx_pd_struct *pd)
 {
-    DieFile file;
-    const char *pSourcePath;
-    int64_t original;
-    int result = 0;
-
-    if (!pResult) return 0;
-    x_memset(pResult, 0, sizeof(*pResult));
-    if (!pDevice || !pDb || !pOptions) return 0;
-    original = xx_io_tell(pDevice);
-    if (original < 0 || xx_io_seek64(pDevice, 0, SEEK_SET) != 0) return 0;
-    pSourcePath = xx_io_source_path(pDevice);
-    if (die_file_open_device(&file, pDevice, 0)) {
-        file.pFileName = cd_strdup(pSourcePath ? pSourcePath : "");
-        pResult->pFileName = cd_strdup(pSourcePath ? pSourcePath : "");
-        pResult->nFileSize = file.nSize;
-        result = scan_engine_run(&file, pDb, pOptions, XFT_UNKNOWN, pResult);
-    }
-    if (xx_io_seek64(pDevice, original, SEEK_SET) != 0) result = 0;
-    return result;
-}
-
-int die_engine_scan_memory(const void *pData, cd_i64 nSize, DBase *pDb, ScanOptions *pOptions, ScanResult *pResult)
-{
-    DieFile file;
-    unsigned char *pCopy = NULL;
-
-    x_memset(pResult, 0, sizeof(*pResult));
-    x_memset(&file, 0, sizeof(file));
-
-    if (nSize < 0) {
-        nSize = 0;
-    }
-
-    /* A NULL buffer with a non-zero size would reach the x_memcpy below and
-     * fault. cdie could treat that as the caller's problem -- it had exactly
-     * one caller, DIE_ScanMemory. As an exported library entry point it is
-     * reachable by anyone, so it is refused here instead. A NULL buffer with a
-     * size of zero stays legal and scans an empty image, which is what the
-     * one-byte allocation below is for. */
-    if ((pData == NULL) && (nSize > 0)) {
-        return 0;
-    }
-
-    /* A private copy so die_file_close can free it like a file-backed buffer. The
-     * size is the caller's, so this is one of the allocations that has to be
-     * allowed to fail rather than end the process; the NULL check below is
-     * what makes cd_try_malloc the right primitive here. */
-    pCopy = (unsigned char *)cd_try_malloc((size_t)(nSize > 0 ? nSize : 1));
-
-    if (pCopy == NULL) {
-        return 0;
-    }
-
-    if (nSize > 0) {
-        x_memcpy(pCopy, pData, (size_t)nSize);
-    }
-
-    /* die_file_adopt attaches the device the accessors read through, and
-     * takes the buffer with it. Filling the struct in by hand would leave
-     * pDevice NULL, and every field read would quietly answer zero. */
-    if (!die_file_adopt(&file, pCopy, nSize, "")) {
-        return 0;
-    }
-
-    pResult->pFileName = cd_strdup("");
-    pResult->nFileSize = nSize;
-
-    return scan_engine_run(&file, pDb, pOptions, XFT_UNKNOWN, pResult);
+    return scan_engine_run(device, database, options, type, result, pd);
 }

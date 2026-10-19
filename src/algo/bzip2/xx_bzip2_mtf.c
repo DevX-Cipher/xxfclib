@@ -4,6 +4,7 @@
 
 #include "xx_bzip2_mtf.h"
 #include "platforms/xx_bzip2_mtf_platform.h"
+#include "xxfclib/global/xx_global.h"
 #include "xxfclib/memory/xx_memory.h"
 
 static bool xx_bzip2_mtf_scalar(const uint8_t *src, size_t count, int *output, uint8_t alphabet[256], unsigned used)
@@ -152,6 +153,67 @@ static unsigned xx_bzip2_mtf_detect_capabilities(void)
 }
 #endif /* XX_BZIP2_MTF_X86 */
 
+#ifdef XX_BZIP2_MTF_ARM_NEON
+static XX_BZIP2_MTF_NOINLINE bool xx_bzip2_mtf_neon(const uint8_t *src, size_t count, int *output, uint8_t alphabet[256], unsigned used)
+{
+    size_t at;
+    for (at = 0U; at < count; ++at) {
+        uint8_t symbol = src[at];
+        unsigned pos, end;
+        if (symbol == alphabet[0]) {
+            output[at] = 0;
+            continue;
+        }
+        if (used > 1U && symbol == alphabet[1]) {
+            alphabet[1] = alphabet[0]; alphabet[0] = symbol; output[at] = 1; continue;
+        }
+        if (used > 2U && symbol == alphabet[2]) {
+            alphabet[2] = alphabet[1]; alphabet[1] = alphabet[0]; alphabet[0] = symbol; output[at] = 2; continue;
+        }
+        if (used > 3U && symbol == alphabet[3]) {
+            alphabet[3] = alphabet[2]; alphabet[2] = alphabet[1]; alphabet[1] = alphabet[0]; alphabet[0] = symbol; output[at] = 3; continue;
+        }
+
+        pos = used >= 16U ? 0U : 4U;
+        if (used >= 16U) {
+            uint8x16_t wanted = vdupq_n_u8(symbol);
+            while (used - pos >= 16U) {
+                uint8x16_t equal = vceqq_u8(vld1q_u8(alphabet + pos), wanted);
+                if (vmaxvq_u8(equal) != 0U) {
+                    uint8_t lanes[16];
+                    unsigned lane;
+                    vst1q_u8(lanes, equal);
+                    for (lane = 0U; lane < 16U; ++lane) {
+                        if (lanes[lane] != 0U) {
+                            pos += lane;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                pos += 16U;
+            }
+        }
+        while (pos < used && alphabet[pos] != symbol) ++pos;
+        if (pos >= used) return false;
+        output[at] = (int)pos;
+
+        end = pos;
+        while (end >= 16U) {
+            uint8x16_t values = vld1q_u8(alphabet + end - 16U);
+            vst1q_u8(alphabet + end - 15U, values);
+            end -= 16U;
+        }
+        while (end != 0U) {
+            alphabet[end] = alphabet[end - 1U];
+            --end;
+        }
+        alphabet[0] = symbol;
+    }
+    return true;
+}
+#endif
+
 unsigned xx_bzip2_mtf_backend_capabilities(void)
 {
 #ifdef XX_BZIP2_MTF_X86
@@ -175,13 +237,26 @@ unsigned xx_bzip2_mtf_backend_capabilities(void)
     return xx_bzip2_mtf_detect_capabilities();
 #endif
 #else
-    return 1U << XX_BZIP2_MTF_SCALAR;
+    unsigned result = 1U << XX_BZIP2_MTF_SCALAR;
+#ifdef XX_BZIP2_MTF_ARM_NEON
+    if (xx_has_neon()) result |= 1U << XX_BZIP2_MTF_NEON;
+#endif
+    return result;
 #endif
 }
 
 int xx_bzip2_mtf_selected_backend(void)
 {
-    if (xx_bzip2_mtf_backend_capabilities() & (1U << XX_BZIP2_MTF_SSE2)) return XX_BZIP2_MTF_SSE2;
+#ifdef XX_BZIP2_MTF_ARM_NEON
+    if (xx_is_neon_enabled() &&
+        (xx_bzip2_mtf_backend_capabilities() & (1U << XX_BZIP2_MTF_NEON))) {
+        return XX_BZIP2_MTF_NEON;
+    }
+#endif
+    if (xx_is_sse2_enabled() &&
+        (xx_bzip2_mtf_backend_capabilities() & (1U << XX_BZIP2_MTF_SSE2))) {
+        return XX_BZIP2_MTF_SSE2;
+    }
     return XX_BZIP2_MTF_SCALAR;
 }
 
@@ -191,6 +266,7 @@ const char *xx_bzip2_mtf_backend_name(int backend)
         case XX_BZIP2_MTF_AUTO: return "auto";
         case XX_BZIP2_MTF_SCALAR: return "scalar";
         case XX_BZIP2_MTF_SSE2: return "sse2";
+        case XX_BZIP2_MTF_NEON: return "neon";
         default: return "unsupported";
     }
 }
@@ -202,7 +278,9 @@ bool xx_bzip2_mtf_encode_backend(const uint8_t *src, size_t count, int *output, 
     bool ok;
     if (!in_use || (count != 0 && (!src || !output)) || count > SIZE_MAX / sizeof(int)) return false;
     if (backend == XX_BZIP2_MTF_AUTO) backend = xx_bzip2_mtf_selected_backend();
-    if (backend < XX_BZIP2_MTF_SCALAR || backend > XX_BZIP2_MTF_SSE2 || !(xx_bzip2_mtf_backend_capabilities() & (1U << backend))) return false;
+    if (backend < XX_BZIP2_MTF_SCALAR || backend > XX_BZIP2_MTF_NEON || !(xx_bzip2_mtf_backend_capabilities() & (1U << backend))) return false;
+    if (backend == XX_BZIP2_MTF_SSE2 && !xx_is_sse2_enabled()) return false;
+    if (backend == XX_BZIP2_MTF_NEON && !xx_is_neon_enabled()) return false;
     if (count == 0) return true;
     for (value = 0; value < 256; ++value) {
         if (in_use[value]) alphabet[used++] = (uint8_t)value;
@@ -210,6 +288,10 @@ bool xx_bzip2_mtf_encode_backend(const uint8_t *src, size_t count, int *output, 
     if (used == 0) return false;
 #ifdef XX_BZIP2_MTF_X86
     if (backend == XX_BZIP2_MTF_SSE2) ok = xx_bzip2_mtf_sse2(src, count, output, alphabet, used);
+    else
+#endif
+#ifdef XX_BZIP2_MTF_ARM_NEON
+    if (backend == XX_BZIP2_MTF_NEON) ok = xx_bzip2_mtf_neon(src, count, output, alphabet, used);
     else
 #endif
         ok = xx_bzip2_mtf_scalar(src, count, output, alphabet, used);

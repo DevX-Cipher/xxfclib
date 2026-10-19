@@ -19,6 +19,21 @@ static void uppercase(char *destination, size_t capacity, const char *source)
     destination[i] = 0;
 }
 
+static const char *script_stack_mnemonic(cdisasm_x86_name_id name)
+{
+    /* DIE scripts depend on Capstone's Intel spellings for the all-register
+     * stack instructions. Use the decoded operand width (including 0x66),
+     * while keeping cdisasm's native Intel formatter unchanged. These
+     * instructions have no operands; Capstone omits ignored prefixes. */
+    switch (name) {
+        case CDISASM_X86_NAME_PUSHA: return "PUSHAW";
+        case CDISASM_X86_NAME_PUSHAD: return "PUSHAL";
+        case CDISASM_X86_NAME_POPA: return "POPAW";
+        case CDISASM_X86_NAME_POPAD: return "POPAL";
+        default: return NULL;
+    }
+}
+
 static XDisasmResult invalid_byte(unsigned char byte)
 {
     XDisasmResult result = {0};
@@ -33,13 +48,7 @@ static XDisasmResult invalid_byte(unsigned char byte)
     return result;
 }
 
-void xdisasm_close(DieFile *file)
-{
-    /* cdisasm has no decoder handles or allocations to release. */
-    if (file) file->pDisasmContext = NULL;
-}
-
-XDisasmResult xdisasm_at(DieFile *file, cd_i64 offset, int bits, cd_u64 address)
+XDisasmResult xdisasm_at(xx_io_device *file, cd_i64 offset, int bits, cd_u64 address)
 {
     XDisasmResult result = {0};
     cdisasm_x86_instruction instruction;
@@ -49,15 +58,19 @@ XDisasmResult xdisasm_at(DieFile *file, cd_i64 offset, int bits, cd_u64 address)
     char formatted[sizeof(result.sInstruction)];
     size_t size;
     size_t formatted_size;
+    cd_i64 file_size;
     uint32_t decoded_size;
     uint8_t i;
+    const char *stack_mnemonic;
 
-    if (!file || offset < 0 || offset >= file->nSize) return result;
+    if (!file) return result;
+    file_size = xx_io_total_size(file);
+    if (offset < 0 || offset >= file_size) return result;
     if (bits != 16 && bits != 32 && bits != 64) return result;
 
     mode = bits == 16 ? CDISASM_MODE_16 : bits == 32 ? CDISASM_MODE_32 : CDISASM_MODE_64;
-    size = (size_t)(file->nSize - offset > CDISASM_MAX_INSTRUCTION_SIZE ? CDISASM_MAX_INSTRUCTION_SIZE : file->nSize - offset);
-    if (!die_file_read_at(file, offset, bytes, size)) return result;
+    size = (size_t)(file_size - offset > CDISASM_MAX_INSTRUCTION_SIZE ? CDISASM_MAX_INSTRUCTION_SIZE : file_size - offset);
+    if (!xx_io_read_at(file, offset, bytes, size)) return result;
 
     /* The unrestricted x86 profile keeps the DIE script's architecture-wide
      * decoding. The mode-specific mask also works in a base-only build. */
@@ -73,7 +86,8 @@ XDisasmResult xdisasm_at(DieFile *file, cd_i64 offset, int bits, cd_u64 address)
     }
 
     result.nSize = (int)decoded_size;
-    uppercase(result.sInstruction, sizeof(result.sInstruction), formatted);
+    stack_mnemonic = script_stack_mnemonic(instruction.name_id);
+    uppercase(result.sInstruction, sizeof(result.sInstruction), stack_mnemonic ? stack_mnemonic : formatted);
 
     if (instruction.opcode_groups & CDISASM_GROUP_RELATIVE_BRANCH) {
         for (i = 0; i < instruction.operand_count; ++i) {
@@ -100,7 +114,7 @@ XDisasmResult xdisasm_at(DieFile *file, cd_i64 offset, int bits, cd_u64 address)
     return result;
 }
 
-XDisasmResult xdisasm(DieFile *file, cd_i64 offset, int bits)
+XDisasmResult xdisasm(xx_io_device *file, cd_i64 offset, int bits)
 {
     return xdisasm_at(file, offset, bits, 0);
 }

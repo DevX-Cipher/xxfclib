@@ -11,7 +11,7 @@
 
 #include "xxfclib/algo/tarx/xx_tarx2.h"
 
-#include "xxfclib/formats/gz/xx_gz.h"
+#include "xxfclib/formats/archive/gz/xx_gz.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/global/xx_global.h"
 

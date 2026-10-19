@@ -42,6 +42,31 @@ extern "C" {
 #define XX_DEFLATE_LEVEL_DEFAULT 6
 #define XX_DEFLATE_LEVEL_BEST 9
 
+/** Per-operation DEFLATE packing settings. A positive max_candidates
+ * overrides the compression level, including level zero. Zero (or NULL
+ * options) retains the existing level behavior. The count limits hash-chain
+ * candidates per position; actual history may contain fewer candidates.
+ * Explicit compression methods such as ZIP STORE remain unchanged. */
+typedef struct xx_deflate_pack_options {
+    size_t max_candidates;
+} xx_deflate_pack_options;
+
+/** Extended packing options. The original options struct and APIs retain
+ * their ABI. max_candidates follows xx_deflate_pack_options. lazy_match_limit
+ * is a match-length threshold, not the number of lookahead bytes: 0 disables
+ * lazy parsing; otherwise a match shorter than this value is deferred by one
+ * byte if a strictly longer match is available at the next position. Values
+ * above the method's maximum match length have the same effect as that maximum.
+ * Candidate count and level selection remain independent of this threshold. */
+typedef struct xx_deflate_pack_options_ex {
+    size_t max_candidates;
+    size_t lazy_match_limit;
+    bool short_match_filter; /**< Reject length-3 matches beyond distance 4096; default false. */
+    size_t nice_match; /**< Stop main search at this length; zero disables. */
+    size_t good_match; /**< Quarter main candidate budget after reaching this length; zero disables. */
+} xx_deflate_pack_options_ex;
+
+
 /* ========================================================================= */
 /* --- Deflate / Deflate64 Decompression (Unpacking)                     --- */
 /* ========================================================================= */
@@ -147,9 +172,51 @@ XXFC_API bool xx_deflate_pack_source(xx_io_device *src_dev, const char *src_file
  */
 XXFC_API bool xx_deflate_compress_memory(const void *src_buf, size_t src_size, void *dst_buf, size_t dst_buf_size, size_t *out_written, int level, bool is_deflate64);
 
+/** Options-aware variants; existing packing APIs delegate with NULL
+ * options. window_size follows xx_deflate_pack_device_ex(). A positive
+ * candidate count selects the normal compression path regardless of level;
+ * Deflate64 also uses its normal long-match limit instead of low-level caps. */
+XXFC_API bool xx_deflate_pack_device_with_options(xx_io_device *src_dev, int64_t src_offset, int64_t uncomp_size, xx_io_device *dst_dev,
+                                                  int level, bool is_deflate64, size_t window_size, const xx_deflate_pack_options *options, xx_pd_struct *pd);
+XXFC_API bool xx_deflate_pack_source_with_options(xx_io_device *src_dev, const char *src_file_path, int64_t *out_uncomp_size, int64_t *out_comp_size,
+                                                  uint32_t *out_crc32, xx_io_device *dst_dev, int level, bool is_deflate64,
+                                                  const xx_deflate_pack_options *options, xx_pd_struct *pd);
+XXFC_API bool xx_deflate_compress_memory_with_options(const void *src_buf, size_t src_size, void *dst_buf, size_t dst_buf_size, size_t *out_written,
+                                                      int level, bool is_deflate64, const xx_deflate_pack_options *options);
+
+/** Extended options-aware entry points. NULL options preserves the
+ * original defaults. Old options-aware entry points always disable lazy
+ * parsing and read only the original struct's max_candidates field. */
+XXFC_API bool xx_deflate_pack_device_with_options_ex(xx_io_device *src_dev, int64_t src_offset, int64_t uncomp_size, xx_io_device *dst_dev,
+                                                     int level, bool is_deflate64, size_t window_size, const xx_deflate_pack_options_ex *options, xx_pd_struct *pd);
+XXFC_API bool xx_deflate_pack_source_with_options_ex(xx_io_device *src_dev, const char *src_file_path, int64_t *out_uncomp_size, int64_t *out_comp_size,
+                                                     uint32_t *out_crc32, xx_io_device *dst_dev, int level, bool is_deflate64,
+                                                     const xx_deflate_pack_options_ex *options, xx_pd_struct *pd);
+XXFC_API bool xx_deflate_compress_memory_with_options_ex(const void *src_buf, size_t src_size, void *dst_buf, size_t dst_buf_size, size_t *out_written,
+                                                         int level, bool is_deflate64, const xx_deflate_pack_options_ex *options);
+
 /* ========================================================================= */
 /* --- zlib stream wrapper (RFC 1950)                                    --- */
 /* ========================================================================= */
+
+/**
+ * @brief Upper bound for a complete RFC 1950 stream produced by
+ * xx_zlib_stream_encode_memory().
+ *
+ * SIZE_MAX is returned when the bound cannot be represented.
+ */
+XXFC_API size_t xx_zlib_stream_compress_bound(size_t source_size);
+
+/**
+ * @brief Encode a complete RFC 1950 stream with the native Deflate encoder.
+ *
+ * The output contains the two-byte zlib header, raw Deflate payload and
+ * big-endian Adler-32 trailer. Levels use the same 0..9 convention as the
+ * Deflate encoder. Use xx_zlib_stream_compress_bound() to size @p output.
+ */
+XXFC_API bool xx_zlib_stream_encode_memory(const uint8_t *input, size_t input_size,
+                                           uint8_t *output, size_t output_capacity,
+                                           size_t *written, int level);
 
 /**
  * @brief Whether @p input opens with a well-formed zlib header.

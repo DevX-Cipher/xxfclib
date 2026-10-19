@@ -42,6 +42,12 @@ uint32_t xx_adler32_scalar(uint32_t adler, const void *data, size_t size)
 uint32_t xx_adler32_update(uint32_t adler, const void *data, size_t size)
 {
     if (!data || size < 64U) return xx_adler32_scalar(adler, data, size);
+#ifdef XX_ADLER32_ARM64
+    /* Dot Product is independently switchable from baseline NEON. The
+     * backend is isolated so generic Arm translation units remain Armv8.0. */
+    if (xx_is_arm_dotprod_enabled()) return xx_adler32_arm_dotprod(adler, data, size);
+    if (xx_is_neon_enabled()) return xx_adler32_neon(adler, data, size);
+#endif
 #ifdef XX_ADLER32_X86
     /* As with CRC64, consult the switches on every call so applications can
      * disable a backend at runtime. Both SIMD paths also handle scalar tails. */

@@ -14,6 +14,10 @@ releasing decrypted compressed data, accepts zero-length encrypted payloads,
 and clears internal secret state. The encryption API accepts a caller-supplied
 salt and does not embed a random-number generator.
 
+On x86 processors with AES-NI, the shared block encrypt and decrypt functions
+use AES instructions when the global AES flag is enabled. The same generated
+round keys and software implementation remain available as the fallback.
+
 The 7-Zip path is also an independent C11 implementation. It implements the
 documented 06 F1 07 01 coder property layout, UTF-16LE password key derivation
 with SHA-256, and AES-256-CBC decryption with the coder output size used to

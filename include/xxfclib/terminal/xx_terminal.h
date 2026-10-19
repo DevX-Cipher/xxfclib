@@ -27,9 +27,97 @@ typedef struct xx_terminal_state_s {
 } xx_terminal_state;
 
 /**
+ * @brief Destination callback used by the structured-output helpers.
+ *
+ * The callback must consume all @p size bytes or return an error status.  It
+ * may target a standard stream, a staging file, an in-memory buffer, or any
+ * other byte sink.  Keeping the sink abstract lets the terminal module remain
+ * usable by CRT-free builds.
+ */
+typedef xxfc_status_t (*xx_terminal_write_fn)(void *context,
+                                               const char *data,
+                                               size_t size);
+
+/** @brief Sticky writer state shared by JSON and XML string emitters. */
+typedef struct xx_terminal_writer_s {
+    xx_terminal_write_fn write;
+    void *context;
+    xxfc_status_t status;
+} xx_terminal_writer;
+
+/** @brief Initialize a structured-output writer. */
+XXFC_API void xx_terminal_writer_init(xx_terminal_writer *writer,
+                                      xx_terminal_write_fn write,
+                                      void *context);
+
+/** @brief Return the first error reported by the writer or its callback. */
+XXFC_API xxfc_status_t xx_terminal_writer_status(
+    const xx_terminal_writer *writer);
+
+/**
+ * @brief Write bytes through the callback and preserve the first error.
+ *
+ * Once a write fails, later calls return the same error without invoking the
+ * callback again.
+ */
+XXFC_API xxfc_status_t xx_terminal_writer_write(xx_terminal_writer *writer,
+                                                const char *data,
+                                                size_t size);
+
+/**
+ * @brief Write a NUL-terminated UTF-8 value as one complete JSON string.
+ *
+ * Quotes are included.  Valid shortest-form UTF-8 is preserved.  Invalid
+ * input is replaced with \uFFFD and JSON control characters are escaped.
+ * NULL is treated as an empty string.
+ */
+XXFC_API xxfc_status_t xx_terminal_writer_json_string(
+    xx_terminal_writer *writer, const char *text);
+
+/** @brief Length-delimited form of xx_terminal_writer_json_string(). */
+XXFC_API xxfc_status_t xx_terminal_writer_json_string_n(
+    xx_terminal_writer *writer, const char *text, size_t size);
+
+/**
+ * @brief Write NUL-terminated UTF-8 as XML 1.0 character data.
+ *
+ * Markup characters are escaped.  Invalid UTF-8, XML-forbidden characters,
+ * and Unicode noncharacters are replaced with &#xFFFD;.  NULL is treated as an
+ * empty string.
+ */
+XXFC_API xxfc_status_t xx_terminal_writer_xml_text(
+    xx_terminal_writer *writer, const char *text);
+
+/** @brief Length-delimited form of xx_terminal_writer_xml_text(). */
+XXFC_API xxfc_status_t xx_terminal_writer_xml_text_n(
+    xx_terminal_writer *writer, const char *text, size_t size);
+
+/**
+ * @brief Write NUL-terminated UTF-8 as an XML 1.0 attribute value.
+ *
+ * The surrounding quotes are not included.  In addition to XML markup,
+ * quotation marks and attribute whitespace are escaped so parsing preserves
+ * the original value.
+ */
+XXFC_API xxfc_status_t xx_terminal_writer_xml_attribute(
+    xx_terminal_writer *writer, const char *text);
+
+/** @brief Length-delimited form of xx_terminal_writer_xml_attribute(). */
+XXFC_API xxfc_status_t xx_terminal_writer_xml_attribute_n(
+    xx_terminal_writer *writer, const char *text, size_t size);
+
+/**
  * @brief Apply one common command-line option to the process-global settings.
- * Recognizes --sse2/--nosse2, --avx2/--noavx2 and --color/--nocolor.
- * The --no-sse2, --no-avx2 and --no-color spellings are also accepted.
+ * X86 builds recognize --sse2/--nosse2, --sse42/--nosse42,
+ * --avx2/--noavx2, --aes/--noaes, --sha/--nosha and
+ * --vpclmulqdq/--novpclmulqdq. Arm builds recognize --neon/--noneon,
+ * --armcrc32/--noarmcrc32, --armcrypto/--noarmcrypto and
+ * --armdotprod/--noarmdotprod, --armpmull/--noarmpmull. Every build recognizes --color/--nocolor.
+ * Options for the other CPU architecture are unknown. Hyphenated --no-*
+ * spellings are also accepted; the Arm options may be enabled as
+ * --arm-crc32, --arm-crypto --arm-dotprod and --arm-pmull.
+ * SSE4.2 may also be spelled
+ * --sse4.2/--nosse4.2/--no-sse4.2.
  * CPU options are recognized but ignored if the CPU/OS lacks the feature.
  * Supported CPU features and color output are enabled by default; options do
  * not reset existing settings, so the last option for each setting wins.
@@ -52,6 +140,14 @@ XXFC_API void xx_terminal_finish(const xx_terminal_state *state);
 XXFC_API xxfc_status_t xx_terminal_write(const xx_terminal_state *state, const char *text, size_t size);
 /** @brief Write a NUL-terminated string without interpreting format specifiers. */
 XXFC_API xxfc_status_t xx_terminal_print(const xx_terminal_state *state, const char *text);
+/** @brief Write one colored span, then restore the terminal's colors.
+ * Colors are 0xRRGGBB or UINT32_MAX for the terminal default. The 16-color
+ * approximation and ANSI/native mappings follow XOptions::printConsole.
+ * Redirected/unsupported streams and disabled global colors stay plain.
+ * The caller must flush any separately buffered output before calling this.
+ * Color restoration is attempted even if writing the span fails. */
+XXFC_API xxfc_status_t xx_terminal_write_color(const xx_terminal_state *state,
+    const char *text, size_t size, uint32_t foreground, uint32_t background);
 XXFC_API xxfc_status_t xx_terminal_flush(const xx_terminal_state *state);
 
 /** @brief Read/write raw native Windows attributes. Color mapping is the caller's responsibility. */

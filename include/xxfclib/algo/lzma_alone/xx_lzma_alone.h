@@ -26,6 +26,11 @@ XXFC_API bool xx_lzma_alone_has_header(const uint8_t *data, size_t size);
  */
 XXFC_API bool xx_lzma_alone_decode_device(xx_io_device *source, int64_t source_offset, int64_t source_size, xx_io_device *destination, int64_t *output_size,
                                           xx_pd_struct *pd);
+/** The same; when the extent ends inside the stream (a cut file), false with
+ * `*cut` (optional) set: the destination then holds every byte decoded
+ * before that point. LZMA has no check of its own to tell them good. */
+XXFC_API bool xx_lzma_alone_decode_device_ex(xx_io_device *source, int64_t source_offset, int64_t source_size, xx_io_device *destination, int64_t *output_size, bool *cut,
+                                             xx_pd_struct *pd);
 
 #ifdef __cplusplus
 }

@@ -30,6 +30,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#if !defined(_M_ARM64EC) && (defined(_M_ARM64) || defined(__aarch64__))
+#define XX_MEMORY_ARM_NEON 1
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -127,6 +131,7 @@ static inline void xx_memory_store_word(uint8_t *destination, uint64_t value)
 void xx_memory_copy_scalar(uint8_t *destination, const uint8_t *source, size_t size);
 void xx_memory_copy_sse2(uint8_t *destination, const uint8_t *source, size_t size);
 void xx_memory_copy_avx2(uint8_t *destination, const uint8_t *source, size_t size);
+void xx_memory_copy_neon(uint8_t *destination, const uint8_t *source, size_t size);
 
 void xx_memory_move_scalar(uint8_t *, const uint8_t *, size_t);
 void xx_memory_set_scalar(uint8_t *, uint8_t, size_t);
@@ -140,6 +145,10 @@ void xx_memory_move_avx2(uint8_t *, const uint8_t *, size_t);
 void xx_memory_set_avx2(uint8_t *, uint8_t, size_t);
 int xx_memory_compare_avx2(const uint8_t *, const uint8_t *, size_t);
 const uint8_t *xx_memory_find_avx2(const uint8_t *, uint8_t, size_t);
+void xx_memory_move_neon(uint8_t *, const uint8_t *, size_t);
+void xx_memory_set_neon(uint8_t *, uint8_t, size_t);
+int xx_memory_compare_neon(const uint8_t *, const uint8_t *, size_t);
+const uint8_t *xx_memory_find_neon(const uint8_t *, uint8_t, size_t);
 
 #ifdef __cplusplus
 }

@@ -322,8 +322,8 @@ lzma_decoder *lzma_dec_create(const lzma_props *props)
         return NULL;
     }
 
-    xx_rt_memset(dec->dict, 0, props->dict_size);
-
+    /* Every dictionary read is guarded by dict_filled. A stream declaring a
+     * large dictionary must not force us to touch all of it up front. */
     dec->dict_mask = props->dict_size - 1;
     dec->dict_limit = props->dict_size;
     lzma_dec_reset_dictionary(dec);
@@ -594,8 +594,10 @@ bool xx_lzma_decompress_stream(lzma_range_dec *rd, const lzma_props *props, int6
 
     bool ok = lzma_decode_block(rd, dec, uncomp_size, &out, pd);
 
-    /* Flush remaining output */
+    /* Flush remaining output; also when the input ended inside the stream
+     * (a cut file): every byte decoded before that point is good. */
     if (ok && out.obuf_pos > 0) ok = lzma_out_flush(&out);
+    else if (!ok && rd->eof && out.obuf_pos > 0 && !out.error && !(pd && xx_pd_is_stopped(pd))) (void)lzma_out_flush(&out);
     if (out_written) *out_written = ok ? (size_t)out.total_written : 0;
 
     xx_mem_free(out.obuf);
@@ -742,9 +744,15 @@ bool xx_lzma2_decompress_stream(lzma_range_dec *rd, uint8_t props2_byte, xx_io_d
                 goto cleanup;
             {
                 bool chunk_ok = lzma_decode_block(&chunk_rd, dec, (int64_t)unpack_size, &out, pd);
+                bool ran_out = !chunk_ok && chunk_rd.eof;
                 chunk_ok = chunk_ok && !chunk_rd.error;
                 lzma_rd_free(&chunk_rd);
-                if (!chunk_ok) goto cleanup;
+                if (!chunk_ok) {
+                    /* The chunk's input ended (the cut part of a cut
+                     * stream): every byte decoded before that is good. */
+                    if (ran_out && out.obuf_pos && !out.error && !(pd && xx_pd_is_stopped(pd))) (void)lzma_out_flush(&out);
+                    goto cleanup;
+                }
             }
             state_initialized = true;
         }

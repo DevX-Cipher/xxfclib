@@ -24,8 +24,8 @@ APK and DEX reader APIs, binary Android manifest decoding, and ZIP stored or
 deflate member extraction to caller-owned devices, with CRC and size checks.
 It includes the core memory, I/O and metadata helpers those readers require.
 
-The reusable readers are declared in `xxfclib/formats/apk/xx_apk.h` and
-`xxfclib/formats/dex/xx_dex.h`. After `xx_apk_analyze`, the package name and
+The reusable readers are declared in `xxfclib/formats/installer/apk/xx_apk.h` and
+`xxfclib/formats/executable/dex/xx_dex.h`. After `xx_apk_analyze`, the package name and
 fully qualified launcher activity are available through
 `xx_apk_get_package_name` and `xx_apk_get_launcher_activity`.
 Metadata requires a complete manifest element tree; incomplete legacy text

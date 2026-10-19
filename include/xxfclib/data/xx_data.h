@@ -51,6 +51,11 @@ extern "C" {
 /* --- 1. Raw Memory Buffer Operations                                   --- */
 /* ========================================================================= */
 
+/** Render bytes as lowercase hexadecimal, followed by a NUL terminator.
+ * The output needs 2 * data_size + 1 bytes. Returns false for NULL pointers,
+ * insufficient output space, or an unrepresentable output length. */
+XXFC_API bool xx_data_to_hex(const void *data, size_t data_size, char *out, size_t out_size);
+
 /* Reading types from raw buffer (safe, returns 0 if out of bounds) */
 XXFC_API uint8_t xx_data_get_u8(const void *data, size_t data_size, size_t offset);
 XXFC_API int8_t xx_data_get_i8(const void *data, size_t data_size, size_t offset);
@@ -132,6 +137,28 @@ XXFC_API int64_t xx_io_get_i64(xx_io_device *dev, int64_t offset, bool big_endia
 XXFC_API float xx_io_get_f32(xx_io_device *dev, int64_t offset, bool big_endian);
 XXFC_API double xx_io_get_f64(xx_io_device *dev, int64_t offset, bool big_endian);
 XXFC_API float xx_io_get_f16(xx_io_device *dev, int64_t offset, bool big_endian);
+/** Read a UUID as lowercase 8-4-4-4-12 hexadecimal groups. The first four
+ * groups are little-endian integers (4,2,2,2 bytes); the final six bytes stay
+ * in file order. Each failed scalar read contributes zero independently.
+ * Reads reposition the device like xx_io_get_u32. Offsets above INT64_MAX-15
+ * produce an all-zero UUID without I/O. Returns NULL on allocation failure;
+ * otherwise free the allocated string with xx_str_free. */
+XXFC_API char *xx_io_get_uuid(xx_io_device *dev, int64_t offset);
+/** Read a region as uppercase hexadecimal, two characters per byte.
+ * Negative size means the remaining bytes; oversized ranges stop at EOF.
+ * Invalid/unknown-size devices, invalid offsets, and zero sizes return an
+ * allocated empty string. A read failure returns the completed window prefix.
+ * The device is borrowed. Buffered inputs keep their logical cursor; ordinary
+ * inputs use a temporary buffer whose reads reposition the source.
+ * Returns NULL on allocation failure or an unrepresentable output size.
+ * Free the returned string with xx_str_free. */
+XXFC_API char *xx_io_get_signature_hex(xx_io_device *dev, int64_t offset, int64_t size);
+/** Test whether every byte in a nonempty device range is zero.
+ * The entire range must lie within a known device size: invalid/empty ranges,
+ * allocation failures, and read failures return false. The device is borrowed.
+ * Buffered inputs keep their logical cursor; ordinary inputs use a temporary
+ * buffer whose reads reposition the source. */
+XXFC_API bool xx_io_is_zero_filled(xx_io_device *dev, int64_t offset, int64_t size);
 XXFC_API char *xx_io_get_ansi_string(xx_io_device *dev, int64_t offset, size_t max_len);
 XXFC_API wchar_t *xx_io_get_unicode_string(xx_io_device *dev, int64_t offset, size_t max_len, bool big_endian);
 
@@ -180,6 +207,20 @@ XXFC_API bool xx_io_set_f32(xx_io_device *dev, int64_t offset, float val, bool b
 XXFC_API bool xx_io_set_f64(xx_io_device *dev, int64_t offset, double val, bool big_endian);
 XXFC_API bool xx_io_set_ansi_string(xx_io_device *dev, int64_t offset, const char *str);
 XXFC_API bool xx_io_set_unicode_string(xx_io_device *dev, int64_t offset, const wchar_t *wstr, bool big_endian);
+
+/* Search a clamped region of a known-size device. Negative size means the
+ * remaining bytes; oversized sizes stop at EOF. Zero sizes, invalid offsets,
+ * empty patterns/strings, read failures, and cancellation return -1.
+ * Results are absolute file offsets. Devices are borrowed. Buffered inputs
+ * retain their logical cursor and use resident/adaptive buffers; ordinary
+ * inputs follow the streaming finder's cursor behavior. */
+XXFC_API int64_t xx_io_find_bytes_in_range(xx_io_device *dev, int64_t offset, int64_t size, const void *pattern, size_t pattern_size, xx_pd_struct *pd);
+XXFC_API int64_t xx_io_find_ansi_string_in_range(xx_io_device *dev, int64_t offset, int64_t size, const char *str, xx_pd_struct *pd);
+/* Widen each unsigned input byte to one UTF-16 unit, without UTF-8 decoding. */
+XXFC_API int64_t xx_io_find_unicode_bytes_in_range(xx_io_device *dev, int64_t offset, int64_t size, const char *str, bool big_endian, xx_pd_struct *pd);
+XXFC_API int64_t xx_io_find_u8_in_range(xx_io_device *dev, int64_t offset, int64_t size, uint8_t val, xx_pd_struct *pd);
+XXFC_API int64_t xx_io_find_u16_in_range(xx_io_device *dev, int64_t offset, int64_t size, uint16_t val, bool big_endian, xx_pd_struct *pd);
+XXFC_API int64_t xx_io_find_u32_in_range(xx_io_device *dev, int64_t offset, int64_t size, uint32_t val, bool big_endian, xx_pd_struct *pd);
 
 /* Finding types in xx_io_device (returns file offset or -1 if not found / cancelled; max_search_len <= 0 means until EOF) */
 XXFC_API int64_t xx_io_find_bytes(xx_io_device *dev, int64_t start_offset, int64_t max_search_len, const void *pattern, size_t pattern_size, xx_pd_struct *pd);

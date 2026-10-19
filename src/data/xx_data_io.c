@@ -211,6 +211,114 @@ double xx_io_get_f64(xx_io_device *dev, int64_t offset, bool big_endian)
     return d;
 }
 
+char *xx_io_get_signature_hex(xx_io_device *dev, int64_t offset, int64_t size)
+{
+    static const char digits[] = "0123456789ABCDEF";
+    xx_str_a_t result;
+    xx_io_device *temporary = NULL;
+    int64_t done = 0;
+    size_t capacity;
+
+    if (!xx_io_range_clamp(dev, offset, &size)) return xx_str_dup("");
+    if (!dev->read || (!dev->seek64 && !dev->seek)) return xx_str_dup("");
+    if ((uint64_t)size > (SIZE_MAX - 1) / 2) return NULL;
+    if (!xx_str_a_init_copy(&result, "")) return NULL;
+
+    capacity = xx_io_buffer_capacity(dev);
+    if (size > 0 && !capacity) {
+        temporary = xx_io_buffer_open(dev, xx_io_captured_capacity(), 0, false);
+        if (!temporary) {
+            xx_str_a_free(&result);
+            return NULL;
+        }
+        dev = temporary;
+        capacity = xx_io_buffer_capacity(dev);
+    }
+    while (done < size) {
+        size_t count = (uint64_t)(size - done) < capacity ? (size_t)(size - done) : capacity;
+        const unsigned char *view = xx_io_buffer_view(dev, offset + done, &count);
+        size_t i;
+
+        if (!view || !count) break;
+        if (!xx_str_a_reserve(&result, result.length + count * 2 + 1)) {
+            xx_str_a_free(&result);
+            if (temporary) xx_io_close(temporary);
+            return NULL;
+        }
+        for (i = 0; i < count; ++i) {
+            result.data[result.length++] = digits[view[i] >> 4];
+            result.data[result.length++] = digits[view[i] & 0x0f];
+        }
+        result.data[result.length] = '\0';
+        done += (int64_t)count;
+    }
+    if (temporary) xx_io_close(temporary);
+    return result.data;
+}
+
+bool xx_io_is_zero_filled(xx_io_device *dev, int64_t offset, int64_t size)
+{
+    xx_io_device *temporary = NULL;
+    int64_t done = 0;
+    size_t capacity;
+    bool result = false;
+
+    if (size <= 0 || !xx_io_check(dev, offset, size)) return false;
+    capacity = xx_io_buffer_capacity(dev);
+    if (!capacity) {
+        temporary = xx_io_buffer_open(dev, xx_io_captured_capacity(), 0, false);
+        if (!temporary) return false;
+        dev = temporary;
+        capacity = xx_io_buffer_capacity(dev);
+    }
+    while (done < size) {
+        size_t count = (uint64_t)(size - done) < capacity ? (size_t)(size - done) : capacity;
+        const unsigned char *view = xx_io_buffer_view(dev, offset + done, &count);
+        size_t i;
+        if (!view || !count) goto finish;
+        for (i = 0; i < count; ++i)
+            if (view[i]) goto finish;
+        done += (int64_t)count;
+    }
+    result = true;
+finish:
+    if (temporary) xx_io_close(temporary);
+    return result;
+}
+
+char *xx_io_get_uuid(xx_io_device *dev, int64_t offset)
+{
+    static const char digits[] = "0123456789abcdef";
+    char *result = (char *)xx_mem_alloc(37);
+    uint32_t fields[4];
+    size_t position = 0;
+    int field, shift, i;
+    if (!result) return NULL;
+    /* Keep independent scalar reads and their zero fallback, without letting
+     * an offset near INT64_MAX overflow while locating the final byte. */
+    if (offset > INT64_MAX - 15) {
+        dev = NULL;
+        offset = 0;
+    }
+    fields[0] = xx_io_get_u32(dev, offset, false);
+    fields[1] = xx_io_get_u16(dev, offset + 4, false);
+    fields[2] = xx_io_get_u16(dev, offset + 6, false);
+    fields[3] = xx_io_get_u16(dev, offset + 8, false);
+    for (field = 0; field < 4; ++field) {
+        for (shift = field ? 12 : 28; shift >= 0; shift -= 4) {
+            result[position++] = digits[(fields[field] >> shift) & 0xf];
+        }
+        result[position++] = '-';
+    }
+    for (i = 0; i < 6; ++i) {
+        uint8_t byte = xx_io_get_u8(dev, offset + 10 + i);
+        result[position++] = digits[byte >> 4];
+        result[position++] = digits[byte & 0xf];
+    }
+    result[position] = '\0';
+    return result;
+}
+
 char *xx_io_get_ansi_string(xx_io_device *dev, int64_t offset, size_t max_len)
 {
     if (!dev || xx_io_seek64(dev, offset, SEEK_SET) != 0) {
@@ -615,6 +723,111 @@ bool xx_io_set_unicode_string(xx_io_device *dev, int64_t offset, const wchar_t *
 /* ========================================================================= */
 /* --- Finding Types in xx_io_device                                     --- */
 /* ========================================================================= */
+
+static bool xx_io_buffer_bytes_equal(xx_io_device *dev, int64_t offset, const uint8_t *bytes, size_t size, xx_pd_struct *pd)
+{
+    size_t done = 0;
+    while (done < size) {
+        size_t count = size - done;
+        const unsigned char *view;
+
+        if (xx_pd_is_stopped(pd)) return false;
+        view = xx_io_buffer_view(dev, offset + (int64_t)done, &count);
+        if (!view || !count || xx_mem_compare(view, bytes + done, count)) return false;
+        done += count;
+    }
+    return true;
+}
+
+int64_t xx_io_find_bytes_in_range(xx_io_device *dev, int64_t offset, int64_t size, const void *pattern, size_t pattern_size, xx_pd_struct *pd)
+{
+    const uint8_t *needle = (const uint8_t *)pattern;
+    const unsigned char *whole;
+    size_t capacity;
+    int64_t found, position, end, last;
+
+    if (!needle || !pattern_size || (uint64_t)pattern_size > INT64_MAX || xx_pd_is_stopped(pd)) return -1;
+    if (!xx_io_range_clamp(dev, offset, &size) || (uint64_t)pattern_size > (uint64_t)size) return -1;
+    capacity = xx_io_buffer_capacity(dev);
+    if (!capacity) return xx_io_find_bytes(dev, offset, size, pattern, pattern_size, pd);
+
+    /* A match can end in the first window; count only that much upcoming I/O
+     * when deciding whether repeated searches should promote the source. */
+    whole = xx_io_buffer_whole(dev, xx_io_buffer_search_access(dev, size));
+    if (whole) {
+        if ((uint64_t)offset > SIZE_MAX || (uint64_t)size > SIZE_MAX) return -1;
+        found = xx_data_find_bytes_buffer_optimize(whole + (size_t)offset, (size_t)size, 0, pattern, pattern_size, pd);
+        return found < 0 ? -1 : offset + found;
+    }
+
+    position = offset;
+    end = offset + size;
+    last = end - (int64_t)pattern_size;
+    while (position <= last && !xx_pd_is_stopped(pd)) {
+        size_t count = (uint64_t)(end - position) < capacity ? (size_t)(end - position) : capacity;
+        size_t anchor = pattern_size > 1 && count > 1 ? 2 : 1;
+        const unsigned char *view = xx_io_buffer_view(dev, position, &count);
+
+        if (!view || !count) return -1;
+        /* Even a one-byte cache supports long candidates, verified in pieces
+         * without allocating a pattern-sized overlap buffer. */
+        if (count < anchor) anchor = count;
+        found = xx_data_find_bytes_buffer_optimize(view, count, 0, pattern, anchor, pd);
+        if (xx_pd_is_stopped(pd)) return -1;
+        if (found < 0) {
+            position += (int64_t)(count - anchor + 1);
+            continue;
+        }
+        position += found;
+        if (position > last) return -1;
+        if (xx_io_buffer_bytes_equal(dev, position, needle, pattern_size, pd)) return position;
+        if (xx_io_buffer_failed(dev) || xx_pd_is_stopped(pd)) return -1;
+        ++position;
+    }
+    return -1;
+}
+
+int64_t xx_io_find_ansi_string_in_range(xx_io_device *dev, int64_t offset, int64_t size, const char *str, xx_pd_struct *pd)
+{
+    return xx_io_find_bytes_in_range(dev, offset, size, str, xx_str_len(str), pd);
+}
+
+int64_t xx_io_find_unicode_bytes_in_range(xx_io_device *dev, int64_t offset, int64_t size, const char *str, bool big_endian, xx_pd_struct *pd)
+{
+    size_t length = xx_str_len(str), i;
+    uint8_t *pattern;
+    int64_t found;
+
+    if (!length || length > SIZE_MAX / 2 || (uint64_t)length > INT64_MAX / 2 || xx_pd_is_stopped(pd)) return -1;
+    if (!xx_io_range_clamp(dev, offset, &size) || (uint64_t)length * 2 > (uint64_t)size) return -1;
+    pattern = (uint8_t *)xx_mem_alloc(length * 2);
+    if (!pattern) return -1;
+    for (i = 0; i < length; ++i) {
+        xx_data_set_u16(pattern, length * 2, i * 2, (uint8_t)str[i], big_endian);
+    }
+    found = xx_io_find_bytes_in_range(dev, offset, size, pattern, length * 2, pd);
+    xx_mem_free(pattern);
+    return found;
+}
+
+int64_t xx_io_find_u8_in_range(xx_io_device *dev, int64_t offset, int64_t size, uint8_t val, xx_pd_struct *pd)
+{
+    return xx_io_find_bytes_in_range(dev, offset, size, &val, 1, pd);
+}
+
+int64_t xx_io_find_u16_in_range(xx_io_device *dev, int64_t offset, int64_t size, uint16_t val, bool big_endian, xx_pd_struct *pd)
+{
+    uint8_t bytes[2];
+    xx_data_set_u16(bytes, sizeof(bytes), 0, val, big_endian);
+    return xx_io_find_bytes_in_range(dev, offset, size, bytes, sizeof(bytes), pd);
+}
+
+int64_t xx_io_find_u32_in_range(xx_io_device *dev, int64_t offset, int64_t size, uint32_t val, bool big_endian, xx_pd_struct *pd)
+{
+    uint8_t bytes[4];
+    xx_data_set_u32(bytes, sizeof(bytes), 0, val, big_endian);
+    return xx_io_find_bytes_in_range(dev, offset, size, bytes, sizeof(bytes), pd);
+}
 
 /* File scratch remains bounded by the captured global setting.  The KMP
  * prefix table describes the pattern, rather than staging input bytes. */

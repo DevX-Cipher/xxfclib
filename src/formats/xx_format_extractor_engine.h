@@ -79,6 +79,8 @@ char *xx_format_search_get_version(const xx_format_search_desc *desc, xx_io_devi
 /** Validate and classify one absolute offset without scanning for candidates.
  * Preserves the device cursor; returns false if it cannot be restored. */
 bool xx_format_search_fast_detect(const xx_format_search_desc *desc, xx_io_device *device, int64_t base_address, bool is_mapped);
+/** Signature rules plus native descriptor anchors, without reader probes. */
+int xx_format_search_signature(const xx_format_search_desc *desc, xx_io_device *device, int64_t base_address, bool is_mapped);
 
 /** Measure a validated format at an absolute offset, or return -1 when the
  * extent is unknown, invalid, or outside the device. Preserves its cursor. */

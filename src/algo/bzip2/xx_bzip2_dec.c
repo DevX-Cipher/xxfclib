@@ -254,6 +254,24 @@ static bool bz2_out_write(bz2_out *o, uint8_t b)
     return true;
 }
 
+static bool bz2_out_write_repeat(bz2_out *o, uint8_t b, size_t count)
+{
+    if (count != 0 && o->obuf_capacity == 0) return false;
+    while (count != 0) {
+        size_t available = o->obuf_capacity - o->obuf_pos;
+        size_t chunk;
+        if (available == 0) {
+            if (!bz2_out_flush(o)) return false;
+            available = o->obuf_capacity;
+        }
+        chunk = count < available ? count : available;
+        xx_rt_memset(o->obuf + o->obuf_pos, b, chunk);
+        o->obuf_pos += chunk;
+        count -= chunk;
+    }
+    return true;
+}
+
 /* =========================================================================
  * Huffman decoder
  * ========================================================================= */
@@ -489,14 +507,13 @@ static bool bz2_decompress_block(bz2_bit_reader *br, bz2_out *out, int block_byt
         /* Flush any pending run of mtf_vals[0] */
         if (in_run) {
             uint8_t run_byte = (uint8_t)sym_to_byte[mtf_vals[0]];
-            for (uint32_t k = 0; k < run_count; k++) {
-                if (tt_count >= block_bytes) {
-                    xx_mem_free(bwt_bytes);
-                    xx_mem_free(tt);
-                    return false;
-                }
-                bwt_bytes[tt_count++] = run_byte;
+            if (run_count > (uint32_t)(block_bytes - tt_count)) {
+                xx_mem_free(bwt_bytes);
+                xx_mem_free(tt);
+                return false;
             }
+            xx_rt_memset(bwt_bytes + tt_count, run_byte, run_count);
+            tt_count += (int)run_count;
             in_run = false;
             run_count = 0;
             run_weight = 1;
@@ -523,14 +540,13 @@ static bool bz2_decompress_block(bz2_bit_reader *br, bz2_out *out, int block_byt
     /* Handle trailing run */
     if (in_run) {
         uint8_t run_byte = (uint8_t)sym_to_byte[mtf_vals[0]];
-        for (uint32_t k = 0; k < run_count; k++) {
-            if (tt_count >= block_bytes) {
-                xx_mem_free(bwt_bytes);
-                xx_mem_free(tt);
-                return false;
-            }
-            bwt_bytes[tt_count++] = run_byte;
+        if (run_count > (uint32_t)(block_bytes - tt_count)) {
+            xx_mem_free(bwt_bytes);
+            xx_mem_free(tt);
+            return false;
         }
+        xx_rt_memset(bwt_bytes + tt_count, run_byte, run_count);
+        tt_count += (int)run_count;
     }
 
     /* BWT inversion: build inverse transform array */
@@ -583,12 +599,10 @@ static bool bz2_decompress_block(bz2_bit_reader *br, bz2_out *out, int block_byt
 
         if (rle_count == 4) {
             /* ob is repetition count (0..255) for prev_byte */
-            for (uint32_t k = 0; k < (uint32_t)ob; k++) {
-                if (!bz2_out_write(out, (uint8_t)prev_byte)) {
-                    xx_mem_free(bwt_bytes);
-                    xx_mem_free(tt);
-                    return false;
-                }
+            if (!bz2_out_write_repeat(out, (uint8_t)prev_byte, ob)) {
+                xx_mem_free(bwt_bytes);
+                xx_mem_free(tt);
+                return false;
             }
             rle_count = 0;
             prev_byte = 0x100;
@@ -656,6 +670,12 @@ bool xx_bzip2_decompress_stream(bz2_bit_reader *br, xx_io_device *dst_dev, uint8
     bool saw_eos = false;
     uint32_t combined_crc = 0U;
     while (ok) {
+        /* A block is at most 900 kB of output: a stop request is seen
+         * between blocks. */
+        if (pd && xx_pd_is_stopped(pd)) {
+            ok = false;
+            break;
+        }
         /* Read 48-bit block magic (or EOS magic) */
         uint32_t hi = bz2_read_bits(br, 32);
         uint16_t lo = (uint16_t)bz2_read_bits(br, 16);

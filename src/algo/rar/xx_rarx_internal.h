@@ -51,5 +51,6 @@ void xx_rarx50_destroy(xx_rarx50_state *state);
 void xx_rarx50_reset(xx_rarx50_state *state);
 xx_rarx_status_t xx_rarx50_decode(xx_rarx50_state *state, const uint8_t *source, size_t source_size, uint8_t *destination, size_t destination_size, size_t window_size,
                                   bool solid, size_t *source_used, xx_pd_struct *progress);
+void xx_rarx50_set_chunk_callback(xx_rarx50_state *state, xx_rarx_chunk_cb cb, void *user_data);
 
 #endif /* XX_RARX_INTERNAL_H */

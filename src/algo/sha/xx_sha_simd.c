@@ -12,8 +12,11 @@
  */
 
 #include "xx_sha_internal.h"
+#include "xxfclib/global/xx_global.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "platforms/xx_sha_platform.h"
+#include "platforms/xx_sha_arm_crypto.h"
+#include "platforms/xx_sha_neon.h"
 
 #ifdef XX_SHA_X86
 
@@ -277,7 +280,7 @@ static unsigned xx_sha_detect_capabilities(void)
 {
     unsigned result = 1U << XX_SHA_BACKEND_SCALAR;
     unsigned maximum = 0, edx = 0;
-#if defined(XX_SHA_HAVE_SHA_NI) && XX_SHA_ENABLE_SHA_NI_BACKEND
+#ifdef XX_SHA_HAVE_SHA_NI
     unsigned ebx7 = 0;
 #endif
 #if defined(_MSC_VER)
@@ -288,7 +291,7 @@ static unsigned xx_sha_detect_capabilities(void)
         __cpuidex(registers, 1, 0);
         edx = (unsigned)registers[3];
     }
-#if defined(XX_SHA_HAVE_SHA_NI) && XX_SHA_ENABLE_SHA_NI_BACKEND
+#ifdef XX_SHA_HAVE_SHA_NI
     if (maximum >= 7) {
         __cpuidex(registers, 7, 0);
         ebx7 = (unsigned)registers[1];
@@ -298,7 +301,7 @@ static unsigned xx_sha_detect_capabilities(void)
     unsigned eax, ebx, ecx;
     maximum = __get_cpuid_max(0, NULL);
     if (maximum >= 1) __cpuid_count(1, 0, eax, ebx, ecx, edx);
-#if defined(XX_SHA_HAVE_SHA_NI) && XX_SHA_ENABLE_SHA_NI_BACKEND
+#ifdef XX_SHA_HAVE_SHA_NI
     if (maximum >= 7) {
         unsigned leaf7_edx;
         __cpuid_count(7, 0, eax, ebx7, ecx, leaf7_edx);
@@ -307,7 +310,7 @@ static unsigned xx_sha_detect_capabilities(void)
 #endif
     if ((edx & (1U << 26)) != 0) {
         result |= 1U << XX_SHA_BACKEND_SSE2;
-#if defined(XX_SHA_HAVE_SHA_NI) && XX_SHA_ENABLE_SHA_NI_BACKEND
+#ifdef XX_SHA_HAVE_SHA_NI
         if ((ebx7 & (1U << 29)) != 0) result |= 1U << XX_SHA_BACKEND_SHA_NI;
 #endif
     }
@@ -339,16 +342,34 @@ unsigned xx_sha_backend_capabilities(void)
     return xx_sha_detect_capabilities();
 #endif
 #else
-    return 1U << XX_SHA_BACKEND_SCALAR;
+    unsigned capabilities = 1U << XX_SHA_BACKEND_SCALAR;
+#ifdef XX_SHA_NEON
+    if (xx_has_neon()) capabilities |= 1U << XX_SHA_BACKEND_NEON;
+#endif
+#ifdef XX_SHA_ARM_CRYPTO
+    if (xx_has_arm_crypto()) capabilities |= 1U << XX_SHA_BACKEND_ARM_CRYPTO;
+#endif
+    return capabilities;
 #endif
 }
 
 int xx_sha_selected_backend(void)
 {
     unsigned capabilities = xx_sha_backend_capabilities();
-    if (capabilities & (1U << XX_SHA_BACKEND_SHA_NI)) return XX_SHA_BACKEND_SHA_NI;
-    if (capabilities & (1U << XX_SHA_BACKEND_SSE2)) return XX_SHA_BACKEND_SSE2;
+    if (xx_is_arm_crypto_enabled() && (capabilities & (1U << XX_SHA_BACKEND_ARM_CRYPTO))) return XX_SHA_BACKEND_ARM_CRYPTO;
+    if (xx_is_neon_enabled() && (capabilities & (1U << XX_SHA_BACKEND_NEON))) return XX_SHA_BACKEND_NEON;
+    if (xx_is_sha_enabled() && (capabilities & (1U << XX_SHA_BACKEND_SHA_NI))) return XX_SHA_BACKEND_SHA_NI;
+    if (xx_is_sse2_enabled() && (capabilities & (1U << XX_SHA_BACKEND_SSE2))) return XX_SHA_BACKEND_SSE2;
     return XX_SHA_BACKEND_SCALAR;
+}
+
+static bool xx_sha_backend_enabled(int backend)
+{
+    if (backend == XX_SHA_BACKEND_SSE2) return xx_is_sse2_enabled();
+    if (backend == XX_SHA_BACKEND_SHA_NI) return xx_is_sha_enabled();
+    if (backend == XX_SHA_BACKEND_NEON) return xx_is_neon_enabled();
+    if (backend == XX_SHA_BACKEND_ARM_CRYPTO) return xx_is_arm_crypto_enabled();
+    return true;
 }
 
 const char *xx_sha_backend_name(int backend)
@@ -358,6 +379,8 @@ const char *xx_sha_backend_name(int backend)
         case XX_SHA_BACKEND_SCALAR: return "scalar";
         case XX_SHA_BACKEND_SSE2: return "sse2";
         case XX_SHA_BACKEND_SHA_NI: return "sha-ni";
+        case XX_SHA_BACKEND_NEON: return "neon";
+        case XX_SHA_BACKEND_ARM_CRYPTO: return "arm-crypto";
         default: return "unsupported";
     }
 }
@@ -366,7 +389,7 @@ bool xx_sha1_blocks_backend(uint32_t state[5], const uint8_t *blocks, size_t blo
 {
     if (!state || (!blocks && block_count != 0) || block_count > SIZE_MAX / 64U) return false;
     if (backend == XX_SHA_BACKEND_AUTO) backend = xx_sha_selected_backend();
-    if (backend < XX_SHA_BACKEND_SCALAR || backend > XX_SHA_BACKEND_SHA_NI || !(xx_sha_backend_capabilities() & (1U << backend))) return false;
+    if (backend < XX_SHA_BACKEND_SCALAR || backend > XX_SHA_BACKEND_ARM_CRYPTO || !(xx_sha_backend_capabilities() & (1U << backend)) || !xx_sha_backend_enabled(backend)) return false;
     if (block_count == 0) return true;
 #ifdef XX_SHA_X86
 #ifdef XX_SHA_HAVE_SHA_NI
@@ -380,6 +403,18 @@ bool xx_sha1_blocks_backend(uint32_t state[5], const uint8_t *blocks, size_t blo
         return true;
     }
 #endif
+#ifdef XX_SHA_ARM_CRYPTO
+    if (backend == XX_SHA_BACKEND_ARM_CRYPTO) {
+        xx_sha1_blocks_arm_crypto(state, blocks, block_count);
+        return true;
+    }
+#endif
+#ifdef XX_SHA_NEON
+    if (backend == XX_SHA_BACKEND_NEON) {
+        xx_sha1_blocks_neon(state, blocks, block_count);
+        return true;
+    }
+#endif
     xx_sha1_blocks_scalar(state, blocks, block_count);
     return true;
 }
@@ -388,7 +423,7 @@ bool xx_sha256_blocks_backend(uint32_t state[8], const uint8_t *blocks, size_t b
 {
     if (!state || (!blocks && block_count != 0) || block_count > SIZE_MAX / 64U) return false;
     if (backend == XX_SHA_BACKEND_AUTO) backend = xx_sha_selected_backend();
-    if (backend < XX_SHA_BACKEND_SCALAR || backend > XX_SHA_BACKEND_SHA_NI || !(xx_sha_backend_capabilities() & (1U << backend))) return false;
+    if (backend < XX_SHA_BACKEND_SCALAR || backend > XX_SHA_BACKEND_ARM_CRYPTO || !(xx_sha_backend_capabilities() & (1U << backend)) || !xx_sha_backend_enabled(backend)) return false;
     if (block_count == 0) return true;
 #ifdef XX_SHA_X86
 #ifdef XX_SHA_HAVE_SHA_NI
@@ -399,6 +434,18 @@ bool xx_sha256_blocks_backend(uint32_t state[8], const uint8_t *blocks, size_t b
 #endif
     if (backend == XX_SHA_BACKEND_SSE2) {
         xx_sha256_blocks_sse2(state, blocks, block_count);
+        return true;
+    }
+#endif
+#ifdef XX_SHA_ARM_CRYPTO
+    if (backend == XX_SHA_BACKEND_ARM_CRYPTO) {
+        xx_sha256_blocks_arm_crypto(state, blocks, block_count);
+        return true;
+    }
+#endif
+#ifdef XX_SHA_NEON
+    if (backend == XX_SHA_BACKEND_NEON) {
+        xx_sha256_blocks_neon(state, blocks, block_count);
         return true;
     }
 #endif

@@ -9,8 +9,8 @@
 #ifndef XX_NESTED_MBR_FAT_H
 #define XX_NESTED_MBR_FAT_H
 
-#include "xxfclib/formats/mbr/xx_mbr.h"
-#include "xxfclib/formats/fat/xx_fat.h"
+#include "xxfclib/formats/filesystem/mbr/xx_mbr.h"
+#include "xxfclib/formats/filesystem/fat/xx_fat.h"
 #include "xxfclib/io/xx_io.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/strings/xx_string.h"

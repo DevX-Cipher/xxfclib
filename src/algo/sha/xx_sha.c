@@ -5,6 +5,8 @@
 #include "xxfclib/algo/sha/xx_sha.h"
 #include "xx_sha_internal.h"
 #include "xxfclib/rt/xx_rt.h"
+#include "xxfclib/memory/xx_memory.h"
+#include "xxfclib/global/xx_global.h"
 
 /* SHA is also used by password derivation: preserve explicit clearing even
  * when the compiler can prove that the context or schedule is no longer read. */
@@ -276,4 +278,69 @@ bool xx_sha256_memory(const void *data, size_t size, void *digest)
     xx_sha256_init(&context);
     xx_sha256_update(&context, data, size);
     return xx_sha256_final(&context, digest, XX_SHA256_DIGEST_SIZE);
+}
+
+static bool sha_device(bool use_sha256, xx_io_device *device, int64_t offset, int64_t size, void *digest, size_t digest_size, xx_pd_struct *pd)
+{
+    union {
+        xx_sha1_context sha1;
+        xx_sha256_context sha256;
+    } context;
+    uint8_t *chunk = NULL;
+    int64_t total;
+    int64_t done = 0;
+    size_t capacity = xx_get_file_buffer_size();
+    size_t required = use_sha256 ? XX_SHA256_DIGEST_SIZE : XX_SHA1_DIGEST_SIZE;
+    bool ok = false;
+
+    if (!device || offset < 0 || !digest || digest_size < required) return false;
+    total = xx_io_total_size(device);
+    if (total < 0 || offset > total) return false;
+    if (size < 0) size = total - offset;
+    if (size > total - offset || (pd && xx_pd_is_stopped(pd))) return false;
+    if (xx_io_seek64(device, offset, SEEK_SET) != 0) return false;
+
+    xx_rt_memset(&context, 0, sizeof(context));
+    if (use_sha256) xx_sha256_init(&context.sha256);
+    else xx_sha1_init(&context.sha1);
+
+    if (size != 0) {
+        if (capacity == 0U) capacity = XX_DEFAULT_FILE_BUFFER_SIZE;
+        if (capacity > (size_t)PTRDIFF_MAX) capacity = (size_t)PTRDIFF_MAX;
+        if ((uint64_t)size < (uint64_t)capacity) capacity = (size_t)size;
+        chunk = (uint8_t *)xx_mem_alloc(capacity);
+        if (!chunk) goto cleanup;
+    }
+
+    while (done < size) {
+        size_t want = capacity;
+        ssize_t got;
+        if (pd && xx_pd_is_stopped(pd)) goto cleanup;
+        if ((uint64_t)(size - done) < (uint64_t)want) want = (size_t)(size - done);
+        got = xx_io_read(device, chunk, want);
+        if (got <= 0 || (uint64_t)got > (uint64_t)want) goto cleanup;
+        if (use_sha256) xx_sha256_update(&context.sha256, chunk, (size_t)got);
+        else xx_sha1_update(&context.sha1, chunk, (size_t)got);
+        done += (int64_t)got;
+        if (pd && xx_pd_is_stopped(pd)) goto cleanup;
+    }
+
+    if (pd && xx_pd_is_stopped(pd)) goto cleanup;
+    if (use_sha256) ok = xx_sha256_final(&context.sha256, digest, digest_size);
+    else ok = xx_sha1_final(&context.sha1, digest, digest_size);
+
+cleanup:
+    xx_mem_free(chunk);
+    sha_clear(&context, sizeof(context));
+    return ok;
+}
+
+bool xx_sha1_device(xx_io_device *device, int64_t offset, int64_t size, void *digest, size_t digest_size, xx_pd_struct *pd)
+{
+    return sha_device(false, device, offset, size, digest, digest_size, pd);
+}
+
+bool xx_sha256_device(xx_io_device *device, int64_t offset, int64_t size, void *digest, size_t digest_size, xx_pd_struct *pd)
+{
+    return sha_device(true, device, offset, size, digest, digest_size, pd);
 }

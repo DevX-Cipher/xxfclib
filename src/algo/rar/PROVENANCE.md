@@ -9,9 +9,9 @@ against archives produced by WinRAR and extracted by 7-Zip. The implementation
 itself was designed from the public clean-room format descriptions in
 [`bitplane/rar-research`](https://github.com/bitplane/rar-research) and checked
 against the independently developed MIT/Apache-2.0
-[`bitplane/rars`](https://github.com/bitplane/rars) project. The local BSD
-libarchive readers were used only to cross-check container and error-handling
-behavior.
+[`bitplane/rars`](https://github.com/bitplane/rars) project. Separately
+developed BSD-licensed readers were used only to cross-check container and
+error-handling behavior.
 
 The XArchive decoder closely follows UnRAR internally, so its source is not a
 permitted implementation source for this module even though the local copy has

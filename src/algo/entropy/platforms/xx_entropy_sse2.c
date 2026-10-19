@@ -21,13 +21,18 @@
 
 /**
  * @file xx_entropy_sse2.c
- * @brief SSE2 vectorized Shannon entropy calculation.
+ * @brief Shannon entropy calculation with SSE2 histogram reduction.
  */
 
 #include "xx_entropy_platform.h"
 #include "xxfclib/rt/xx_rt.h"
 
-#if (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))) || ((defined(__GNUC__) || defined(__clang__)) && (defined(__i386__) || defined(__x86_64__)))
+#if (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))) || \
+    ((defined(__GNUC__) || defined(__clang__)) && (defined(__i386__) || defined(__x86_64__)))
+#define XX_ENTROPY_SSE2_X86 1
+#endif
+
+#ifdef XX_ENTROPY_SSE2_X86
 #if defined(_MSC_VER)
 #include <intrin.h>
 #include <emmintrin.h>
@@ -37,75 +42,143 @@
 #endif
 
 #if defined(_MSC_VER)
-#define XX_ALIGN16 __declspec(align(16))
+#define XX_ENTROPY_SSE2_ALIGN16 __declspec(align(16))
+#define XX_ENTROPY_SSE2_ALIGN64 __declspec(align(64))
+#define XX_ENTROPY_SSE2_NOINLINE __declspec(noinline)
 #elif defined(__GNUC__) || defined(__clang__)
-#define XX_ALIGN16 __attribute__((aligned(16)))
+#define XX_ENTROPY_SSE2_ALIGN16 __attribute__((aligned(16)))
+#define XX_ENTROPY_SSE2_ALIGN64 __attribute__((aligned(64)))
+#define XX_ENTROPY_SSE2_NOINLINE __attribute__((noinline))
 #else
-#define XX_ALIGN16
+#define XX_ENTROPY_SSE2_ALIGN16
+#define XX_ENTROPY_SSE2_ALIGN64
+#define XX_ENTROPY_SSE2_NOINLINE
 #endif
 
-double xx_entropy_calculate_sse2(const void *data, size_t size)
+#if defined(XX_ENTROPY_SSE2_X86) && (defined(__GNUC__) || defined(__clang__))
+#define XX_ENTROPY_SSE2_TARGET __attribute__((target("sse2")))
+#else
+#define XX_ENTROPY_SSE2_TARGET
+#endif
+
+#define XX_ENTROPY_SSE2_LARGE_MIN_SIZE ((size_t)65536U)
+
+static double xx_entropy_sse2_finish(const uint32_t total_counts[256], size_t size)
 {
-    if (!data || size == 0) {
-        return 0.0;
-    }
-
-#if (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))) || ((defined(__GNUC__) || defined(__clang__)) && (defined(__i386__) || defined(__x86_64__)))
-
-    const uint8_t *p = (const uint8_t *)data;
-    XX_ALIGN16 uint32_t c[4][256] = {{0}};
-
-    size_t i = 0;
-    size_t limit = size & ~((size_t)15);
-
-    for (; i < limit; i += 16) {
-        _mm_prefetch((const char *)(p + i + 256), _MM_HINT_T0);
-        c[0][p[i]]++;
-        c[1][p[i + 1]]++;
-        c[2][p[i + 2]]++;
-        c[3][p[i + 3]]++;
-        c[0][p[i + 4]]++;
-        c[1][p[i + 5]]++;
-        c[2][p[i + 6]]++;
-        c[3][p[i + 7]]++;
-        c[0][p[i + 8]]++;
-        c[1][p[i + 9]]++;
-        c[2][p[i + 10]]++;
-        c[3][p[i + 11]]++;
-        c[0][p[i + 12]]++;
-        c[1][p[i + 13]]++;
-        c[2][p[i + 14]]++;
-        c[3][p[i + 15]]++;
-    }
-    for (; i < size; i++) {
-        c[0][p[i]]++;
-    }
-
-    /* SSE2 vector horizontal reduction across 4 tables */
-    uint32_t total_counts[256];
-    for (int k = 0; k < 256; k += 4) {
-        __m128i v0 = _mm_load_si128((const __m128i *)&c[0][k]);
-        __m128i v1 = _mm_load_si128((const __m128i *)&c[1][k]);
-        __m128i v2 = _mm_load_si128((const __m128i *)&c[2][k]);
-        __m128i v3 = _mm_load_si128((const __m128i *)&c[3][k]);
-        __m128i sum = _mm_add_epi32(_mm_add_epi32(v0, v1), _mm_add_epi32(v2, v3));
-        _mm_storeu_si128((__m128i *)&total_counts[k], sum);
-    }
-
     double sum = 0.0;
-    for (int k = 0; k < 256; k++) {
-        if (total_counts[k] > 0) {
-            double cnt = (double)total_counts[k];
-            sum += cnt * xx_rt_log(cnt);
+    size_t i;
+
+    for (i = 0U; i < 256U; ++i) {
+        if (total_counts[i] != 0U) {
+            double count = (double)total_counts[i];
+            sum += count * xx_rt_log(count);
         }
     }
+    return (xx_rt_log((double)size) - sum / (double)size) * 1.44269504088896340736;
+}
 
-    double dsize = (double)size;
-    double result = xx_rt_log(dsize) - (sum / dsize);
-    const double inv_log2 = 1.44269504088896340736; /* 1.0 / ln(2.0) */
+#ifdef XX_ENTROPY_SSE2_X86
+#define XX_ENTROPY_SSE2_COUNT8(q, offset, counts) \
+    do {                                             \
+        (counts)[0][(q)[(offset)]]++;                \
+        (counts)[1][(q)[(offset) + 1U]]++;           \
+        (counts)[2][(q)[(offset) + 2U]]++;           \
+        (counts)[3][(q)[(offset) + 3U]]++;           \
+        (counts)[4][(q)[(offset) + 4U]]++;           \
+        (counts)[5][(q)[(offset) + 5U]]++;           \
+        (counts)[6][(q)[(offset) + 6U]]++;           \
+        (counts)[7][(q)[(offset) + 7U]]++;           \
+    } while (0)
 
-    return result * inv_log2;
+static XX_ENTROPY_SSE2_TARGET XX_ENTROPY_SSE2_NOINLINE void xx_entropy_histogram_sse2_small(const uint8_t *p, size_t size,
+                                                                                              uint32_t total_counts[256])
+{
+    XX_ENTROPY_SSE2_ALIGN16 uint32_t counts[4][256] = {{0}};
+    size_t i = 0U;
+    size_t limit = size & ~((size_t)15U);
 
+    for (; i < limit; i += 16U) {
+        counts[0][p[i]]++;
+        counts[1][p[i + 1U]]++;
+        counts[2][p[i + 2U]]++;
+        counts[3][p[i + 3U]]++;
+        counts[0][p[i + 4U]]++;
+        counts[1][p[i + 5U]]++;
+        counts[2][p[i + 6U]]++;
+        counts[3][p[i + 7U]]++;
+        counts[0][p[i + 8U]]++;
+        counts[1][p[i + 9U]]++;
+        counts[2][p[i + 10U]]++;
+        counts[3][p[i + 11U]]++;
+        counts[0][p[i + 12U]]++;
+        counts[1][p[i + 13U]]++;
+        counts[2][p[i + 14U]]++;
+        counts[3][p[i + 15U]]++;
+    }
+    for (; i < size; ++i) counts[0][p[i]]++;
+
+    for (i = 0U; i < 256U; i += 4U) {
+        __m128i c0 = _mm_load_si128((const __m128i *)(counts[0] + i));
+        __m128i c1 = _mm_load_si128((const __m128i *)(counts[1] + i));
+        __m128i c2 = _mm_load_si128((const __m128i *)(counts[2] + i));
+        __m128i c3 = _mm_load_si128((const __m128i *)(counts[3] + i));
+        _mm_storeu_si128((__m128i *)(total_counts + i), _mm_add_epi32(_mm_add_epi32(c0, c1), _mm_add_epi32(c2, c3)));
+    }
+}
+
+static XX_ENTROPY_SSE2_TARGET XX_ENTROPY_SSE2_NOINLINE void xx_entropy_histogram_sse2_large(const uint8_t *p, size_t size,
+                                                                                              uint32_t total_counts[256])
+{
+    XX_ENTROPY_SSE2_ALIGN64 uint32_t counts[8][256] = {{0}};
+    size_t i = 0U;
+
+    for (; size - i >= 64U; i += 64U) {
+        const uint8_t *q = p + i;
+        XX_ENTROPY_SSE2_COUNT8(q, 0U, counts);
+        XX_ENTROPY_SSE2_COUNT8(q, 8U, counts);
+        XX_ENTROPY_SSE2_COUNT8(q, 16U, counts);
+        XX_ENTROPY_SSE2_COUNT8(q, 24U, counts);
+        XX_ENTROPY_SSE2_COUNT8(q, 32U, counts);
+        XX_ENTROPY_SSE2_COUNT8(q, 40U, counts);
+        XX_ENTROPY_SSE2_COUNT8(q, 48U, counts);
+        XX_ENTROPY_SSE2_COUNT8(q, 56U, counts);
+    }
+    for (; i < size; ++i) counts[0][p[i]]++;
+
+    for (i = 0U; i < 256U; i += 4U) {
+        __m128i c0 = _mm_load_si128((const __m128i *)(counts[0] + i));
+        __m128i c1 = _mm_load_si128((const __m128i *)(counts[1] + i));
+        __m128i c2 = _mm_load_si128((const __m128i *)(counts[2] + i));
+        __m128i c3 = _mm_load_si128((const __m128i *)(counts[3] + i));
+        __m128i c4 = _mm_load_si128((const __m128i *)(counts[4] + i));
+        __m128i c5 = _mm_load_si128((const __m128i *)(counts[5] + i));
+        __m128i c6 = _mm_load_si128((const __m128i *)(counts[6] + i));
+        __m128i c7 = _mm_load_si128((const __m128i *)(counts[7] + i));
+        __m128i c01 = _mm_add_epi32(c0, c1);
+        __m128i c23 = _mm_add_epi32(c2, c3);
+        __m128i c45 = _mm_add_epi32(c4, c5);
+        __m128i c67 = _mm_add_epi32(c6, c7);
+        _mm_storeu_si128((__m128i *)(total_counts + i),
+                         _mm_add_epi32(_mm_add_epi32(c01, c23), _mm_add_epi32(c45, c67)));
+    }
+}
+#endif /* XX_ENTROPY_SSE2_X86 */
+
+XX_ENTROPY_SSE2_TARGET
+void xx_entropy_histogram_sse2(const void *data, size_t size, uint32_t total_counts[256])
+{
+    if (!total_counts) return;
+    if (!data || size == 0U) {
+        xx_rt_memset(total_counts, 0, 256U * sizeof(*total_counts));
+        return;
+    }
+
+#ifdef XX_ENTROPY_SSE2_X86
+    if (size >= XX_ENTROPY_SSE2_LARGE_MIN_SIZE) {
+        xx_entropy_histogram_sse2_large((const uint8_t *)data, size, total_counts);
+    } else {
+        xx_entropy_histogram_sse2_small((const uint8_t *)data, size, total_counts);
+    }
 #else
     /* Non-x86 fallback */
     const uint8_t *p = (const uint8_t *)data;
@@ -119,15 +192,27 @@ double xx_entropy_calculate_sse2(const void *data, size_t size)
         c3[p[i + 3]]++;
     }
     for (; i < size; i++) c0[p[i]]++;
-    double sum = 0.0;
     for (int k = 0; k < 256; k++) {
-        uint64_t total = (uint64_t)c0[k] + c1[k] + c2[k] + c3[k];
-        if (total > 0) {
-            double cnt = (double)total;
-            sum += cnt * xx_rt_log(cnt);
-        }
+        total_counts[k] = c0[k] + c1[k] + c2[k] + c3[k];
     }
-    double dsize = (double)size;
-    return (xx_rt_log(dsize) - (sum / dsize)) * 1.44269504088896340736;
 #endif
 }
+
+XX_ENTROPY_SSE2_TARGET
+double xx_entropy_calculate_sse2(const void *data, size_t size)
+{
+    uint32_t total_counts[256];
+    if (!data || size == 0U) return 0.0;
+    xx_entropy_histogram_sse2(data, size, total_counts);
+    return xx_entropy_sse2_finish(total_counts, size);
+}
+
+#ifdef XX_ENTROPY_SSE2_X86
+#undef XX_ENTROPY_SSE2_COUNT8
+#endif
+#undef XX_ENTROPY_SSE2_LARGE_MIN_SIZE
+#undef XX_ENTROPY_SSE2_TARGET
+#undef XX_ENTROPY_SSE2_NOINLINE
+#undef XX_ENTROPY_SSE2_ALIGN64
+#undef XX_ENTROPY_SSE2_ALIGN16
+#undef XX_ENTROPY_SSE2_X86

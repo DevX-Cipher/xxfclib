@@ -189,6 +189,30 @@ done:
     return version;
 }
 
+int xx_format_search_signature(const xx_format_search_desc *desc, xx_io_device *device, int64_t base_address, bool is_mapped)
+{
+    int signature;
+    size_t i;
+    if (!desc || !device || base_address < 0) return 0;
+    signature = xx_format_fast_detect_rules(desc->types, desc->type_count, device, base_address, is_mapped);
+    if (signature >= 0) return signature;
+    if (!desc->anchors || !desc->anchor_count) return -1;
+    for (i = 0; i < desc->anchor_count; ++i) {
+        const xx_format_search_anchor *anchor = &desc->anchors[i];
+        uint8_t buffer[128];
+        size_t at = 0;
+        bool match = anchor->bytes && anchor->size && base_address <= INT64_MAX - anchor->offset - anchor->size;
+        while (match && at < anchor->size) {
+            size_t n = anchor->size - at;
+            if (n > sizeof(buffer)) n = sizeof(buffer);
+            if (!xx_io_read_at(device, base_address + anchor->offset + at, buffer, n) || xx_rt_memcmp(buffer, anchor->bytes + at, n)) match = false;
+            at += n;
+        }
+        if (match) return 1;
+    }
+    return 0;
+}
+
 bool xx_format_search_fast_detect(const xx_format_search_desc *desc, xx_io_device *device, int64_t base_address, bool is_mapped)
 {
     int signature;
@@ -433,50 +457,50 @@ xx_format_extractor *xx_format_extractor_at(size_t index, xx_file_type_t *type)
  * that share one search implementation also share their abstract adapters. */
 #include "xx_format_abstract_extractor_list.inc"
 #include "xx_format_reader_only_decls.inc"
-#include "xxfclib/formats/zxml/xx_zxml.h"
-#include "xxfclib/formats/zisofs/xx_zisofs.h"
-#include "xxfclib/formats/nvp/xx_nvp.h"
-#include "xxfclib/formats/sqze/xx_sqze.h"
-#include "xxfclib/formats/zip_psc/xx_zip_psc.h"
-#include "xxfclib/formats/crx_native/xx_crx_native.h"
-#include "xxfclib/formats/dcs/xx_dcs.h"
-#include "xxfclib/formats/mskn1/xx_mskn1.h"
-#include "xxfclib/formats/mskn2/xx_mskn2.h"
-#include "xxfclib/formats/mskn3/xx_mskn3.h"
-#include "xxfclib/formats/csq/xx_csq.h"
-#include "xxfclib/formats/zoot1/xx_zoot1.h"
-#include "xxfclib/formats/rdfz/xx_rdfz.h"
-#include "xxfclib/formats/zbeos/xx_zbeos.h"
-#include "xxfclib/formats/solarispkg_zip/xx_solarispkg_zip.h"
-#include "xxfclib/formats/gta_img/xx_gta_img.h"
-#include "xxfclib/formats/pbo/xx_pbo.h"
-#include "xxfclib/formats/pam_pak/xx_pam_pak.h"
-#include "xxfclib/formats/pfpk/xx_pfpk.h"
-#include "xxfclib/formats/birdies/xx_birdies.h"
-#include "xxfclib/formats/xuiz/xx_xuiz.h"
-#include "xxfclib/formats/titan_quest/xx_titan_quest.h"
-#include "xxfclib/formats/sbpak/xx_sbpak.h"
-#include "xxfclib/formats/cgjp/xx_cgjp.h"
-#include "xxfclib/formats/pirs/xx_pirs.h"
-#include "xxfclib/formats/px/xx_px.h"
-#include "xxfclib/formats/binsh_starkit/xx_binsh_starkit.h"
-#include "xxfclib/formats/evd/xx_evd.h"
-#include "xxfclib/formats/desksoft/xx_desksoft.h"
-#include "xxfclib/formats/metaproducts/xx_metaproducts.h"
-#include "xxfclib/formats/visualware/xx_visualware.h"
-#include "xxfclib/formats/lyme_sfx/xx_lyme_sfx.h"
-#include "xxfclib/formats/audials/xx_audials.h"
-#include "xxfclib/formats/psa_disk/xx_psa_disk.h"
-#include "xxfclib/formats/webexe/xx_webexe.h"
-#include "xxfclib/formats/asd/xx_asd.h"
-#include "xxfclib/formats/cfd/xx_cfd.h"
-#include "xxfclib/formats/rdc/xx_rdc.h"
-#include "xxfclib/formats/fox_sqz/xx_fox_sqz.h"
-#include "xxfclib/formats/skf/xx_skf.h"
-#include "xxfclib/formats/osl2000/xx_osl2000.h"
-#include "xxfclib/formats/lds/xx_lds.h"
-#include "xxfclib/formats/dcp_disk/xx_dcp_disk.h"
-#include "xxfclib/formats/sony_image/xx_sony_image.h"
+#include "xxfclib/formats/document/zxml/xx_zxml.h"
+#include "xxfclib/formats/filesystem/zisofs/xx_zisofs.h"
+#include "xxfclib/formats/other/nvp/xx_nvp.h"
+#include "xxfclib/formats/archive/sqze/xx_sqze.h"
+#include "xxfclib/formats/archive/zip_psc/xx_zip_psc.h"
+#include "xxfclib/formats/installer/crx_native/xx_crx_native.h"
+#include "xxfclib/formats/archive/dcs/xx_dcs.h"
+#include "xxfclib/formats/image/mskn1/xx_mskn1.h"
+#include "xxfclib/formats/image/mskn2/xx_mskn2.h"
+#include "xxfclib/formats/image/mskn3/xx_mskn3.h"
+#include "xxfclib/formats/archive/csq/xx_csq.h"
+#include "xxfclib/formats/archive/zoot1/xx_zoot1.h"
+#include "xxfclib/formats/archive/rdfz/xx_rdfz.h"
+#include "xxfclib/formats/firmware/zbeos/xx_zbeos.h"
+#include "xxfclib/formats/installer/solarispkg_zip/xx_solarispkg_zip.h"
+#include "xxfclib/formats/game/gta_img/xx_gta_img.h"
+#include "xxfclib/formats/game/pbo/xx_pbo.h"
+#include "xxfclib/formats/game/pam_pak/xx_pam_pak.h"
+#include "xxfclib/formats/game/pfpk/xx_pfpk.h"
+#include "xxfclib/formats/game/birdies/xx_birdies.h"
+#include "xxfclib/formats/game/xuiz/xx_xuiz.h"
+#include "xxfclib/formats/game/titan_quest/xx_titan_quest.h"
+#include "xxfclib/formats/game/sbpak/xx_sbpak.h"
+#include "xxfclib/formats/game/cgjp/xx_cgjp.h"
+#include "xxfclib/formats/game/pirs/xx_pirs.h"
+#include "xxfclib/formats/image/px/xx_px.h"
+#include "xxfclib/formats/executable/binsh_starkit/xx_binsh_starkit.h"
+#include "xxfclib/formats/image/evd/xx_evd.h"
+#include "xxfclib/formats/installer/desksoft/xx_desksoft.h"
+#include "xxfclib/formats/installer/metaproducts/xx_metaproducts.h"
+#include "xxfclib/formats/installer/visualware/xx_visualware.h"
+#include "xxfclib/formats/installer/lyme_sfx/xx_lyme_sfx.h"
+#include "xxfclib/formats/archive/audials/xx_audials.h"
+#include "xxfclib/formats/filesystem/psa_disk/xx_psa_disk.h"
+#include "xxfclib/formats/archive/webexe/xx_webexe.h"
+#include "xxfclib/formats/archive/asd/xx_asd.h"
+#include "xxfclib/formats/filesystem/cfd/xx_cfd.h"
+#include "xxfclib/formats/archive/rdc/xx_rdc.h"
+#include "xxfclib/formats/archive/fox_sqz/xx_fox_sqz.h"
+#include "xxfclib/formats/image/skf/xx_skf.h"
+#include "xxfclib/formats/archive/osl2000/xx_osl2000.h"
+#include "xxfclib/formats/archive/lds/xx_lds.h"
+#include "xxfclib/formats/filesystem/dcp_disk/xx_dcp_disk.h"
+#include "xxfclib/formats/firmware/sony_image/xx_sony_image.h"
 
 static const struct {
     xx_file_type_t type;
@@ -506,6 +530,48 @@ Abstractextractor *xx_abstract_extractor_get(xx_file_type_t type)
         if (g_xx_reader_only_abstract_extractors[i].type == type) return g_xx_reader_only_abstract_extractors[i].get();
     }
     return NULL;
+}
+
+Abstractformat *xx_format_create_reader(xx_file_type_t type, xx_io_device *dev, int64_t base_address)
+{
+    Abstractextractor *extractor = xx_abstract_extractor_get(type);
+    xx_io_device *view = NULL;
+    Abstractformat *format;
+    if (!extractor || !extractor->create_reader || !extractor->free_reader || base_address < 0) return NULL;
+    if (base_address) {
+        xx_io_volume volume;
+        int64_t total = dev ? xx_io_total_size(dev) : -1;
+        if (base_address >= total) return NULL;
+        volume.device = dev;
+        volume.offset = base_address;
+        volume.size = total - base_address;
+        view = xx_io_multivolume_open(&volume, 1U, false);
+        if (!view) return NULL;
+    }
+    format = extractor->create_reader(view ? view : dev);
+    if (!format) {
+        if (view) xx_io_close(view);
+        return NULL;
+    }
+    format->factory_free_reader = extractor->free_reader;
+    format->factory_owned_device = view;
+    /* Explicit aliases (APK, ZIP64, etc.) select their own interpretation.
+     * A classifying reader may refine file_type during base-info parsing. */
+    if (format->file_type == XX_FILE_TYPE_UNKNOWN) format->file_type = type;
+    (void)xx_format_get_handle_type(format);
+    return format;
+}
+
+void xx_format_free_reader(Abstractformat *format)
+{
+    void (*release)(Abstractformat *);
+    xx_io_device *owned;
+    if (!format) return;
+    release = format->factory_free_reader;
+    owned = format->factory_owned_device;
+    if (release) release(format);
+    else if (format->destroy) format->destroy(format);
+    if (owned) xx_io_close(owned);
 }
 
 static bool xx_abstract_reader_only_visible(size_t index)

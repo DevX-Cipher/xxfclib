@@ -8,11 +8,15 @@
  * Contexts may be copied to take a snapshot of an unfinished digest. Final
  * consumes and securely clears the context; initialize it again for reuse.
  * Digest bytes use the algorithms' big-endian byte order on every host.
+ * The global SHA flag controls SHA-NI for both algorithms. When it is off,
+ * dispatch uses SSE2 if its global flag is enabled, then the scalar backend.
  */
 #ifndef XX_SHA_H
 #define XX_SHA_H
 
 #include "xxfclib/xxfc_defs.h"
+#include "xxfclib/io/xx_io.h"
+#include "xxfclib/data/xx_pd.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,6 +58,13 @@ XXFC_API bool xx_sha256_final(xx_sha256_context *context, void *digest, size_t d
 /** Digest a buffer into 20 or 32 bytes. NULL input with size 0 is valid. */
 XXFC_API bool xx_sha1_memory(const void *data, size_t size, void *digest);
 XXFC_API bool xx_sha256_memory(const void *data, size_t size, void *digest);
+
+/** Digest a known-size device range, advancing the device cursor.
+ * A negative size selects the remaining bytes; an oversized range fails.
+ * An empty range, including one at EOF, produces the empty digest. Cancellation
+ * or a read failure returns false and leaves the output untouched. */
+XXFC_API bool xx_sha1_device(xx_io_device *device, int64_t offset, int64_t size, void *digest, size_t digest_size, xx_pd_struct *pd);
+XXFC_API bool xx_sha256_device(xx_io_device *device, int64_t offset, int64_t size, void *digest, size_t digest_size, xx_pd_struct *pd);
 
 #ifdef __cplusplus
 }

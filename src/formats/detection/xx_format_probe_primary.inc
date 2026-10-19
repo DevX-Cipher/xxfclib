@@ -4,6 +4,54 @@
  */
 
 XX_FORMAT_PROBE_READ(512U)
+XX_FORMAT_READER_PROBE(bflt, XX_FILE_TYPE_BFLT,
+    (header_size >= 64U && !xx_rt_memcmp(header, "bFLT\x00\x00\x00\x04", 8U)))
+XX_FORMAT_READER_PROBE(cgc, XX_FILE_TYPE_CGC,
+    (header_size >= 52U && header[0] == 0x7fU && header[1] == 'C' && header[2] == 'G' && header[3] == 'C' && header[4] == 1U))
+XX_FORMAT_READER_PROBE(pebble, XX_FILE_TYPE_PEBBLE,
+    (header_size >= 124U && xx_rt_memcmp(header, "PBLAPP\0\0", 8U) == 0))
+XX_FORMAT_READER_PROBE(hp_som, XX_FILE_TYPE_HP_SOM,
+    (header_size >= 128U && header[2] == 0x01U &&
+     (header[3] == 0x06U || header[3] == 0x07U || header[3] == 0x08U || header[3] == 0x09U ||
+      header[3] == 0x0bU || header[3] == 0x0dU || header[3] == 0x0eU)))
+XX_FORMAT_READER_PROBE(xcoff, XX_FILE_TYPE_XCOFF,
+    (header_size >= 92U &&
+     ((header[0] == 0x01U &&
+       (header[1] == 0x98U || header[1] == 0x9dU || header[1] == 0x9fU ||
+        header[1] == 0xd8U || header[1] == 0xddU || header[1] == 0xdfU))) &&
+     (header[2] != 0U || header[3] != 0U) && header[16] == 0U && header[17] == 0x48U))
+XX_FORMAT_READER_PROBE(windows_dmp64, XX_FILE_TYPE_WINDOWS_DMP64,
+    (header_size >= 8U && xx_rt_memcmp(header, "PAGEDU64", 8U) == 0))
+XX_FORMAT_READER_PROBE(nintendo_nso, XX_FILE_TYPE_NINTENDO_NSO,
+    (header_size >= XX_NSO_HEADER_SIZE && xx_rt_memcmp(header, "NSO0", 4U) == 0))
+XX_FORMAT_READER_PROBE(nintendo_nro, XX_FILE_TYPE_NINTENDO_NRO,
+    (header_size >= XX_NRO_ENTRY_OFFSET && xx_rt_memcmp(header + XX_NRO_HEADER_OFFSET, "NRO0", 4U) == 0))
+XX_FORMAT_READER_PROBE(xtac, XX_FILE_TYPE_XTAC,
+    (header_size >= XX_XTAC_HEADER_SIZE && xx_rt_memcmp(header, "XTAC", 4U) == 0))
+XX_FORMAT_READER_PROBE(omf, XX_FILE_TYPE_OMF,
+    (header_size >= 5U && (header[0] == 0x80U || header[0] == 0x82U) &&
+     xx_data_get_u16(header, header_size, 1U, false) >= 2U &&
+     (uint16_t)header[3] + 2U == xx_data_get_u16(header, header_size, 1U, false) &&
+     (uint64_t)xx_data_get_u16(header, header_size, 1U, false) + 3U <= (uint64_t)total_size))
+XX_FORMAT_READER_PROBE(menuet, XX_FILE_TYPE_MENUET,
+    (header_size >= 8U && xx_rt_memcmp(header, "MENUET0", 7U) == 0 && header[7] >= '0' && header[7] <= '2'))
+XX_FORMAT_READER_PROBE(plan9_exec, XX_FILE_TYPE_PLAN9_EXEC,
+    (header_size >= 4U && (xx_data_get_u32(header, header_size, 0U, true) == UINT32_C(0x00000107) ||
+                          xx_data_get_u32(header, header_size, 0U, true) == UINT32_C(0x000001eb) ||
+                          xx_data_get_u32(header, header_size, 0U, true) == UINT32_C(0x000002ab) ||
+                          xx_data_get_u32(header, header_size, 0U, true) == UINT32_C(0x00000407) ||
+                          xx_data_get_u32(header, header_size, 0U, true) == UINT32_C(0x00000517) ||
+                          xx_data_get_u32(header, header_size, 0U, true) == UINT32_C(0x00000647) ||
+                          xx_data_get_u32(header, header_size, 0U, true) == UINT32_C(0x000006eb) ||
+                          xx_data_get_u32(header, header_size, 0U, true) == UINT32_C(0x00000797) ||
+                          xx_data_get_u32(header, header_size, 0U, true) == UINT32_C(0x00000907) ||
+                          xx_data_get_u32(header, header_size, 0U, true) == UINT32_C(0x000009cb) ||
+                          xx_data_get_u32(header, header_size, 0U, true) == UINT32_C(0x00008a97) ||
+                          xx_data_get_u32(header, header_size, 0U, true) == UINT32_C(0x00008b6b) ||
+                          xx_data_get_u32(header, header_size, 0U, true) == UINT32_C(0x00008c47) ||
+                          xx_data_get_u32(header, header_size, 0U, true) == UINT32_C(0x00008e17))))
+XX_FORMAT_READER_PROBE(sega_sms_rom, XX_FILE_TYPE_SEGA_SMS_ROM,
+    (xx_sega_sms_rom_probe_device(dev, 0)))
 XX_FORMAT_READER_PROBE(advanced_installer_bootstrapper, XX_FILE_TYPE_ADVANCED_INSTALLER_BOOTSTRAPPER,
     (is_mz))
 XX_FORMAT_READER_PROBE(ardi_installer, XX_FILE_TYPE_ARDI_INSTALLER,
@@ -339,7 +387,9 @@ XX_FORMAT_READER_PROBE(nintendo_ncsd, XX_FILE_TYPE_NINTENDO_NCSD,
 XX_FORMAT_READER_PROBE(nintendo_cia, XX_FILE_TYPE_NINTENDO_CIA,
     (total_size >= 8224 && header_size >= 8U && header[0] == 0x20U && header[1] == 0x20U && header[2] == 0x00U && header[3] == 0x00U && header[4] == 0x00U && header[5] == 0x00U && header[6] == 0x00U && header[7] == 0x00U))
 XX_FORMAT_READER_PROBE(nintendo_nds, XX_FILE_TYPE_NINTENDO_NDS,
-    (total_size >= 512 && header_size >= 208U && header[192] == 0x24U && header[193] == 0xffU && header[194] == 0xaeU && header[195] == 0x51U && header[196] == 0x69U && header[197] == 0x9aU && header[198] == 0xa2U && header[199] == 0x21U && header[200] == 0x3dU && header[201] == 0x84U && header[202] == 0x82U && header[203] == 0x0aU && header[204] == 0x84U && header[205] == 0xe4U && header[206] == 0x09U && header[207] == 0xadU))
+    (total_size >= 512 && header_size >= 208U &&
+     ((header[192] == 0x24U && header[193] == 0xffU && header[194] == 0xaeU && header[195] == 0x51U && header[196] == 0x69U && header[197] == 0x9aU && header[198] == 0xa2U && header[199] == 0x21U && header[200] == 0x3dU && header[201] == 0x84U && header[202] == 0x82U && header[203] == 0x0aU && header[204] == 0x84U && header[205] == 0xe4U && header[206] == 0x09U && header[207] == 0xadU) ||
+      (header[192] == 0xc8U && header[193] == 0x60U && header[194] == 0x4fU && header[195] == 0xe2U && header[196] == 0x01U && header[197] == 0x70U))))
 XX_FORMAT_READER_PROBE(nintendo_gcm, XX_FILE_TYPE_NINTENDO_GCM,
     (total_size >= 9312 && header_size >= 32U && header[28] == 0xc2U && header[29] == 0x33U && header[30] == 0x9fU && header[31] == 0x3dU))
 XX_FORMAT_READER_PROBE(nintendo_tpl, XX_FILE_TYPE_NINTENDO_TPL,
@@ -896,7 +946,14 @@ XX_FORMAT_READER_PROBE(ircam_sdif, XX_FILE_TYPE_IRCAM_SDIF,
 
 XX_FORMAT_PROBE_READ(4100U)
 XX_FORMAT_READER_PROBE(microsoft_msf, XX_FILE_TYPE_MICROSOFT_MSF,
-    (header_size >= 32 && !xx_rt_memcmp(header, "\x4d\x69\x63\x72\x6f\x73\x6f\x66\x74\x20\x43\x2f\x43\x2b\x2b\x20\x4d\x53\x46\x20\x37\x2e\x30\x30\x0d\x0a\x1a\x44\x53\x00\x00\x00", 32)))
+    (header_size >= 56 && !xx_rt_memcmp(header, "\x4d\x69\x63\x72\x6f\x73\x6f\x66\x74\x20\x43\x2f\x43\x2b\x2b\x20\x4d\x53\x46\x20\x37\x2e\x30\x30\x0d\x0a\x1a\x44\x53\x00\x00\x00", 32) &&
+     header[32] == 0 && (header[33] == 0x02 || header[33] == 0x04 || header[33] == 0x08 || header[33] == 0x10) && header[34] == 0 && header[35] == 0 &&
+     (header[36] == 1 || header[36] == 2) && header[37] == 0 && header[38] == 0 && header[39] == 0))
+XX_FORMAT_READER_PROBE(pef, XX_FILE_TYPE_PEF,
+    (header_size >= 12 && !xx_rt_memcmp(header, "Joy!peff", 8) &&
+     (!xx_rt_memcmp(header + 8, "pwpc", 4) || !xx_rt_memcmp(header + 8, "m68k", 4))))
+XX_FORMAT_READER_PROBE(rprj, XX_FILE_TYPE_RPRJ,
+    (header_size >= 8 && !xx_rt_memcmp(header, "RPRJ", 4)))
 XX_FORMAT_READER_PROBE(windows_registry_hive, XX_FILE_TYPE_WINDOWS_REGISTRY_HIVE,
     (header_size >= 4 && !xx_rt_memcmp(header, "\x72\x65\x67\x66", 4)))
 XX_FORMAT_READER_PROBE(windows_evtx, XX_FILE_TYPE_WINDOWS_EVTX,

@@ -636,6 +636,46 @@ static const uint8_t fast_bytes_633[] = { 0x20,0x4C,0x48,0x30,0x20 };
 static const uint8_t fast_bytes_634[] = { 0x20,0x4C,0x48,0x34,0x20 };
 static const uint8_t fast_bytes_635[] = { 0x20,0x4C,0x48,0x35,0x20 };
 static const uint8_t fast_bytes_636[] = { 0x60,0x1A };
+static const uint8_t fast_bytes_637[] = { 0x62,0x46,0x4C,0x54,0x00,0x00,0x00,0x04 };
+static const uint8_t fast_bytes_638[] = { 0x7F,0x43,0x47,0x43,0x01 };
+static const uint8_t fast_bytes_639[] = { 0x4D,0x45,0x4E,0x55,0x45,0x54,0x30,0x30 };
+static const uint8_t fast_bytes_640[] = { 0x4D,0x45,0x4E,0x55,0x45,0x54,0x30,0x31 };
+static const uint8_t fast_bytes_641[] = { 0x4D,0x45,0x4E,0x55,0x45,0x54,0x30,0x32 };
+static const uint8_t fast_bytes_642[] = { 0x00,0x00,0x01,0x07 };
+static const uint8_t fast_bytes_643[] = { 0x00,0x00,0x01,0xEB };
+static const uint8_t fast_bytes_644[] = { 0x00,0x00,0x02,0xAB };
+static const uint8_t fast_bytes_645[] = { 0x00,0x00,0x04,0x07 };
+static const uint8_t fast_bytes_646[] = { 0x00,0x00,0x05,0x17 };
+static const uint8_t fast_bytes_647[] = { 0x00,0x00,0x06,0x47 };
+static const uint8_t fast_bytes_648[] = { 0x00,0x00,0x06,0xEB };
+static const uint8_t fast_bytes_649[] = { 0x00,0x00,0x07,0x97 };
+static const uint8_t fast_bytes_650[] = { 0x00,0x00,0x09,0x07 };
+static const uint8_t fast_bytes_651[] = { 0x00,0x00,0x09,0xCB };
+static const uint8_t fast_bytes_652[] = { 0x00,0x00,0x8A,0x97 };
+static const uint8_t fast_bytes_653[] = { 0x00,0x00,0x8B,0x6B };
+static const uint8_t fast_bytes_654[] = { 0x00,0x00,0x8C,0x47 };
+static const uint8_t fast_bytes_655[] = { 0x00,0x00,0x8E,0x17 };
+static const uint8_t fast_bytes_656[] = { 0x54,0x4D,0x52,0x20,0x53,0x45,0x47,0x41 };
+static const uint8_t fast_bytes_657[] = { 0x4E,0x52,0x4F,0x30 };
+static const uint8_t fast_bytes_658[] = { 0x4E,0x53,0x4F,0x30 };
+static const uint8_t fast_bytes_659[] = { 0x50,0x41,0x47,0x45,0x44,0x55,0x36,0x34 };
+static const uint8_t fast_bytes_660[] = { 0x82 };
+static const uint8_t fast_bytes_661[] = { 0x58,0x54,0x41,0x43 };
+static const uint8_t fast_bytes_662[] = { 0x50,0x42,0x4C,0x41,0x50,0x50,0x00,0x00 };
+static const uint8_t fast_bytes_663[] = { 0x01,0x06 };
+static const uint8_t fast_bytes_664[] = { 0x01,0x07 };
+static const uint8_t fast_bytes_665[] = { 0x01,0x08 };
+static const uint8_t fast_bytes_666[] = { 0x01,0x09 };
+static const uint8_t fast_bytes_667[] = { 0x01,0x0B };
+static const uint8_t fast_bytes_668[] = { 0x01,0x0D };
+static const uint8_t fast_bytes_669[] = { 0x01,0x0E };
+static const uint8_t fast_bytes_670[] = { 0x01,0x98 };
+static const uint8_t fast_bytes_671[] = { 0x00,0x48 };
+static const uint8_t fast_bytes_672[] = { 0x01,0x9D };
+static const uint8_t fast_bytes_673[] = { 0x01,0x9F };
+static const uint8_t fast_bytes_674[] = { 0x01,0xD8 };
+static const uint8_t fast_bytes_675[] = { 0x01,0xDD };
+static const uint8_t fast_bytes_676[] = { 0x01,0xDF };
 
 static const fast_atom fast_atoms[] = {
     { INT64_C(0), fast_bytes_0, fast_bytes_1, 4U, FAST_BASE, false },
@@ -1450,6 +1490,54 @@ static const fast_atom fast_atoms[] = {
     { INT64_C(2), fast_bytes_634, fast_bytes_55, 5U, FAST_BASE, false },
     { INT64_C(2), fast_bytes_635, fast_bytes_55, 5U, FAST_BASE, false },
     { INT64_C(0), fast_bytes_636, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_637, fast_bytes_11, 8U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_638, fast_bytes_55, 5U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_639, fast_bytes_11, 8U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_640, fast_bytes_11, 8U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_641, fast_bytes_11, 8U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_642, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_643, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_644, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_645, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_646, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_647, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_648, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_649, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_650, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_651, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_652, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_653, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_654, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_655, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(8176), fast_bytes_656, fast_bytes_11, 8U, FAST_BASE, false },
+    { INT64_C(16368), fast_bytes_656, fast_bytes_11, 8U, FAST_BASE, false },
+    { INT64_C(32752), fast_bytes_656, fast_bytes_11, 8U, FAST_BASE, false },
+    { INT64_C(16), fast_bytes_657, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_658, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_659, fast_bytes_11, 8U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_512, fast_bytes_263, 1U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_660, fast_bytes_263, 1U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_661, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_662, fast_bytes_11, 8U, FAST_BASE, false },
+    { INT64_C(2), fast_bytes_663, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(2), fast_bytes_664, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(2), fast_bytes_665, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(2), fast_bytes_666, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(2), fast_bytes_667, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(2), fast_bytes_668, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(2), fast_bytes_669, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_670, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(16), fast_bytes_671, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_672, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(16), fast_bytes_671, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_673, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(16), fast_bytes_671, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_674, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(16), fast_bytes_671, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_675, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(16), fast_bytes_671, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_676, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(16), fast_bytes_671, fast_bytes_47, 2U, FAST_BASE, false },
 };
 static const fast_rule fast_rules[] = {
     { INT64_C(0), INT64_C(9223372036854775807), 0U, 1U },
@@ -2065,6 +2153,48 @@ static const fast_rule fast_rules[] = {
     { INT64_C(0), INT64_C(9223372036854775807), 809U, 1U },
     { INT64_C(0), INT64_C(9223372036854775807), 810U, 1U },
     { INT64_C(0), INT64_C(9223372036854775807), 811U, 1U },
+    { INT64_C(0), INT64_C(9223372036854775807), 812U, 1U },
+    { INT64_C(0), INT64_C(9223372036854775807), 813U, 1U },
+    { INT64_C(28), INT64_C(9223372036854775807), 814U, 1U },
+    { INT64_C(36), INT64_C(9223372036854775807), 815U, 1U },
+    { INT64_C(52), INT64_C(9223372036854775807), 816U, 1U },
+    { INT64_C(32), INT64_C(9223372036854775807), 817U, 1U },
+    { INT64_C(32), INT64_C(9223372036854775807), 818U, 1U },
+    { INT64_C(32), INT64_C(9223372036854775807), 819U, 1U },
+    { INT64_C(32), INT64_C(9223372036854775807), 820U, 1U },
+    { INT64_C(32), INT64_C(9223372036854775807), 821U, 1U },
+    { INT64_C(32), INT64_C(9223372036854775807), 822U, 1U },
+    { INT64_C(32), INT64_C(9223372036854775807), 823U, 1U },
+    { INT64_C(32), INT64_C(9223372036854775807), 824U, 1U },
+    { INT64_C(32), INT64_C(9223372036854775807), 825U, 1U },
+    { INT64_C(32), INT64_C(9223372036854775807), 826U, 1U },
+    { INT64_C(40), INT64_C(9223372036854775807), 827U, 1U },
+    { INT64_C(40), INT64_C(9223372036854775807), 828U, 1U },
+    { INT64_C(40), INT64_C(9223372036854775807), 829U, 1U },
+    { INT64_C(40), INT64_C(9223372036854775807), 830U, 1U },
+    { INT64_C(8192), INT64_C(9223372036854775807), 831U, 1U },
+    { INT64_C(16384), INT64_C(9223372036854775807), 832U, 1U },
+    { INT64_C(32768), INT64_C(9223372036854775807), 833U, 1U },
+    { INT64_C(128), INT64_C(9223372036854775807), 834U, 1U },
+    { INT64_C(256), INT64_C(9223372036854775807), 835U, 1U },
+    { INT64_C(8248), INT64_C(9223372036854775807), 836U, 1U },
+    { INT64_C(5), INT64_C(9223372036854775807), 837U, 1U },
+    { INT64_C(5), INT64_C(9223372036854775807), 838U, 1U },
+    { INT64_C(57), INT64_C(9223372036854775807), 839U, 1U },
+    { INT64_C(124), INT64_C(9223372036854775807), 840U, 1U },
+    { INT64_C(128), INT64_C(9223372036854775807), 841U, 1U },
+    { INT64_C(128), INT64_C(9223372036854775807), 842U, 1U },
+    { INT64_C(128), INT64_C(9223372036854775807), 843U, 1U },
+    { INT64_C(128), INT64_C(9223372036854775807), 844U, 1U },
+    { INT64_C(128), INT64_C(9223372036854775807), 845U, 1U },
+    { INT64_C(128), INT64_C(9223372036854775807), 846U, 1U },
+    { INT64_C(128), INT64_C(9223372036854775807), 847U, 1U },
+    { INT64_C(92), INT64_C(9223372036854775807), 848U, 2U },
+    { INT64_C(92), INT64_C(9223372036854775807), 850U, 2U },
+    { INT64_C(92), INT64_C(9223372036854775807), 852U, 2U },
+    { INT64_C(92), INT64_C(9223372036854775807), 854U, 2U },
+    { INT64_C(92), INT64_C(9223372036854775807), 856U, 2U },
+    { INT64_C(92), INT64_C(9223372036854775807), 858U, 2U },
 };
 static const fast_type fast_types[] = {
     { XX_FILE_TYPE_ZIP, 0U, 9U }, /* src/formats/zip/xx_zip_fast_detect.json */
@@ -2431,5 +2561,18 @@ static const fast_type fast_types[] = {
     { XX_FILE_TYPE_SM8, 608U, 1U }, /* src/formats/sm8/xx_sm8_fast_detect.json */
     { XX_FILE_TYPE_SAR, 609U, 3U }, /* src/formats/sar/xx_sar_fast_detect.json */
     { XX_FILE_TYPE_LARC_PFX, 612U, 1U }, /* src/formats/larc_pfx/xx_larc_pfx_fast_detect.json */
+    { XX_FILE_TYPE_BFLT, 613U, 1U }, /* src/formats/bflt/xx_bflt_fast_detect.json */
+    { XX_FILE_TYPE_CGC, 614U, 1U }, /* src/formats/cgc/xx_cgc_fast_detect.json */
+    { XX_FILE_TYPE_MENUET, 615U, 3U }, /* src/formats/menuet/xx_menuet_fast_detect.json */
+    { XX_FILE_TYPE_PLAN9_EXEC, 618U, 14U }, /* src/formats/plan9_exec/xx_plan9_exec_fast_detect.json */
+    { XX_FILE_TYPE_SEGA_SMS_ROM, 632U, 3U }, /* src/formats/sega_sms_rom/xx_sega_sms_rom_fast_detect.json */
+    { XX_FILE_TYPE_NINTENDO_NRO, 635U, 1U }, /* src/formats/nintendo_nro/xx_nintendo_nro_fast_detect.json */
+    { XX_FILE_TYPE_NINTENDO_NSO, 636U, 1U }, /* src/formats/nintendo_nso/xx_nintendo_nso_fast_detect.json */
+    { XX_FILE_TYPE_WINDOWS_DMP64, 637U, 1U }, /* src/formats/windows_dmp64/xx_windows_dmp64_fast_detect.json */
+    { XX_FILE_TYPE_OMF, 638U, 2U }, /* src/formats/omf/xx_omf_fast_detect.json */
+    { XX_FILE_TYPE_XTAC, 640U, 1U }, /* src/formats/xtac/xx_xtac_fast_detect.json */
+    { XX_FILE_TYPE_PEBBLE, 641U, 1U }, /* src/formats/pebble/xx_pebble_fast_detect.json */
+    { XX_FILE_TYPE_HP_SOM, 642U, 7U }, /* src/formats/hp_som/xx_hp_som_fast_detect.json */
+    { XX_FILE_TYPE_XCOFF, 649U, 6U }, /* src/formats/xcoff/xx_xcoff_fast_detect.json */
 };
-static const size_t fast_type_count = 364U;
+static const size_t fast_type_count = 377U;

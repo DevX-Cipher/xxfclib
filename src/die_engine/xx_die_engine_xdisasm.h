@@ -24,7 +24,8 @@
 #ifndef XDISASM_H
 #define XDISASM_H
 
-#include "xx_die_engine_bin.h"
+#include "xx_die_engine_compat.h"
+#include "xxfclib/io/xx_io.h"
 
 typedef struct {
     int nSize;              /* instruction length in bytes (0 when unknown) */
@@ -32,9 +33,8 @@ typedef struct {
     int bInvalid;           /* undecodable byte; next address is zero       */
 } XDisasmResult;
 
-XDisasmResult xdisasm(DieFile *pFile, cd_i64 nOffset, int nBits);
-XDisasmResult xdisasm_at(DieFile *pFile, cd_i64 nOffset, int nBits, cd_u64 nAddress);
+XDisasmResult xdisasm(xx_io_device *pFile, cd_i64 nOffset, int nBits);
+XDisasmResult xdisasm_at(xx_io_device *pFile, cd_i64 nOffset, int nBits, cd_u64 nAddress);
 cd_u64 xdisasm_next_address(const XDisasmResult *pResult, cd_u64 nAddress);
-void xdisasm_close(DieFile *pFile);
 
 #endif /* XDISASM_H */

@@ -7,7 +7,7 @@
 
 #include "xxfclib/io/xx_io.h"
 #include "xxfclib/data/xx_pd.h"
-#include "xxfclib/algo/hash/xx_hash.h"
+#include "xxfclib/algo/sha/xx_sha.h"
 
 /* Decode a dictionary property subject to XX_LZMA_MAX_DICT_SIZE. The output
  * pointer may be NULL when only support for the property needs checking. */

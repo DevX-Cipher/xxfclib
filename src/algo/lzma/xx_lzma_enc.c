@@ -768,11 +768,14 @@ bool xx_lzma2_compress_stream(xx_io_device *src_dev, const uint8_t *mem_src, siz
 {
     const size_t io_capacity = xx_get_file_buffer_size();
     uint8_t *input = NULL;
+    uint8_t *input_snapshot = NULL;
+    const uint8_t *memory_input = mem_src;
     uint8_t *compressed = NULL;
     lzma_encoder *workspace = NULL;
     const size_t compressed_cap = LZMA2_CHUNK_SIZE * 2u + 1024u;
     size_t source_pos = 0;
     bool dictionary_initialized = false;
+    bool source_may_overlap = false;
     bool ok = false;
     lzma2_sink sink;
 
@@ -784,6 +787,17 @@ bool xx_lzma2_compress_stream(xx_io_device *src_dev, const uint8_t *mem_src, siz
 
     if (src_dev && xx_io_seek64(src_dev, src_offset, SEEK_SET) != 0) return false;
 
+    /* An output chunk can overwrite later input chunks when buffers overlap.
+     * Snapshot the full source in that case; disjoint memory input needs no
+     * staging, while device input still needs one reusable chunk buffer. */
+    if (mem_src && uncomp_size != 0 && dst_dev) {
+        source_may_overlap = true; /* A device may alias arbitrary memory. */
+    } else if (mem_src && mem_dst && uncomp_size != 0 && mem_cap != 0) {
+        uintptr_t source = (uintptr_t)mem_src;
+        uintptr_t target = (uintptr_t)mem_dst;
+        source_may_overlap = source <= target ? target - source < (size_t)uncomp_size : source - target < mem_cap;
+    }
+
     xx_rt_memset(&sink, 0, sizeof(sink));
     sink.dev = dst_dev;
     sink.mem = mem_dst;
@@ -793,9 +807,16 @@ bool xx_lzma2_compress_stream(xx_io_device *src_dev, const uint8_t *mem_src, siz
 
     /* Complete input/compressed chunks support the codec's compression choice;
      * they are semantic objects, while device transfers stay <= io_capacity. */
-    input = (uint8_t *)xx_mem_alloc(LZMA2_CHUNK_SIZE);
+    if (!mem_src && uncomp_size != 0) input = (uint8_t *)xx_mem_alloc(LZMA2_CHUNK_SIZE);
+    if (source_may_overlap) {
+        input_snapshot = (uint8_t *)xx_mem_alloc((size_t)uncomp_size);
+        if (input_snapshot) {
+            xx_rt_memcpy(input_snapshot, mem_src, (size_t)uncomp_size);
+            memory_input = input_snapshot;
+        }
+    }
     compressed = (uint8_t *)xx_mem_alloc(compressed_cap);
-    if (!input || !compressed) goto cleanup;
+    if ((!mem_src && uncomp_size != 0 && !input) || (source_may_overlap && !input_snapshot) || !compressed) goto cleanup;
     if (uncomp_size != 0) {
         lzma_props workspace_props;
         uint32_t workspace_nice_len;
@@ -810,18 +831,21 @@ bool xx_lzma2_compress_stream(xx_io_device *src_dev, const uint8_t *mem_src, siz
         size_t packed_size = 0;
         size_t props_size = XX_LZMA_PROPS_SIZE;
         uint8_t props[XX_LZMA_PROPS_SIZE];
+        const uint8_t *chunk_input;
         uint32_t unpack_minus_one;
         bool compressed_ok;
 
         if (chunk_size > LZMA2_CHUNK_SIZE) chunk_size = LZMA2_CHUNK_SIZE;
         if (pd && xx_pd_is_stopped(pd)) goto cleanup;
-        if (mem_src) {
-            xx_rt_memcpy(input, mem_src + source_pos, chunk_size);
+        if (memory_input) {
+            chunk_input = memory_input + source_pos;
         } else if (!lzma2_read_exact(src_dev, input, chunk_size, pd, io_capacity)) {
             goto cleanup;
+        } else {
+            chunk_input = input;
         }
 
-        compressed_ok = enc_compress_stream(workspace, NULL, input, chunk_size, 0, (int64_t)chunk_size, NULL, compressed, compressed_cap, &packed_size, level, props,
+        compressed_ok = enc_compress_stream(workspace, NULL, chunk_input, chunk_size, 0, (int64_t)chunk_size, NULL, compressed, compressed_cap, &packed_size, level, props,
                                             &props_size, pd, false);
         if (pd && xx_pd_is_stopped(pd)) goto cleanup;
 
@@ -843,7 +867,7 @@ bool xx_lzma2_compress_stream(xx_io_device *src_dev, const uint8_t *mem_src, siz
             header[0] = dictionary_initialized ? LZMA2_CONTROL_COPY_DICT : LZMA2_CONTROL_COPY_NO_DICT;
             header[1] = (uint8_t)(unpack_minus_one >> 8);
             header[2] = (uint8_t)unpack_minus_one;
-            if (!lzma2_sink_write(&sink, header, sizeof(header)) || !lzma2_sink_write(&sink, input, chunk_size)) goto cleanup;
+            if (!lzma2_sink_write(&sink, header, sizeof(header)) || !lzma2_sink_write(&sink, chunk_input, chunk_size)) goto cleanup;
             dictionary_initialized = true;
         }
         source_pos += chunk_size;
@@ -858,6 +882,7 @@ bool xx_lzma2_compress_stream(xx_io_device *src_dev, const uint8_t *mem_src, siz
 cleanup:
     enc_destroy(workspace);
     xx_mem_free(compressed);
+    xx_mem_free(input_snapshot);
     xx_mem_free(input);
     if (ok) {
         if (out_written) *out_written = sink.written;

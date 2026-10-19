@@ -48,8 +48,8 @@
  * by the 54-bit division), so 48 limbs of 32 bits leaves comfortable
  * headroom. Values outside the double range are clamped long before here.
  *
- * The size matters: several routines hold five of these at once, and the
- * CRT-free build has no stack probes, so every frame must stay under 4 KB.  */
+ * The size matters: several routines hold five of these at once, so keeping
+ * each value compact avoids excessive stack pressure in nested operations. */
 #define BIG_LIMBS 48
 
 typedef struct {

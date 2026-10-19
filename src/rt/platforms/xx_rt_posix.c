@@ -41,15 +41,6 @@ char *xx_rt_getenv(const char *pName)
     return getenv(pName);
 }
 
-void xx_rt_qsort(void *pBase, size_t nCount, size_t nSize, xx_rt_compare_fn fnCompare)
-{
-    if ((pBase == NULL) || (fnCompare == NULL) || (nCount < 2) || (nSize == 0) || (nCount > ((size_t)-1) / nSize)) {
-        return;
-    }
-
-    qsort(pBase, nCount, nSize, fnCompare);
-}
-
 int xx_rt_rand(void)
 {
     return rand() % (XX_RT_RAND_MAX + 1);

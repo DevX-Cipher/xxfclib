@@ -17,12 +17,13 @@
  * and output are permitted; the map is still required. No DLL exports. */
 bool xx_bzip2_mtf_encode(const uint8_t *src, size_t count, int *output, const uint8_t in_use[256]);
 
-/* CPU selection is independent of the library's mutable global SIMD flags.
- * Explicit selection is per call for internal tests and measurements only. */
+/* Explicit SIMD selection honors the matching global feature switch and also
+ * requires hardware support. */
 enum xx_bzip2_mtf_backend {
     XX_BZIP2_MTF_AUTO = 0,
     XX_BZIP2_MTF_SCALAR = 1,
-    XX_BZIP2_MTF_SSE2 = 2
+    XX_BZIP2_MTF_SSE2 = 2,
+    XX_BZIP2_MTF_NEON = 3
 };
 unsigned xx_bzip2_mtf_backend_capabilities(void);
 int xx_bzip2_mtf_selected_backend(void);

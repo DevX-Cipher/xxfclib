@@ -394,6 +394,8 @@ extern Abstractextractor *xx_protein_mmcif_get_abstract_extractor(void);
 extern Abstractextractor *xx_matrix_market_get_abstract_extractor(void);
 extern Abstractextractor *xx_gromacs_gro_get_abstract_extractor(void);
 extern Abstractextractor *xx_microsoft_msf_get_abstract_extractor(void);
+extern Abstractextractor *xx_pef_get_abstract_extractor(void);
+extern Abstractextractor *xx_rprj_get_abstract_extractor(void);
 extern Abstractextractor *xx_windows_registry_hive_get_abstract_extractor(void);
 extern Abstractextractor *xx_windows_evtx_get_abstract_extractor(void);
 extern Abstractextractor *xx_binary_plist_get_abstract_extractor(void);
@@ -1710,6 +1712,8 @@ extern Abstractdetector *xx_protein_mmcif_get_abstract_detector(void);
 extern Abstractdetector *xx_matrix_market_get_abstract_detector(void);
 extern Abstractdetector *xx_gromacs_gro_get_abstract_detector(void);
 extern Abstractdetector *xx_microsoft_msf_get_abstract_detector(void);
+extern Abstractdetector *xx_pef_get_abstract_detector(void);
+extern Abstractdetector *xx_rprj_get_abstract_detector(void);
 extern Abstractdetector *xx_windows_registry_hive_get_abstract_detector(void);
 extern Abstractdetector *xx_windows_evtx_get_abstract_detector(void);
 extern Abstractdetector *xx_binary_plist_get_abstract_detector(void);
@@ -3850,6 +3854,8 @@ static const struct {
     { &xx_matrix_market_extractor, xx_matrix_market_get_abstract_extractor, xx_matrix_market_get_abstract_detector },
     { &xx_gromacs_gro_extractor, xx_gromacs_gro_get_abstract_extractor, xx_gromacs_gro_get_abstract_detector },
     { &xx_microsoft_msf_extractor, xx_microsoft_msf_get_abstract_extractor, xx_microsoft_msf_get_abstract_detector },
+    { &xx_pef_extractor, xx_pef_get_abstract_extractor, xx_pef_get_abstract_detector },
+    { &xx_rprj_extractor, xx_rprj_get_abstract_extractor, xx_rprj_get_abstract_detector },
     { &xx_windows_registry_hive_extractor, xx_windows_registry_hive_get_abstract_extractor, xx_windows_registry_hive_get_abstract_detector },
     { &xx_windows_evtx_extractor, xx_windows_evtx_get_abstract_extractor, xx_windows_evtx_get_abstract_detector },
     { &xx_binary_plist_extractor, xx_binary_plist_get_abstract_extractor, xx_binary_plist_get_abstract_detector },

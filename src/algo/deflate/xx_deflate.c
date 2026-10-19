@@ -239,6 +239,19 @@ bool xx_deflate_pack_device(xx_io_device *src_dev, int64_t src_offset, int64_t u
 bool xx_deflate_pack_device_ex(xx_io_device *src_dev, int64_t src_offset, int64_t uncomp_size, xx_io_device *dst_dev, int level, bool is_deflate64, size_t window_size,
                                xx_pd_struct *pd)
 {
+    return xx_deflate_pack_device_with_options(src_dev, src_offset, uncomp_size, dst_dev, level, is_deflate64, window_size, NULL, pd);
+}
+
+bool xx_deflate_pack_device_with_options(xx_io_device *src_dev, int64_t src_offset, int64_t uncomp_size, xx_io_device *dst_dev,
+                                         int level, bool is_deflate64, size_t window_size, const xx_deflate_pack_options *options, xx_pd_struct *pd)
+{
+    xx_deflate_pack_options_ex extended = {options ? options->max_candidates : 0U, 0U, false, 0U, 0U};
+    return xx_deflate_pack_device_with_options_ex(src_dev, src_offset, uncomp_size, dst_dev, level, is_deflate64, window_size, &extended, pd);
+}
+
+bool xx_deflate_pack_device_with_options_ex(xx_io_device *src_dev, int64_t src_offset, int64_t uncomp_size, xx_io_device *dst_dev,
+                                         int level, bool is_deflate64, size_t window_size, const xx_deflate_pack_options_ex *options, xx_pd_struct *pd)
+{
     if (!src_dev || !dst_dev || uncomp_size < 0 || xx_deflate_resolve_window(is_deflate64, window_size) == 0U) {
         return false;
     }
@@ -252,13 +265,26 @@ bool xx_deflate_pack_device_ex(xx_io_device *src_dev, int64_t src_offset, int64_
         return false;
     }
 
-    bool success = xx_deflate_compress_stream_with_window(src_dev, NULL, 0, src_offset, uncomp_size, &writer, level, is_deflate64, window_size, pd);
+    bool success = xx_deflate_compress_stream_with_options_ex(src_dev, NULL, 0, src_offset, uncomp_size, &writer, level, is_deflate64, window_size, options, pd);
     xx_bw_free(&writer);
     return success;
 }
 
 bool xx_deflate_pack_source(xx_io_device *src_dev, const char *src_file_path, int64_t *out_uncomp_size, int64_t *out_comp_size, uint32_t *out_crc32,
                             xx_io_device *dst_dev, int level, bool is_deflate64, xx_pd_struct *pd)
+{
+    return xx_deflate_pack_source_with_options(src_dev, src_file_path, out_uncomp_size, out_comp_size, out_crc32, dst_dev, level, is_deflate64, NULL, pd);
+}
+
+bool xx_deflate_pack_source_with_options(xx_io_device *src_dev, const char *src_file_path, int64_t *out_uncomp_size, int64_t *out_comp_size, uint32_t *out_crc32,
+                                         xx_io_device *dst_dev, int level, bool is_deflate64, const xx_deflate_pack_options *options, xx_pd_struct *pd)
+{
+    xx_deflate_pack_options_ex extended = {options ? options->max_candidates : 0U, 0U, false, 0U, 0U};
+    return xx_deflate_pack_source_with_options_ex(src_dev, src_file_path, out_uncomp_size, out_comp_size, out_crc32, dst_dev, level, is_deflate64, &extended, pd);
+}
+
+bool xx_deflate_pack_source_with_options_ex(xx_io_device *src_dev, const char *src_file_path, int64_t *out_uncomp_size, int64_t *out_comp_size, uint32_t *out_crc32,
+                                         xx_io_device *dst_dev, int level, bool is_deflate64, const xx_deflate_pack_options_ex *options, xx_pd_struct *pd)
 {
     if (!dst_dev || !out_uncomp_size || !out_comp_size || !out_crc32) {
         return false;
@@ -345,7 +371,7 @@ bool xx_deflate_pack_source(xx_io_device *src_dev, const char *src_file_path, in
         return false;
     }
 
-    bool success = xx_deflate_compress_stream(target_dev, NULL, 0, 0, total, &writer, level, is_deflate64, pd);
+    bool success = xx_deflate_compress_stream_with_options_ex(target_dev, NULL, 0, 0, total, &writer, level, is_deflate64, 0U, options, pd);
     *out_comp_size = writer.total_written;
     xx_bw_free(&writer);
 
@@ -357,6 +383,19 @@ bool xx_deflate_pack_source(xx_io_device *src_dev, const char *src_file_path, in
 }
 
 bool xx_deflate_compress_memory(const void *src_buf, size_t src_size, void *dst_buf, size_t dst_buf_size, size_t *out_written, int level, bool is_deflate64)
+{
+    return xx_deflate_compress_memory_with_options(src_buf, src_size, dst_buf, dst_buf_size, out_written, level, is_deflate64, NULL);
+}
+
+bool xx_deflate_compress_memory_with_options(const void *src_buf, size_t src_size, void *dst_buf, size_t dst_buf_size, size_t *out_written,
+                                             int level, bool is_deflate64, const xx_deflate_pack_options *options)
+{
+    xx_deflate_pack_options_ex extended = {options ? options->max_candidates : 0U, 0U, false, 0U, 0U};
+    return xx_deflate_compress_memory_with_options_ex(src_buf, src_size, dst_buf, dst_buf_size, out_written, level, is_deflate64, &extended);
+}
+
+bool xx_deflate_compress_memory_with_options_ex(const void *src_buf, size_t src_size, void *dst_buf, size_t dst_buf_size, size_t *out_written,
+                                             int level, bool is_deflate64, const xx_deflate_pack_options_ex *options)
 {
     if (!src_buf || (!dst_buf && dst_buf_size > 0)) {
         return false;
@@ -372,7 +411,7 @@ bool xx_deflate_compress_memory(const void *src_buf, size_t src_size, void *dst_
         return false;
     }
 
-    bool success = xx_deflate_compress_stream(NULL, (const uint8_t *)src_buf, src_size, 0, (int64_t)src_size, &writer, level, is_deflate64, NULL);
+    bool success = xx_deflate_compress_stream_with_options_ex(NULL, (const uint8_t *)src_buf, src_size, 0, (int64_t)src_size, &writer, level, is_deflate64, 0U, options, NULL);
     if (success && out_written) {
         *out_written = (size_t)writer.total_written;
     }

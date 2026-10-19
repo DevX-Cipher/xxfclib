@@ -50,6 +50,7 @@ typedef SSIZE_T ssize_t;
 /* Forward declaration and types */
 typedef struct xx_io_device xx_io_device;
 typedef struct xx_io_device io_device;
+typedef struct xx_io_buffer_state xx_io_buffer_state;
 
 /**
  * @brief Abstract I/O device structure with function pointer vtable.
@@ -66,6 +67,8 @@ struct xx_io_device {
     /* Optional extensions. Zero-initialize custom devices before setting fields. */
     int (*seek64)(xx_io_device *self, int64_t off, int whence);
     int64_t (*tell)(xx_io_device *self);
+    xx_io_buffer_state *buffer_state; /* Opaque state managed by xx_io_buffer_*. */
+    bool buffer_enabled; /* Use xx_io_set_buffer_enabled to change buffering. */
 };
 
 /* Compatibility member aliases matching camelCase / user naming */
@@ -78,40 +81,19 @@ struct xx_io_device {
 
 /* --- Inline Convenience Wrappers --- */
 
-static inline ssize_t xx_io_read(xx_io_device *d, void *b, size_t n)
-{
-    return (d && d->read) ? d->read(d, b, n) : -1;
-}
+XXFC_API ssize_t xx_io_read(xx_io_device *d, void *b, size_t n);
 
-static inline ssize_t xx_io_write(xx_io_device *d, const void *b, size_t n)
-{
-    return (d && d->write) ? d->write(d, b, n) : -1;
-}
+XXFC_API ssize_t xx_io_write(xx_io_device *d, const void *b, size_t n);
 
-static inline int xx_io_seek(xx_io_device *d, long off, int whence)
-{
-    return (d && d->seek) ? d->seek(d, off, whence) : -1;
-}
+XXFC_API int xx_io_seek(xx_io_device *d, long off, int whence);
 
 /** Reposition with a 64-bit offset; legacy devices work within long's range. */
-static inline int xx_io_seek64(xx_io_device *d, int64_t off, int whence)
-{
-    if (!d) return -1;
-    if (d->seek64) return d->seek64(d, off, whence);
-    if (off < LONG_MIN || off > LONG_MAX) return -1;
-    return xx_io_seek(d, (long)off, whence);
-}
+XXFC_API int xx_io_seek64(xx_io_device *d, int64_t off, int whence);
 
 /** Return the current offset, or -1 if unavailable. */
-static inline int64_t xx_io_tell(xx_io_device *d)
-{
-    return (d && d->tell) ? d->tell(d) : -1;
-}
+XXFC_API int64_t xx_io_tell(xx_io_device *d);
 
-static inline int xx_io_close(xx_io_device *d)
-{
-    return (d && d->close) ? d->close(d) : -1;
-}
+XXFC_API int xx_io_close(xx_io_device *d);
 
 static inline int64_t xx_io_total_size(xx_io_device *d)
 {
@@ -136,6 +118,17 @@ static inline int64_t xx_io_get_size(xx_io_device *d)
 {
     return xx_io_total_size(d);
 }
+
+/** Test whether a nonnegative offset and size fit the device's known size.
+ * Zero-length ranges at EOF are valid. Unknown-size devices fail. This uses
+ * subtraction to avoid overflow and does not move the cursor or read bytes. */
+XXFC_API bool xx_io_check(xx_io_device *device, int64_t offset, int64_t size);
+
+/** Clamp a range to the device's known size. A negative requested size means
+ * "to the end". Offset must be within [0,total_size), including for an empty
+ * range. On failure *size stays unchanged. Unknown-size devices and NULL size
+ * pointers fail. This does not move the cursor or read bytes. */
+XXFC_API bool xx_io_range_clamp(xx_io_device *device, int64_t offset, int64_t *size);
 
 /** Read exactly n bytes at an absolute offset and restore the device cursor.
  * The device must be seekable and report its current cursor. For known-size
@@ -232,13 +225,57 @@ XXFC_API bool xx_io_memory_only_begin(xx_io_memory_only_scope *scope, uint64_t t
  * remain safely closable but must not be used after the scope ends. */
 XXFC_API bool xx_io_memory_only_end(xx_io_memory_only_scope *scope);
 XXFC_API bool xx_io_memory_only_active(void);
+/** Times the active scope, or one inside it, refused to grow a temporary
+ * stream over its limit (0 outside a scope). Read before and after a step,
+ * it tells whether that step hit the limit, which the kept first failure
+ * no longer tells once it is set. */
+XXFC_API unsigned long xx_io_memory_only_refusals(void);
 /** Aggregate allocated temporary payload capacity for the active scope. */
 XXFC_API uint64_t xx_io_memory_only_used(void);
+/** Temporary payload capacity still free: the least headroom of the active
+ * scope and the scopes around it, UINT64_MAX outside a scope. Temporary
+ * streams may grow by this many bytes in all without failing the scope. */
+XXFC_API uint64_t xx_io_memory_only_available(void);
 /** First failure, retained in the token after end for useful diagnostics. */
 XXFC_API xx_io_memory_only_error_t xx_io_memory_only_error(const xx_io_memory_only_scope *scope);
 
+/** Extraction policy, local to the calling thread like the memory-only scope
+ * and not inherited by worker threads. Initialize each scope to zero, begin it
+ * before members are written below root (the output folder named for them;
+ * copied) and end it after. Scopes nest in LIFO order. While one is active:
+ * - xx_io_create_dirs_a/_w follow a link (on Windows, a reparse point) that is
+ *   root itself or one of its existing ancestors, as given. Below root such a
+ *   component, like a file, still fails the call.
+ * - A file opened for writing with truncation ("w" without "x") is never
+ *   written through a link, nor into a file with other hard links, that is
+ *   already at its path: that entry is replaced by a new file.
+ * - The first failed filesystem change since begin or xx_io_extract_clear() is
+ *   kept as an errno value (xx_io_extract_errno): ELOOP for a link and ENOTDIR
+ *   for a file where a folder belongs below root, ENAMETOOLONG for a path
+ *   longer than the system takes, otherwise the system's own error; and
+ *   XX_IO_EXTRACT_TEMP_FAILED (no errno value) when only a temporary copy
+ *   (xx_io_temp_open) could not be written, which is no file of the member.
+ */
+#define XX_IO_EXTRACT_TEMP_FAILED (-1)
+typedef struct xx_io_extract_scope {
+    void *internal;
+} xx_io_extract_scope;
+XXFC_API bool xx_io_extract_begin(xx_io_extract_scope *scope, const char *root);
+/** Pop this scope; false (and nothing popped) when it is not the innermost. */
+XXFC_API bool xx_io_extract_end(xx_io_extract_scope *scope);
+/** Forget the kept failure and the count of files opened for writing of the
+ * innermost scope, e.g. before each member. */
+XXFC_API void xx_io_extract_clear(void);
+/** The kept failure of the innermost scope: 0 when none or outside a scope. */
+XXFC_API int xx_io_extract_errno(void);
+/** Files the innermost scope opened for writing since begin or the last
+ * clear (0 outside a scope): none for a member that a reader refused to
+ * write, for example because a file is already at its path. */
+XXFC_API unsigned long xx_io_extract_files(void);
+
 /**
- * Return the borrowed path used to open a file-backed device. A one-range
+ * Return the borrowed path used to open a file-backed device. Buffered devices
+ * inherit their source path. A one-range
  * multivolume view inherits it only when the range covers its whole child.
  * Memory, subdevice, partial-range, and multi-file devices have no source path and
  * return NULL. The pointer remains valid only while the device is open.
@@ -274,8 +311,84 @@ XXFC_API xx_io_device *io_mem_open(void *buf, size_t size);
 XXFC_API xx_io_device *xx_io_mem_open_ro(const void *buf, size_t size);
 XXFC_API xx_io_device *io_mem_open_ro(const void *buf, size_t size);
 
-/** True for memory devices and subdevices backed by memory. */
+/** True for memory devices and buffer/subdevices backed by memory. */
 XXFC_API bool xx_io_is_memory(const xx_io_device *device);
+
+/** Enable or disable read buffering on this same device.
+ * Ordinary devices start disabled; xx_io_buffer_open* devices start enabled.
+ * Enabling an ordinary device requires read, seek, tell, and a known size;
+ * it captures the current global capacity/memory limit without changing its
+ * callbacks, priv, or address. Use xx_io_read/write/seek/tell/close for I/O.
+ * Disabling restores the underlying cursor and releases attached cache state.
+ * Writes automatically disable an attached cache before reaching the backend.
+ * Existing buffered wrappers remain read-only and keep their cursor/capacity
+ * when disabled: reads bypass the cache, views use fresh scratch reads, and
+ * whole-file promotion is disabled. Wrapper source sizes remain fixed until
+ * close. Required failures remain sticky.
+ * Changing modes invalidates all borrowed views. The source must remain
+ * unchanged while buffering is enabled. No concurrent access is supported.
+ * Returns false on NULL, unsupported input, allocation failure, or a failed
+ * cursor restore; failure leaves the buffering mode unchanged. Repeating the
+ * current mode succeeds without I/O. Do not change buffer_enabled directly. */
+XXFC_API bool xx_io_set_buffer_enabled(xx_io_device *device, bool enabled);
+/** Open a read-only buffered view of a seekable, known-size source.
+ * The wrapper has its own cursor, initially zero. Reads reposition the source
+ * on cache misses; neither the source cursor nor concurrent source access is
+ * preserved. The source contents and size must remain unchanged while open.
+ * A zero capacity captures the current global file-buffer capacity. The
+ * supplied memory_limit is captured at open; zero
+ * disables optional whole-file promotion. Memory sources never duplicate the
+ * whole file for promotion. Ownership transfers only on successful open;
+ * close frees the wrapper/cache and closes the source only if requested.
+ * Reads retry short transfers. A source error, premature EOF, or required
+ * cache allocation failure is sticky: subsequent nonempty reads/views fail.
+ * A failed read returns bytes already copied, or -1, and advances the wrapper
+ * cursor only by copied bytes. Seeks within [0,size] remain possible after an
+ * error and do not clear it. */
+XXFC_API xx_io_device *xx_io_buffer_open(xx_io_device *source, size_t capacity, uint64_t memory_limit, bool take_ownership);
+
+/** Open a buffered source and eagerly copy inputs smaller than the captured
+ * capacity into owned whole-file bytes, including a trailing NUL. Eager loading
+ * starts at source offset zero, retries short reads, and ignores memory_limit.
+ * Equal/larger inputs use the normal streaming/promotion policy. The original
+ * source is retained until close; ownership transfers only if opening and any
+ * required eager load succeed. A failed open leaves the source open. */
+XXFC_API xx_io_device *xx_io_buffer_open_auto(xx_io_device *source, size_t capacity, uint64_t memory_limit, bool take_ownership);
+
+/** Open borrowed, immutable resident bytes without a duplicate cache.
+ * The bytes must remain alive until close. The wrapper owns its internal
+ * read-only memory device, but never frees the bytes. Capacity has the same
+ * meaning as xx_io_buffer_open; the logical cursor starts at zero. */
+XXFC_API xx_io_device *xx_io_buffer_open_memory(const void *data, size_t size, size_t capacity);
+
+/** Captured capacity, or zero when device is not a buffered device. */
+XXFC_API size_t xx_io_buffer_capacity(const xx_io_device *device);
+/** Estimate source transfers for a search: min(nonnegative range, captured
+ * capacity). Other devices use the current global capacity. */
+XXFC_API uint64_t xx_io_buffer_search_access(const xx_io_device *device, int64_t range);
+/** Sticky required-read/cache failure; false for another device type. */
+XXFC_API bool xx_io_buffer_failed(const xx_io_device *device);
+/** Borrowed source, or NULL when device is not a buffered device. */
+XXFC_API xx_io_device *xx_io_buffer_source(const xx_io_device *device);
+
+/** Return resident or promoted whole-file bytes, otherwise NULL.
+ * With nonzero upcoming, promotion is attempted when source bytes already read
+ * plus upcoming bytes reach the file size and that size fits the captured
+ * memory limit. A failed
+ * optional allocation/read leaves window streaming usable and is not sticky;
+ * promotion is not retried. This does not move the wrapper cursor. Returned
+ * whole-file bytes stay valid until close or a buffering mode change. The previous window allocation is
+ * retained on promotion so pointers into that window remain readable. */
+XXFC_API const unsigned char *xx_io_buffer_whole(xx_io_device *device, uint64_t upcoming);
+
+/** Return a borrowed contiguous view at an absolute offset without moving the
+ * wrapper cursor. On entry *count is the requested maximum; on return it is
+ * the available byte count, zero on failure. The view ends at a cache boundary
+ * or EOF, and may use a retained eight-byte tail of the previous window.
+ * Window/tail pointers may be overwritten by a later cache miss; resident and
+ * promoted pointers remain valid until close or a buffering mode change. Successful promotion retains the
+ * old window allocation, but does not preserve prior tail contents. */
+XXFC_API const unsigned char *xx_io_buffer_view(xx_io_device *device, int64_t offset, size_t *count);
 
 /**
  * @brief Open a fixed byte range of a parent as an independent logical stream.
@@ -390,7 +503,10 @@ static inline bool io_multivolume_get_volume(xx_io_device *d, size_t index, xx_i
  * @brief Recursively create parent directories or folder path (wide string).
  * @param path Directory or file path.
  * @param is_dir True if path is a directory itself; false if path is a file path whose parent dirs should be created.
- * @return True on success, false on failure.
+ * @return True on success, false on failure. A path that the system cannot
+ * take (too long, or a component too long for the file system, the file's
+ * own name included) fails, and on failure the folders this call created are
+ * removed again. See xx_io_extract_begin for links in the path.
  */
 XXFC_API bool xx_io_create_dirs_w(const wchar_t *path, bool is_dir);
 

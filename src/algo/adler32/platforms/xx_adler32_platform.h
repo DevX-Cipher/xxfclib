@@ -11,6 +11,10 @@
 #include <immintrin.h>
 #endif
 
+#if (defined(_M_ARM64) && !defined(_M_ARM64EC)) || (defined(__aarch64__) && !defined(_M_ARM64EC))
+#define XX_ADLER32_ARM64 1
+#endif
+
 #if (defined(__GNUC__) || defined(__clang__)) && defined(XX_ADLER32_X86)
 #define XX_ADLER32_TARGET_SSE2 __attribute__((target("sse2")))
 #define XX_ADLER32_TARGET_AVX2 __attribute__((target("avx2")))
@@ -22,5 +26,7 @@
 uint32_t xx_adler32_scalar(uint32_t adler, const void *data, size_t size);
 uint32_t xx_adler32_sse2(uint32_t adler, const void *data, size_t size);
 uint32_t xx_adler32_avx2(uint32_t adler, const void *data, size_t size);
+uint32_t xx_adler32_neon(uint32_t adler, const void *data, size_t size);
+uint32_t xx_adler32_arm_dotprod(uint32_t adler, const void *data, size_t size);
 
 #endif /* XX_ADLER32_PLATFORM_H */

@@ -586,64 +586,6 @@ bool xx_list_reverse(xx_list_t *list)
     return true;
 }
 
-/* Quicksort internal implementation (zero CRT) */
-static void xx_list_qsort_internal(xx_list_t *list, int64_t low, int64_t high, xx_elem_compare_fn cmp)
-{
-    if (low >= high) {
-        return;
-    }
-
-    /* Small partition optimization: insertion sort */
-    if (high - low < 10) {
-        for (int64_t i = low + 1; i <= high; ++i) {
-            int64_t j = i;
-            while (j > low && cmp(xx_list_elem_ptr(list, (size_t)j), xx_list_elem_ptr(list, (size_t)(j - 1))) < 0) {
-                xx_list_swap_items_at(list, (size_t)j, (size_t)(j - 1));
-                j--;
-            }
-        }
-        return;
-    }
-
-    /* Pivot: median of low, mid, high */
-    int64_t mid = low + (high - low) / 2;
-    if (cmp(xx_list_elem_ptr(list, (size_t)mid), xx_list_elem_ptr(list, (size_t)low)) < 0) {
-        xx_list_swap_items_at(list, (size_t)low, (size_t)mid);
-    }
-    if (cmp(xx_list_elem_ptr(list, (size_t)high), xx_list_elem_ptr(list, (size_t)low)) < 0) {
-        xx_list_swap_items_at(list, (size_t)low, (size_t)high);
-    }
-    if (cmp(xx_list_elem_ptr(list, (size_t)high), xx_list_elem_ptr(list, (size_t)mid)) < 0) {
-        xx_list_swap_items_at(list, (size_t)mid, (size_t)high);
-    }
-
-    xx_list_swap_items_at(list, (size_t)mid, (size_t)high);
-
-    int64_t i = low;
-    for (int64_t j = low; j < high; ++j) {
-        if (cmp(xx_list_elem_ptr(list, (size_t)j), xx_list_elem_ptr(list, (size_t)high)) < 0) {
-            xx_list_swap_items_at(list, (size_t)i, (size_t)j);
-            i++;
-        }
-    }
-    xx_list_swap_items_at(list, (size_t)i, (size_t)high);
-
-    if (i > low + 1) {
-        xx_list_qsort_internal(list, low, i - 1, cmp);
-    }
-    if (i + 1 < high) {
-        xx_list_qsort_internal(list, i + 1, high, cmp);
-    }
-}
-
-void xx_list_sort(xx_list_t *list, xx_elem_compare_fn cmp)
-{
-    if (!list || list->count <= 1 || !cmp) {
-        return;
-    }
-    xx_list_qsort_internal(list, 0, (int64_t)list->count - 1, cmp);
-}
-
 xx_list_t *xx_list_mid(const xx_list_t *list, size_t pos, int64_t length)
 {
     if (!list || pos >= list->count) {

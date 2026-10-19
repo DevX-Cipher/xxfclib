@@ -173,7 +173,9 @@ const xx_crc64_platform *xx_crc64_platform_select(void)
     static const xx_crc64_platform scalar = {"scalar", xx_crc64_xz_scalar, xx_crc64_ecma_scalar};
     static const xx_crc64_platform sse2 = {"sse2+pclmul", xx_crc64_xz_sse2, xx_crc64_ecma_sse2};
     static const xx_crc64_platform avx2 = {"avx2+pclmul", xx_crc64_xz_avx2, xx_crc64_ecma_avx2};
+    static const xx_crc64_platform vpclmul = {"avx2+vpclmulqdq", xx_crc64_xz_vpclmul, xx_crc64_ecma_vpclmul};
     if (xx_crc64_has_pclmul()) {
+        if (xx_is_vpclmulqdq_enabled() && xx_is_avx2_enabled()) return &vpclmul;
         if (xx_is_avx2_enabled()) return &avx2;
         if (xx_is_sse2_enabled()) return &sse2;
     }

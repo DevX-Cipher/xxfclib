@@ -46,8 +46,14 @@ const xx_lzma_platform *xx_lzma_platform_select(void)
     static const xx_lzma_platform scalar = {"scalar", xx_memory_copy_scalar, xx_lzma_fill_probs_scalar, xx_lzma_match_length_scalar};
     static const xx_lzma_platform sse2 = {"sse2", xx_memory_copy_sse2, xx_lzma_fill_probs_sse2, xx_lzma_match_length_sse2};
     static const xx_lzma_platform avx2 = {"avx2", xx_memory_copy_avx2, xx_lzma_fill_probs_avx2, xx_lzma_match_length_avx2};
+#ifdef XX_LZMA_NEON
+    static const xx_lzma_platform neon = {"neon", xx_memory_copy_neon, xx_lzma_fill_probs_neon, xx_lzma_match_length_neon};
+#endif
     if (xx_is_avx2_enabled()) return &avx2;
     if (xx_is_sse2_enabled()) return &sse2;
+#ifdef XX_LZMA_NEON
+    if (xx_is_neon_enabled()) return &neon;
+#endif
     return &scalar;
 }
 
@@ -207,7 +213,7 @@ bool xx_lzma2_decompress_memory(const void *src_buf, size_t src_size, uint8_t pr
 bool xx_lzma2_pack_device(xx_io_device *src_dev, int64_t src_offset, int64_t uncomp_size, xx_io_device *dst_dev, int level, uint8_t *out_props2_byte, xx_pd_struct *pd)
 {
     if (out_props2_byte) *out_props2_byte = 0;
-    if (!src_dev || !dst_dev || src_offset < 0 || uncomp_size < 0) return false;
+    if (!src_dev || !dst_dev || src_dev == dst_dev || src_offset < 0 || uncomp_size < 0) return false;
     return xx_lzma2_compress_stream(src_dev, NULL, 0, src_offset, uncomp_size, dst_dev, NULL, 0, NULL, level, out_props2_byte, pd);
 }
 

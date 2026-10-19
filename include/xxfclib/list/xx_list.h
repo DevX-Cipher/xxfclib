@@ -268,9 +268,10 @@ XXFC_API bool xx_list_replace(xx_list_t *list, size_t index, const void *element
  */
 XXFC_API bool xx_list_reverse(xx_list_t *list);
 
-/**
- * @brief Sort elements in-place using comparator function.
- */
+/** Stable sort: elements that compare equal retain their input order.
+ * Larger lists use a temporary merge buffer, with an allocation-free fallback.
+ * Element movement honors the global SSE2 and AVX2 switches. List storage,
+ * metadata, and element ownership remain unchanged. */
 XXFC_API void xx_list_sort(xx_list_t *list, xx_elem_compare_fn cmp);
 
 /**

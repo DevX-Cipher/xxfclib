@@ -1558,7 +1558,7 @@ typedef enum xx_file_type_e {
     XX_FILE_TYPE_PYC = 2604,
 #include "formats/xx_uniextract_enums.inc"
 #include "formats/xx_format_gap_enums.inc"
-#include "formats/die_music/xx_die_music_enums.inc"
+#include "formats/audio/die_music/xx_die_music_enums.inc"
     XX_FILE_TYPE_DOTNET = 2802,
     /* Native container readers. Keep these public numeric IDs stable. */
     XX_FILE_TYPE_ZXML = 2900,
@@ -1624,7 +1624,59 @@ typedef enum xx_file_type_e {
     XX_FILE_TYPE_BINSH_SFX = 2961,
     XX_FILE_TYPE_LARC_PFX = 2962,
     XX_FILE_TYPE_WII_WAD = 2963,
+    /* Generic format families. These classify concrete formats, not readers. */
+    XX_FILE_TYPE_PE = 2964,
+    XX_FILE_TYPE_ELF = 2965,
+    XX_FILE_TYPE_MACHO = 2966,
+    XX_FILE_TYPE_ARCHIVE = 2967,
+    XX_FILE_TYPE_IMAGE = 2968,
+    XX_FILE_TYPE_PEF = 2969,
+    XX_FILE_TYPE_RPRJ = 2970,
+    XX_FILE_TYPE_BFLT = 2971,
+    XX_FILE_TYPE_CGC = 2972,
+    XX_FILE_TYPE_MENUET = 2973,
+    XX_FILE_TYPE_MSX_ROM = 2974,
+    XX_FILE_TYPE_PLAN9_EXEC = 2975,
+    XX_FILE_TYPE_SEGA_SMS_ROM = 2976,
+    XX_FILE_TYPE_TIC80 = 2977,
+    XX_FILE_TYPE_NINTENDO_NRO = 2978,
+    XX_FILE_TYPE_NINTENDO_NSO = 2979,
+    XX_FILE_TYPE_GRESOURCE = 2980,
+    XX_FILE_TYPE_BIOS_FIRMWARE = 2981,
+    XX_FILE_TYPE_GNS1 = 2982,
+    XX_FILE_TYPE_WINDOWS_DMP64 = 2983,
+    XX_FILE_TYPE_OMF = 2984,
+    XX_FILE_TYPE_XTAC = 2985,
+    XX_FILE_TYPE_PEBBLE = 2986,
+    XX_FILE_TYPE_HP_SOM = 2987,
+    XX_FILE_TYPE_QNX_LMF = 2988,
+    XX_FILE_TYPE_NINTENDO_REL = 2989,
+    XX_FILE_TYPE_XCOFF = 2990,
+    /* Explicit/deep interpretation; physical identity remains PE/NE/MSDOS. */
+    XX_FILE_TYPE_EXECUTABLE_OVERLAY = 2991,
 } xx_file_type_t;
+
+#define FILE_TYPE_PEF XX_FILE_TYPE_PEF
+#define FILE_TYPE_RPRJ XX_FILE_TYPE_RPRJ
+#define FILE_TYPE_MENUET XX_FILE_TYPE_MENUET
+#define FILE_TYPE_MSX_ROM XX_FILE_TYPE_MSX_ROM
+#define FILE_TYPE_PLAN9_EXEC XX_FILE_TYPE_PLAN9_EXEC
+#define FILE_TYPE_SEGA_SMS_ROM XX_FILE_TYPE_SEGA_SMS_ROM
+#define FILE_TYPE_TIC80 XX_FILE_TYPE_TIC80
+#define FILE_TYPE_NINTENDO_NRO XX_FILE_TYPE_NINTENDO_NRO
+#define FILE_TYPE_NINTENDO_NSO XX_FILE_TYPE_NINTENDO_NSO
+#define FILE_TYPE_GRESOURCE XX_FILE_TYPE_GRESOURCE
+#define FILE_TYPE_BIOS_FIRMWARE XX_FILE_TYPE_BIOS_FIRMWARE
+#define FILE_TYPE_GNS1 XX_FILE_TYPE_GNS1
+#define FILE_TYPE_WINDOWS_DMP64 XX_FILE_TYPE_WINDOWS_DMP64
+#define FILE_TYPE_OMF XX_FILE_TYPE_OMF
+#define FILE_TYPE_XTAC XX_FILE_TYPE_XTAC
+#define FILE_TYPE_PEBBLE XX_FILE_TYPE_PEBBLE
+#define FILE_TYPE_HP_SOM XX_FILE_TYPE_HP_SOM
+#define FILE_TYPE_QNX_LMF XX_FILE_TYPE_QNX_LMF
+#define FILE_TYPE_NINTENDO_REL XX_FILE_TYPE_NINTENDO_REL
+#define FILE_TYPE_XCOFF XX_FILE_TYPE_XCOFF
+#define FILE_TYPE_EXECUTABLE_OVERLAY XX_FILE_TYPE_EXECUTABLE_OVERLAY
 
 #define FILE_TYPE_DOTNET XX_FILE_TYPE_DOTNET
 
@@ -2389,6 +2441,16 @@ typedef enum xx_file_type_e {
 
 #define BZIP1 XX_FILE_TYPE_BZIP1
 #define FILE_TYPE_BZIP1 XX_FILE_TYPE_BZIP1
+/** Unpacking interpretations are independent of file identity. Values occupy
+ * a separate numeric domain so passing a file enum cannot select a handle. */
+typedef enum xx_handle_type_e {
+    XX_HANDLE_TYPE_UNKNOWN = 0,
+#define XX_UNPACK_HANDLE(name, value, file_type, carrier) XX_HANDLE_TYPE_##name = value,
+#include "xxfclib/formats/xx_format_unpack_handle_rows.inc"
+#undef XX_UNPACK_HANDLE
+} xx_handle_type_t;
+typedef xx_handle_type_t xx_handle_type;
+
 typedef xx_file_type_t xx_file_type;
 typedef xx_file_type_t FILE_TYPE;
 
@@ -6084,7 +6146,23 @@ typedef enum xx_os_e {
     XX_OS_FREEBSD = 7,
     XX_OS_ANDROID = 8,
     XX_OS_IOS = 9,
-    XX_OS_OS2 = 10
+    XX_OS_OS2 = 10,
+    XX_OS_SMD = 11,
+    XX_OS_NDS = 12,
+    XX_OS_NES = 13,
+    XX_OS_WASM = 14,
+    XX_OS_WII = 15,
+    XX_OS_PSX = 16,
+    XX_OS_AMIGAOS = 17,
+    XX_OS_MENUET = 18,
+    XX_OS_MSX = 19,
+    XX_OS_PLAN9 = 20,
+    XX_OS_SMS = 21,
+    XX_OS_NINTENDO_SWITCH = 22,
+    XX_OS_PEBBLE = 23,
+    XX_OS_HPUX = 24,
+    XX_OS_QNX = 25,
+    XX_OS_AIX = 26
 } xx_os_t;
 
 typedef xx_os_t xx_os;
@@ -6123,6 +6201,54 @@ typedef xx_os_t OS_TYPE;
 #ifndef OS_OS2
 #define OS_OS2 XX_OS_OS2
 #endif
+#ifndef OS_SMD
+#define OS_SMD XX_OS_SMD
+#endif
+#ifndef OS_NDS
+#define OS_NDS XX_OS_NDS
+#endif
+#ifndef OS_NES
+#define OS_NES XX_OS_NES
+#endif
+#ifndef OS_WASM
+#define OS_WASM XX_OS_WASM
+#endif
+#ifndef OS_WII
+#define OS_WII XX_OS_WII
+#endif
+#ifndef OS_PSX
+#define OS_PSX XX_OS_PSX
+#endif
+#ifndef OS_AMIGAOS
+#define OS_AMIGAOS XX_OS_AMIGAOS
+#endif
+#ifndef OS_MENUET
+#define OS_MENUET XX_OS_MENUET
+#endif
+#ifndef OS_MSX
+#define OS_MSX XX_OS_MSX
+#endif
+#ifndef OS_PLAN9
+#define OS_PLAN9 XX_OS_PLAN9
+#endif
+#ifndef OS_NINTENDO_SWITCH
+#define OS_NINTENDO_SWITCH XX_OS_NINTENDO_SWITCH
+#endif
+#ifndef OS_SMS
+#define OS_SMS XX_OS_SMS
+#endif
+#ifndef OS_QNX
+#define OS_QNX XX_OS_QNX
+#endif
+#ifndef OS_PEBBLE
+#define OS_PEBBLE XX_OS_PEBBLE
+#endif
+#ifndef OS_HPUX
+#define OS_HPUX XX_OS_HPUX
+#endif
+#ifndef OS_AIX
+#define OS_AIX XX_OS_AIX
+#endif
 
 /* Architecture Types */
 typedef enum xx_arch_e {
@@ -6148,6 +6274,9 @@ typedef enum xx_arch_e {
     XX_ARCH_JVM = 19,
     XX_ARCH_DOTNET = 20,
     XX_ARCH_DALVIK = 21,
+    XX_ARCH_Z80 = 22,
+    XX_ARCH_ARC = 23,
+    XX_ARCH_HPPA = 24,
 
     /* Common aliases */
     XX_ARCH_I386 = 3,
@@ -6209,6 +6338,12 @@ typedef xx_arch_t FORMAT_ARCH;
 #ifndef ARCH_DALVIK
 #define ARCH_DALVIK XX_ARCH_DALVIK
 #endif
+#ifndef ARCH_ARC
+#define ARCH_ARC XX_ARCH_ARC
+#endif
+#ifndef ARCH_Z80
+#define ARCH_Z80 XX_ARCH_Z80
+#endif
 
 /* Binary / Application Format Types */
 typedef enum xx_format_type_e {
@@ -6226,6 +6361,7 @@ typedef enum xx_format_type_e {
     XX_FORMAT_TYPE_PACKAGE = 11,
     XX_FORMAT_TYPE_RAW = 12,
     XX_FORMAT_TYPE_ARCHIVE = 13,
+    XX_FORMAT_TYPE_ROM = 14,
     XX_FORMAT_TYPE_CUSTOM = 100,
 
     /* Aliases */
@@ -6247,6 +6383,7 @@ typedef enum xx_format_type_e {
     XX_TYPE_PACKAGE = 11,
     XX_TYPE_RAW = 12,
     XX_TYPE_ARCHIVE = 13,
+    XX_TYPE_ROM = 14,
     XX_TYPE_CUSTOM = 100
 } xx_format_type_t;
 
@@ -6304,6 +6441,9 @@ typedef xx_format_type_t TYPE;
 #ifndef TYPE_ARCHIVE
 #define TYPE_ARCHIVE XX_TYPE_ARCHIVE
 #endif
+#ifndef TYPE_ROM
+#define TYPE_ROM XX_TYPE_ROM
+#endif
 
 #ifndef FORMAT_TYPE_UNKNOWN
 #define FORMAT_TYPE_UNKNOWN XX_FORMAT_TYPE_UNKNOWN
@@ -6319,6 +6459,9 @@ typedef xx_format_type_t TYPE;
 #endif
 #ifndef FORMAT_TYPE_ARCHIVE
 #define FORMAT_TYPE_ARCHIVE XX_FORMAT_TYPE_ARCHIVE
+#endif
+#ifndef FORMAT_TYPE_ROM
+#define FORMAT_TYPE_ROM XX_FORMAT_TYPE_ROM
 #endif
 
 /* Endianness */

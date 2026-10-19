@@ -31,6 +31,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#if (defined(_M_ARM64) && !defined(_M_ARM64EC)) || defined(__aarch64__)
+#define XX_ENTROPY_NEON 1
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -44,6 +48,10 @@ extern "C" {
  */
 double xx_entropy_calculate_sse2(const void *data, size_t size);
 
+/** Build a 256-bin histogram using the SSE2 backend. The output is replaced.
+ * @pre size <= UINT32_MAX. */
+void xx_entropy_histogram_sse2(const void *data, size_t size, uint32_t counts[256]);
+
 /**
  * @brief Calculate Shannon entropy using AVX2 256-bit SIMD instructions.
  *
@@ -52,6 +60,19 @@ double xx_entropy_calculate_sse2(const void *data, size_t size);
  * @return Shannon entropy value from 0.0 to 8.0.
  */
 double xx_entropy_calculate_avx2(const void *data, size_t size);
+
+/** Build a 256-bin histogram using the AVX2 backend. The output is replaced.
+ * @pre size <= UINT32_MAX. */
+void xx_entropy_histogram_avx2(const void *data, size_t size, uint32_t counts[256]);
+
+#ifdef XX_ENTROPY_NEON
+/** Calculate Shannon entropy using the Arm64 optimized histogram backend. */
+double xx_entropy_calculate_neon(const void *data, size_t size);
+
+/** Build a 256-bin histogram using the Arm64 backend. The output is replaced.
+ * @pre size <= UINT32_MAX. */
+void xx_entropy_histogram_neon(const void *data, size_t size, uint32_t counts[256]);
+#endif
 
 #ifdef __cplusplus
 }
