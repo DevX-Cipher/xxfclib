@@ -64,6 +64,7 @@
 #include "xxfclib/algo/store/xx_store.h"
 #include "xxfclib/io/xx_io.h"
 #include "xxfclib/memory/xx_memory.h"
+#include "../../xx_archive_output_name.h"
 #include "xxfclib/strings/xx_string.h"
 
 #include <stdio.h>
@@ -168,48 +169,7 @@ static bool xx_shar_path_safe(const char *name)
  * silently.  Returns NULL when nothing usable is left. */
 static char *xx_shar_make_extract_name(const char *name)
 {
-    char *result;
-    size_t output = 0U;
-    const char *component;
-    const char *cursor;
-
-    if (!xx_shar_path_safe(name)) return NULL;
-    result = xx_str_create_len(xx_str_len(name) + 1U);
-    if (!result) return NULL;
-    component = name;
-    for (cursor = name;; ++cursor) {
-        char character = *cursor;
-        if (character == '/' || character == '\0') {
-            size_t length = (size_t)(cursor - component);
-            /* xx_shar_path_safe has already refused these, but the check is
-             * repeated where the path is actually built so the two can never
-             * drift apart. */
-            if (length == 2U && component[0] == '.' && component[1] == '.') {
-                xx_str_free(result);
-                return NULL;
-            }
-            if (!(length == 1U && component[0] == '.') && length != 0U) {
-                size_t start = output;
-                size_t index;
-                if (output != 0U) result[output++] = '/';
-                start = output;
-                for (index = 0U; index < length; ++index) {
-                    char byte = component[index];
-                    result[output++] = (byte == ':') ? '_' : byte;
-                }
-                while (output > start && (result[output - 1U] == ' ' || result[output - 1U] == '.')) --output;
-                if (output == start) result[output++] = '_';
-            }
-            if (character == '\0') break;
-            component = cursor + 1;
-        }
-    }
-    result[output] = '\0';
-    if (output == 0U) {
-        xx_str_free(result);
-        return NULL;
-    }
-    return result;
+    return xx_shar_path_safe(name) ? xx_archive_output_name(name, 0, 0) : NULL;
 }
 
 static bool xx_shar_name_ok(const uint8_t *bytes, size_t length)
@@ -1171,6 +1131,7 @@ bool xx_shar_unpack_current_archive_record(Abstractformat *self, xx_archive_reco
     }
     {
         char *relative = xx_shar_make_extract_name(member->name);
+        XX_ARCHIVE_OUTPUT_RESOLVE(relative, stream->items, stream->count, stream->index, name, 0, 0);
         if (!relative) {
             xx_str_free(converted_path);
             return false;

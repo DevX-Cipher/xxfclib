@@ -140,6 +140,15 @@ static bool pm_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
     s->size = at;
     return s->count != 0 && !xx_pd_is_stopped(pd);
 }
+static const xx_archive_record *chz_current(Abstractformat *f, xx_archive_record_state *st)
+{
+    const xx_archive_record *record = pm_current(f, st);
+    pm_stream *stream = st ? (pm_stream *)st->internal_state : NULL;
+    if (record && stream && stream->size < pm_available(f) &&
+        !xx_archive_record_set_meta_str(&st->current_record, XX_META_ID_COMMENT,
+            "Truncated CHZ tail; only physically complete members are available")) return NULL;
+    return record;
+}
 void xx_chz_init(xx_chz *r, xx_io_device *d, int64_t b)
 {
     if (r) {
@@ -147,6 +156,7 @@ void xx_chz_init(xx_chz *r, xx_io_device *d, int64_t b)
         pm_init(&r->format, d, b, XX_FILE_TYPE_CHZ, "chz");
         r->format.check_is_valid = xx_chz_check_is_valid;
         r->format.handle_base_info = xx_chz_handle_base_info;
+        r->format.get_current_archive_record = chz_current;
     }
 }
 xx_chz *xx_chz_create(xx_io_device *d, int64_t b)
@@ -180,6 +190,7 @@ bool xx_chz_handle_base_info(Abstractformat *f, xx_pd_struct *pd)
     bool valid;
     if (!f || !f->device || (saved = xx_io_tell(f->device)) < 0) return false;
     valid = pm_handle(f, pd);
+    ((xx_chz *)f)->is_complete = valid && f->format_size == pm_available(f);
     if (xx_io_seek64(f->device, saved, SEEK_SET) != 0) {
         f->is_valid = false;
         return false;

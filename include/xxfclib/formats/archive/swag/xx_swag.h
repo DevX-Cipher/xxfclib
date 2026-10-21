@@ -19,6 +19,7 @@ extern "C" {
 typedef struct xx_swag {
     Abstractformat format;
     uint64_t number_of_records;
+    bool is_complete; /**< Member chain completeness; identical duplicate footers are compatible. */
 } xx_swag;
 
 typedef xx_swag xx_swag_t;

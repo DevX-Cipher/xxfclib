@@ -42,6 +42,37 @@
 #define SEEK_END 2
 #endif
 
+/* Keep directory batches on the ordinary file-device path on Windows. The
+ * POSIX descriptor optimization is private and does not change Win32 file
+ * opening, path conversion, or CRT-free operation. */
+intptr_t xx_io_platform_read_directory_open(const char *path)
+{
+    (void)path;
+    return -1;
+}
+
+intptr_t xx_io_platform_read_regular_at(intptr_t directory, const char *name, int64_t *size)
+{
+    (void)directory;
+    (void)name;
+    if (size) *size = 0;
+    return -1;
+}
+
+ssize_t xx_io_platform_read_descriptor(intptr_t handle, void *buf, size_t n)
+{
+    (void)handle;
+    (void)buf;
+    (void)n;
+    return -1;
+}
+
+int xx_io_platform_close_descriptor(intptr_t handle)
+{
+    (void)handle;
+    return -1;
+}
+
 static int xx_win_mode_has_char(const char *str, char c)
 {
     if (!str) {
@@ -314,7 +345,19 @@ void *xx_io_platform_file_open(const char *path, const char *mode)
                     flags_and_attrs |= FILE_FLAG_SEQUENTIAL_SCAN;
                 }
                 hFile = CreateFileW(api, dwDesiredAccess, dwShareMode, NULL, disposition, flags_and_attrs, NULL);
-                if (hFile == INVALID_HANDLE_VALUE) error = GetLastError();
+                if (hFile == INVALID_HANDLE_VALUE) {
+                    error = GetLastError();
+                    if (disposition == CREATE_ALWAYS && error == ERROR_ACCESS_DENIED) {
+                        DWORD existing_attrs = GetFileAttributesW(api);
+                        if (existing_attrs != INVALID_FILE_ATTRIBUTES && (existing_attrs & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))) {
+                            if (SetFileAttributesW(api, FILE_ATTRIBUTE_NORMAL)) {
+                                hFile = CreateFileW(api, dwDesiredAccess, dwShareMode, NULL, disposition, flags_and_attrs, NULL);
+                                if (hFile == INVALID_HANDLE_VALUE) error = GetLastError();
+                                else error = ERROR_SUCCESS;
+                            }
+                        }
+                    }
+                }
             }
             xx_win_free_path(api, api_stack);
         }
@@ -455,6 +498,76 @@ int64_t xx_io_platform_file_size(void *handle)
     }
 
     return (int64_t)liSize.QuadPart;
+}
+
+int64_t xx_io_platform_file_size_read_only(void *handle)
+{
+    return xx_io_platform_file_size(handle);
+}
+
+bool xx_io_platform_file_can_resize(void *handle, const char *mode)
+{
+    BY_HANDLE_FILE_INFORMATION info;
+    bool writable;
+    if (!handle || handle == INVALID_HANDLE_VALUE || !mode) return false;
+    /* Pure append handles have FILE_APPEND_DATA, not the FILE_WRITE_DATA
+     * access needed to set EOF. The existing a+ mode uses GENERIC_WRITE. */
+    writable = xx_win_mode_has_char(mode, '+') || mode[0] == 'w';
+    return writable && GetFileType((HANDLE)handle) == FILE_TYPE_DISK &&
+           GetFileInformationByHandle((HANDLE)handle, &info) && !(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+int xx_io_platform_file_resize(void *handle, int64_t new_size)
+{
+    LARGE_INTEGER liOffset, liSavedPos, liDummy;
+    if (!handle || handle == INVALID_HANDLE_VALUE || new_size < 0) {
+        SetLastError(!handle || handle == INVALID_HANDLE_VALUE ? ERROR_INVALID_HANDLE : ERROR_INVALID_PARAMETER);
+        xx_io_extract_fail(!handle || handle == INVALID_HANDLE_VALUE ? EBADF : EINVAL);
+        return -1;
+    }
+    if (!xx_io_policy_mutation_allowed()) return -1;
+    {
+        /* Resolve the Vista API at run time to retain Windows XP support.
+         * These local ABI declarations also work with pre-Vista SDK targets. */
+        typedef struct xx_win_end_of_file_info {
+            LARGE_INTEGER EndOfFile;
+        } xx_win_end_of_file_info;
+        typedef BOOL(WINAPI *xx_win_set_file_info_fn)(HANDLE, int, LPVOID, DWORD);
+        HMODULE module = GetModuleHandleW(L"kernel32.dll");
+        xx_win_set_file_info_fn set_info = module ?
+            (xx_win_set_file_info_fn)(void (*)(void))GetProcAddress(module, "SetFileInformationByHandle") : NULL;
+        if (set_info) {
+            xx_win_end_of_file_info info;
+            info.EndOfFile.QuadPart = new_size;
+            /* FileEndOfFileInfo = 6. This never moves the handle's cursor,
+             * including a cursor beyond the resulting EOF. */
+            if (!set_info((HANDLE)handle, 6, &info, sizeof(info))) {
+                xx_io_extract_fail(xx_win_errno(GetLastError()));
+                return -1;
+            }
+            return 0;
+        }
+    }
+
+    /* Legacy fallback when SetFileInformationByHandle is unavailable. */
+    liOffset.QuadPart = 0;
+    if (!SetFilePointerEx((HANDLE)handle, liOffset, &liSavedPos, FILE_CURRENT)) {
+        xx_io_extract_fail(xx_win_errno(GetLastError()));
+        return -1;
+    }
+
+    liOffset.QuadPart = new_size;
+    if (!SetFilePointerEx((HANDLE)handle, liOffset, &liDummy, FILE_BEGIN) || !SetEndOfFile((HANDLE)handle)) {
+        xx_io_extract_fail(xx_win_errno(GetLastError()));
+        (void)SetFilePointerEx((HANDLE)handle, liSavedPos, &liDummy, FILE_BEGIN);
+        return -1;
+    }
+
+    if (!SetFilePointerEx((HANDLE)handle, liSavedPos, &liDummy, FILE_BEGIN)) {
+        xx_io_extract_fail(xx_win_errno(GetLastError()));
+        return -1;
+    }
+    return 0;
 }
 
 bool xx_io_platform_file_exists_w(const wchar_t *path)
@@ -665,6 +778,27 @@ bool xx_io_platform_create_dirs_w(const wchar_t *path, bool is_dir)
             start = i + 1U;
         }
     }
+    if (!is_dir) {
+        size_t last_sep = 0U;
+        for (i = root; i < length; ++i) {
+            if (temp[i] == L'/' || temp[i] == L'\\') last_sep = i;
+        }
+        if (last_sep <= root) {
+            saved = temp[root];
+            temp[root] = L'\0';
+            result = xx_win_check_root(temp);
+            temp[root] = saved;
+            goto cleanup;
+        }
+        saved = temp[last_sep];
+        temp[last_sep] = L'\0';
+        DWORD attrs = GetFileAttributesW(temp);
+        temp[last_sep] = saved;
+        if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) && !(attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
+            result = true;
+            goto cleanup;
+        }
+    }
     made_at = (unsigned char *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, length + 1U);
     if (!made_at) goto cleanup;
     link_part = xx_win_root_part(temp);
@@ -837,55 +971,7 @@ wchar_t xx_io_platform_wseparator(void)
     return L'\\';
 }
 
-/* ---------------------------------------------------------- process memory */
-
-void *xx_io_platform_process_open(uint64_t pid)
-{
-    HANDLE handle;
-    if (pid == 0) {
-        pid = (uint64_t)GetCurrentProcessId();
-    }
-    handle = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION, FALSE, (DWORD)pid);
-    return (void *)handle;
-}
-
-ssize_t xx_io_platform_process_read(void *handle, uint64_t addr, void *buf, size_t n)
-{
-    SIZE_T done = 0;
-    if (!handle || !buf) {
-        return -1;
-    }
-    if (!ReadProcessMemory((HANDLE)handle, (LPCVOID)(uintptr_t)addr, buf, n, &done)) {
-        return done > 0 ? (ssize_t)done : -1;
-    }
-    return (ssize_t)done;
-}
-
-ssize_t xx_io_platform_process_write(void *handle, uint64_t addr, const void *buf, size_t n)
-{
-    SIZE_T done = 0;
-    if (!handle || !buf) {
-        return -1;
-    }
-    if (!WriteProcessMemory((HANDLE)handle, (LPVOID)(uintptr_t)addr, buf, n, &done)) {
-        return done > 0 ? (ssize_t)done : -1;
-    }
-    FlushInstructionCache((HANDLE)handle, (LPCVOID)(uintptr_t)addr, done);
-    return (ssize_t)done;
-}
-
-int xx_io_platform_process_close(void *handle)
-{
-    if (!handle) {
-        return -1;
-    }
-    return CloseHandle((HANDLE)handle) ? 0 : -1;
-}
-
-void *xx_io_platform_process_adopt(void *native)
-{
-    /* A HANDLE is used directly by the read/write hooks. */
-    return native;
-}
+/* Process-memory operations live in xx_io_process.c, which includes the native
+ * xx_io_process_windows.inc implementation. Keep one definition per hook. */
 
 #endif /* _WIN32 */

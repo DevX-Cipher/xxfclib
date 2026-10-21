@@ -1421,6 +1421,109 @@ static void xx_rar_stream_hash_chunk(void *user_data, const uint8_t *data, size_
     }
 }
 
+static bool xx_rar_stream_store_member(xx_io_device *src_device, int64_t offset, size_t size,
+                                       const char *dest_file_path, bool overwrite,
+                                       const xx_rar_file_info *info, const uint8_t hash_key[32],
+                                       bool *out_already_written, xx_pd_struct *pd)
+{
+    xx_io_device *out_device = NULL;
+    xx_blake2sp_context blake;
+    uint8_t buffer[65536];
+    uint8_t digest[32] = {0};
+    uint32_t crc = 0;
+    size_t done = 0;
+    unsigned difference = 0;
+    bool has_blake = false;
+    bool ok = false;
+
+    if (!src_device || offset < 0 || (uint64_t)size > (uint64_t)(INT64_MAX - offset) || !info) {
+        return false;
+    }
+    if (out_already_written) {
+        *out_already_written = false;
+    }
+
+    if (dest_file_path) {
+        if (!overwrite && xx_io_file_exists_a(dest_file_path)) {
+            return false;
+        }
+        out_device = xx_io_file_open(dest_file_path, "wb");
+        if (!out_device) {
+            return false;
+        }
+    }
+
+    has_blake = info->has_blake2;
+    if (has_blake && !xx_blake2sp_init(&blake)) {
+        goto cleanup;
+    }
+
+    if (size != 0 && xx_io_seek64(src_device, offset, SEEK_SET) != 0) {
+        goto cleanup;
+    }
+
+    while (done < size) {
+        size_t chunk = size - done > sizeof(buffer) ? sizeof(buffer) : size - done;
+        ssize_t got;
+        if (pd && xx_pd_is_stopped(pd)) goto cleanup;
+        got = xx_io_read(src_device, buffer, chunk);
+        if (got <= 0 || (size_t)got != chunk) goto cleanup;
+
+        if (info->has_crc) {
+            crc = xx_crc32_calc(crc, buffer, chunk);
+        }
+        if (has_blake && !xx_blake2sp_update(&blake, buffer, chunk)) {
+            goto cleanup;
+        }
+        if (out_device) {
+            ssize_t written = xx_io_write(out_device, buffer, chunk);
+            if (written <= 0 || (size_t)written != chunk) goto cleanup;
+        }
+        done += chunk;
+    }
+
+    if (out_device) {
+        if (xx_io_close(out_device) != 0) {
+            out_device = NULL;
+            goto cleanup;
+        }
+        out_device = NULL;
+    }
+
+    if (info->has_crc) {
+        uint32_t final_crc = crc;
+        if (info->crypto_version == 5 && (info->crypto_flags & 2U)) final_crc = xx_rar5_aes_mac_crc32(hash_key, final_crc);
+        if (final_crc != info->data_crc) goto cleanup;
+    }
+    if (has_blake) {
+        size_t i;
+        if (!xx_blake2sp_final(&blake, digest)) goto cleanup;
+        if (info->crypto_version == 5 && (info->crypto_flags & 2U) && !xx_rar5_aes_mac_hash(hash_key, digest, digest)) goto cleanup;
+        for (i = 0; i < 32U; ++i) difference |= digest[i] ^ info->blake2[i];
+        if (difference) goto cleanup;
+    }
+
+    ok = !xx_pd_is_stopped(pd);
+    if (ok && out_already_written && dest_file_path) {
+        *out_already_written = true;
+    }
+
+cleanup:
+    if (out_device) {
+        xx_io_close(out_device);
+        out_device = NULL;
+    }
+    if (!ok && dest_file_path) {
+        (void)xx_io_file_remove_a(dest_file_path);
+    }
+    if (has_blake) {
+        xx_rar_secure_clear(&blake, sizeof(blake));
+    }
+    xx_rar_secure_clear(digest, sizeof(digest));
+    xx_rar_secure_clear(buffer, sizeof(buffer));
+    return ok;
+}
+
 static bool xx_rar_get_u64_limit(const Abstractformat *self, const xx_list_s *options, uint32_t meta_id, bool *present, uint64_t *limit)
 {
     const xx_var *value;
@@ -1527,6 +1630,21 @@ static bool xx_rar_decode_current_record(Abstractformat *self, xx_rar_stream_sta
     is_store = info->is_folder || (info->block.version == XX_RAR_VERSION_4 ? info->method == XX_RAR4_METHOD_STORE : info->method == XX_RAR5_METHOD_STORE);
     if (!xx_rar_resource_limits_allow(self, options, info, is_store, pd)) return false;
     if (rar_state->current_decoded) return true;
+    if (info->is_folder) {
+        rar_state->current_decoded = true;
+        return true;
+    }
+    if (is_store && !info->is_encrypted) {
+        if (packed_size != output_size) return false;
+        if (!xx_rar_stream_store_member(self->device, info->block.data_offset, output_size,
+                                        dest_file_path, overwrite, info, hash_key,
+                                        out_already_written, pd)) {
+            return false;
+        }
+        rar_state->current_decoded = true;
+        if (!info->solid) rar_state->solid_chain_gap = false;
+        return true;
+    }
     if (info->is_encrypted) {
         if ((packed_size & 15U) || !xx_rar_member_keys(self, options, info, key, &key_size, iv, hash_key, pd)) goto cleanup;
         packed = (uint8_t *)xx_mem_alloc((packed_size ? packed_size : 1U) + 32U);
@@ -1719,14 +1837,6 @@ static bool xx_rar_write_decoded_file(const char *path, const uint8_t *data, siz
     if (!overwrite && xx_io_file_exists_a(path)) return false;
     device = xx_io_file_open(path, "wb");
     if (!device) return false;
-    if (size > 0) {
-        if (xx_io_seek64(device, (int64_t)size - 1, SEEK_SET) == 0) {
-            uint8_t last_byte = data[size - 1];
-            if (xx_io_write(device, &last_byte, 1) == 1) {
-                (void)xx_io_seek64(device, 0, SEEK_SET);
-            }
-        }
-    }
     while (done < size) {
         ssize_t amount;
         size_t chunk = size - done;

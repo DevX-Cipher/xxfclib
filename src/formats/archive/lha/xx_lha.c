@@ -86,6 +86,7 @@
 #include "xx_lha_legacy_native.h"
 #include "xx_lha_lh2_native.h"
 #include "xx_lha_lh3_native.h"
+#include "../../xx_archive_output_name.h"
 
 #include <stdio.h>
 #include "xxfclib/data/xx_data.h"
@@ -659,41 +660,10 @@ static xx_lha_stream *xx_lha_parse(Abstractformat *self, xx_pd_struct *pd)
         if (((xx_lha *)self)->sanitize_sfx_drive) {
             for (index = 0; index < (int32_t)out; ++index)
                 if (name[index] == '|') name[index] = '_';
-            /* Map only the legacy name bytes confirmed against the reference reader in Atari
-             * self-extractors; plain LHA names retain their stored bytes. */
-            for (index = 0; index < (int32_t)out; ++index) {
-                uint8_t encoded[3];
-                size_t encoded_size;
-                switch ((uint8_t)name[index]) {
-                    case 0xf7U: /* approximately equal */
-                        encoded[0] = 0xe2U;
-                        encoded[1] = 0x89U;
-                        encoded[2] = 0x88U;
-                        encoded_size = 3U;
-                        break;
-                    case 0xe4U: /* capital sigma */
-                        encoded[0] = 0xceU;
-                        encoded[1] = 0xa3U;
-                        encoded_size = 2U;
-                        break;
-                    case 0x9aU: /* capital U with diaeresis */
-                        encoded[0] = 0xc3U;
-                        encoded[1] = 0x9cU;
-                        encoded_size = 2U;
-                        break;
-                    case 0x99U: /* capital O with diaeresis */
-                        encoded[0] = 0xc3U;
-                        encoded[1] = 0x96U;
-                        encoded_size = 2U;
-                        break;
-                    default: continue;
-                }
-                if (out > (size_t)XX_LHA_MAX_NAME - encoded_size) goto fail;
-                xx_rt_memmove(name + index + encoded_size, name + index + 1, out - (size_t)index);
-                xx_rt_memmove(name + index, encoded, encoded_size);
-                out += encoded_size - 1U;
-                index += (int32_t)encoded_size - 1;
-            }
+            /* Preserve stored filename bytes. The output boundary decodes
+             * complete UTF-8 names or falls back to the DOS CP437 charset;
+             * mixing hand-converted characters with raw OEM bytes corrupts
+             * names that contain more than one kind of accented character. */
         }
         /* A GEMDOS/DOS self-extractor can store either a drive-rooted path
          * (X:/foo) or a drive-relative name (X:foo).  Its wrapper opts in
@@ -1110,6 +1080,150 @@ bool xx_lha_archive_record_move_to_next(Abstractformat *self, xx_archive_record_
     return state->has_record;
 }
 
+static bool xx_lha_device_limit(Abstractformat *self, const xx_list_s *options, uint32_t id, uint64_t amount, xx_pd_struct *pd)
+{
+    const xx_var *value = xx_format_resolve_extra_parameter(self, options, id);
+    uint64_t limit;
+    int64_t signed_limit;
+    if (!value) return true;
+    switch ((xx_var_type_t)value->type) {
+        case XX_VAR_TYPE_UINT8:
+        case XX_VAR_TYPE_UINT16:
+        case XX_VAR_TYPE_UINT32:
+        case XX_VAR_TYPE_UINT64: limit = xx_var_get_u64(value); break;
+        case XX_VAR_TYPE_INT8:
+        case XX_VAR_TYPE_INT16:
+        case XX_VAR_TYPE_INT32:
+        case XX_VAR_TYPE_INT64:
+            signed_limit = xx_var_get_i64(value);
+            if (signed_limit < 0) goto invalid;
+            limit = (uint64_t)signed_limit;
+            break;
+        default: goto invalid;
+    }
+    if (amount <= limit) return true;
+    xx_pd_set_error(pd, XXFC_ERR_OUT_OF_BOUNDS, "LHA member exceeds the configured extraction limit");
+    return false;
+invalid:
+    xx_pd_set_error(pd, XXFC_ERR_INVALID_ARG, "LHA extraction limits must be nonnegative integers");
+    return false;
+}
+
+/* Stored payloads need no whole-member buffers. Verify first to retain the
+ * device API's guarantee that a bad CRC never publishes destination bytes,
+ * then copy through the same small buffer. The caller restores the cursor. */
+static bool xx_lha_copy_stored_to_device(Abstractformat *self, const xx_lha_member *member, xx_io_device *destination, xx_pd_struct *pd)
+{
+    uint8_t buffer[4096];
+    uint16_t crc = 0U;
+    int pass;
+    if (member->compressed_size != member->uncompressed_size ||
+        !xx_lha_range_within(xx_io_total_size(self->device), member->data_offset, member->compressed_size)) {
+        xx_pd_set_error(pd, XXFC_ERR_OUT_OF_BOUNDS, "Invalid stored LHA member range or size");
+        return false;
+    }
+    for (pass = 0; pass < 2; ++pass) {
+        int64_t remaining = member->compressed_size;
+        if (xx_pd_is_stopped(pd)) return false;
+        if (xx_io_seek64(self->device, member->data_offset, SEEK_SET) != 0) {
+            xx_pd_set_error(pd, XXFC_ERR_IO, "Cannot seek to stored LHA member");
+            return false;
+        }
+        while (remaining > 0) {
+            size_t amount = remaining > (int64_t)sizeof(buffer) ? sizeof(buffer) : (size_t)remaining;
+            ssize_t received;
+            if (xx_pd_is_stopped(pd)) return false;
+            received = xx_io_read(self->device, buffer, amount);
+            if (received <= 0 || (size_t)received > amount) {
+                xx_pd_set_error(pd, XXFC_ERR_IO, "Cannot read complete stored LHA member");
+                return false;
+            }
+            if (pass == 0) {
+                crc = xx_crc16_arc_calc(crc, buffer, (size_t)received);
+            } else {
+                size_t written = 0U;
+                while (written < (size_t)received) {
+                    ssize_t sent;
+                    if (xx_pd_is_stopped(pd)) return false;
+                    sent = xx_io_write(destination, buffer + written, (size_t)received - written);
+                    if (sent <= 0 || (size_t)sent > (size_t)received - written) {
+                        if (!pd || (!pd->last_error && !xx_pd_is_stopped(pd)))
+                            xx_pd_set_error(pd, XXFC_ERR_IO, "Cannot write stored LHA member");
+                        return false;
+                    }
+                    written += (size_t)sent;
+                }
+            }
+            remaining -= received;
+        }
+        if (pass == 0 && crc != member->payload_crc) {
+            xx_pd_set_error(pd, XXFC_ERR_INVALID_ARG, "LHA member payload CRC mismatch");
+            return false;
+        }
+    }
+    return !xx_pd_is_stopped(pd);
+}
+
+bool xx_lha_unpack_current_archive_record_to_device(Abstractformat *self, xx_archive_record_state *state, xx_io_device *destination, xx_pd_struct *pd)
+{
+    xx_lha_stream *stream;
+    const xx_lha_member *member;
+    uint8_t *plain = NULL;
+    size_t plain_size = 0U, written = 0U;
+    uint64_t packed_size, unpacked_size, allocation_size;
+    int64_t saved;
+    bool result = false, stored;
+    if (!self || !self->device || !state || state->format != self || !state->has_record || !destination ||
+        !destination->write || destination == self->device || xx_pd_is_stopped(pd)) return false;
+    stream = (xx_lha_stream *)state->internal_state;
+    if (!stream || stream->index >= stream->count) return false;
+    member = &stream->items[stream->index];
+    if (member->is_folder) return true;
+    if (member->compressed_size < 0 || member->uncompressed_size < 0) return false;
+    packed_size = (uint64_t)member->compressed_size;
+    unpacked_size = (uint64_t)member->uncompressed_size;
+    stored = !((xx_lha *)self)->sfx_boa_mask && (member->method == XX_LHA_M_LH0 || member->method == XX_LHA_M_LZ4);
+    if (!xx_lha_device_limit(self, &state->options, XX_META_ID_OPT_MAX_MEMBER_SIZE, unpacked_size, pd)) return false;
+    if (!stored) {
+        allocation_size = unpacked_size ? unpacked_size : 1U;
+        if (packed_size > UINT64_MAX - allocation_size) return false;
+        allocation_size += packed_size;
+        if (!xx_lha_device_limit(self, &state->options, XX_META_ID_OPT_MEMORY_LIMIT, allocation_size, pd)) return false;
+    }
+    saved = xx_io_tell(self->device);
+    if (saved < 0) {
+        xx_pd_set_error(pd, XXFC_ERR_IO, "Cannot save LHA source position");
+        return false;
+    }
+    if (stored) {
+        result = xx_lha_copy_stored_to_device(self, member, destination, pd);
+        goto done;
+    }
+    if (!xx_lha_decode(self, member, &plain, &plain_size, pd)) goto done;
+    while (written < plain_size) {
+        size_t amount = plain_size - written;
+        ssize_t sent;
+        if (xx_pd_is_stopped(pd)) goto done;
+        if (amount > XX_LHA_COPY_CHUNK) amount = XX_LHA_COPY_CHUNK;
+        sent = xx_io_write(destination, plain + written, amount);
+        if (sent <= 0 || (size_t)sent > amount) {
+            if (!pd || (!pd->last_error && !xx_pd_is_stopped(pd))) xx_pd_set_error(pd, XXFC_ERR_IO, "Cannot write decoded LHA member");
+            goto done;
+        }
+        written += (size_t)sent;
+    }
+    result = !xx_pd_is_stopped(pd);
+done:
+    xx_mem_free(plain);
+    if (xx_io_seek64(self->device, saved, SEEK_SET) != 0) {
+        xx_pd_set_error(pd, XXFC_ERR_IO, "Cannot restore LHA source position");
+        result = false;
+    }
+    if (!result && pd && !pd->last_error && !xx_pd_is_stopped(pd))
+        xx_pd_set_error(pd, XXFC_ERR_INVALID_ARG, "Cannot decode or verify LHA member");
+    return result;
+}
+
 bool xx_lha_unpack_current_archive_record(Abstractformat *self, xx_archive_record_state *state, xx_pd_struct *pd)
 {
     xx_lha_stream *stream;
@@ -1118,6 +1232,7 @@ bool xx_lha_unpack_current_archive_record(Abstractformat *self, xx_archive_recor
     const char *base_path = NULL;
     char *converted_path = NULL;
     char *target_path = NULL;
+    char *relative = NULL;
     uint8_t *plain = NULL;
     size_t plain_size = 0U;
     bool result = false;
@@ -1150,11 +1265,19 @@ bool xx_lha_unpack_current_archive_record(Abstractformat *self, xx_archive_recor
         xx_str_free(converted_path);
         return false;
     }
-    if (base_path[0] != '\0' && base_path[xx_str_len(base_path) - 1U] != '/' && base_path[xx_str_len(base_path) - 1U] != '\\') {
-        target_path = xx_str_concat3(base_path, "/", member->name);
-    } else {
-        target_path = xx_str_concat(base_path, member->name);
+    relative = xx_archive_output_name(member->name, 437, 0);
+    if (relative && !member->is_folder)
+        XX_ARCHIVE_OUTPUT_RESOLVE(relative, stream->items, stream->count, stream->index, name, 437, 0);
+    if (!relative) {
+        xx_str_free(converted_path);
+        return false;
     }
+    if (base_path[0] != '\0' && base_path[xx_str_len(base_path) - 1U] != '/' && base_path[xx_str_len(base_path) - 1U] != '\\') {
+        target_path = xx_str_concat3(base_path, "/", relative);
+    } else {
+        target_path = xx_str_concat(base_path, relative);
+    }
+    xx_mem_free(relative);
     xx_str_free(converted_path);
     if (!target_path) return false;
 

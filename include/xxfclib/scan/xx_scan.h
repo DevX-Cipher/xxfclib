@@ -138,11 +138,19 @@ XXFC_API int db_count_for_type(DBase *pDb, XFileType fileType);
 
 /* --------------------------------------------------------------- options  */
 
+/** Origin of a scan within its containing input. */
+typedef enum xx_scan_part {
+    XX_SCAN_PART_INPUT = 0,
+    XX_SCAN_PART_OVERLAY,
+    XX_SCAN_PART_RESOURCE,
+    XX_SCAN_PART_ARCHIVE
+} xx_scan_part;
+
 /**
  * @brief Options shared by all scanning engines.
  *
- * Initialise with xx_scan_options_init(). file_name and engine_options are
- * borrowed. The three database paths are owned by the caller's options and
+ * Initialise with xx_scan_options_init(). file_name, engine_options and child
+ * metadata strings are borrowed. The three database paths are owned by the caller's options and
  * released by xx_scan_options_free(). Copies passed to scan callbacks borrow
  * those paths; only free the original owning options. An engine must report
  * XXFC_ERR_INVALID_ARG through pd for an unsupported scan mode.
@@ -156,8 +164,8 @@ typedef struct xx_scan_options {
     bool aggressive_scan;
     bool recursive_scan;
     bool overlay_scan; /**< Detect and scan trailing overlays as bounded devices. */
-    bool resources_scan;
-    bool archives_scan;
+    bool resources_scan; /**< Scan PE and ELF resource payloads as bounded child devices. */
+    bool archives_scan; /**< Scan decoded ZIP, LHA, GZIP, BZIP2 members and Mach-O Fat slices. */
     bool all_types_scan; /**< Scan applicable parent formats before the preferred type. */
     bool first_wrapper_only;
     bool verbose;
@@ -165,10 +173,10 @@ typedef struct xx_scan_options {
     const void *engine_options; /**< Optional engine-specific options. */
     /**
      * Set by the scanner, never by the caller: every scan of a device (the
-     * input itself or one of its overlays) gets a new random nonzero scan_id,
+     * input itself, an overlay, resource or archive member) gets a new nonzero scan_id,
      * and every callback of that scan sees it. parent_id is 0 for the input
-     * itself and, for an overlay, the scan_id of the scan that found it.
-     * Engines copy both into each record they create.
+     * itself and, for a child, the scan_id of the scan that found it.
+     * Engines copy both IDs and child metadata into each record they create.
      */
     uint64_t scan_id;
     uint64_t parent_id;
@@ -193,6 +201,20 @@ typedef struct xx_scan_options {
     char *main_database_path;
     char *extra_database_path;
     char *custom_database_path;
+    xx_scan_part scan_part; /**< Set by the scanner; caller-supplied values are ignored. */
+    const char *resource_type; /**< Borrowed resource type name or decimal ID, otherwise NULL. */
+    const char *archive_member; /**< Borrowed member name during a synchronous archive child scan. */
+    int64_t archive_offset; /**< Physical member/stream start in the containing input. */
+    int64_t archive_size; /**< Packed extent in the containing input. */
+    bool archive_compressed; /**< Child offsets are relative to decoded data when true. */
+    /** Archive limits; zero selects 256 MiB/member, 1 GiB total and 100,000
+     * entries. Nonzero values override the defaults; native decoder limits
+     * still apply (LHA compressed or masked payloads currently have a 256 MiB
+     * decoded-member ceiling). Exceeding a limit fails the scan; members are
+     * never silently truncated. */
+    uint64_t archive_max_member_size;
+    uint64_t archive_max_total_size;
+    uint32_t archive_max_members;
 } xx_scan_options;
 typedef struct xx_scan_options xx_scan_options_t;
 
@@ -201,7 +223,8 @@ typedef struct xx_scan_options xx_scan_options_t;
 /**
  * @brief One detection, exposed in the same form by every engine.
  *
- * Strings may be NULL. Offsets are absolute in the input device; size may
+ * Strings may be NULL. Offsets are absolute in the input device, except for
+ * compressed archive children whose offsets are relative to decoded data; size may
  * be -1 when unknown. The record and its strings belong to the result and
  * remain valid until that result is freed.
  */
@@ -222,6 +245,11 @@ typedef struct xx_scan_record {
     /** Stable //fmt[...] identifier for bundled Binary/audio.1.sg results.
      * NULL for other scripts and untagged results. Owned by the result. */
     const char *format_id;
+    xx_scan_part scan_part; /**< options.scan_part: input, overlay, resource or archive member. */
+    const char *archive_member; /**< Owned member name; NULL outside archive children. */
+    int64_t archive_offset; /**< Physical packed member/stream start in the containing input. */
+    int64_t archive_size; /**< Physical packed member/stream size. */
+    bool archive_compressed; /**< offset/size describe decoded bytes when true. */
 } xx_scan_record;
 typedef struct xx_scan_record xx_scan_record_t;
 
@@ -395,10 +423,13 @@ struct xx_scan_engine {
 
     /**
      * Append all source records to destination. Required when all_types_scan
-     * selects multiple passes or an overlay is scanned. Add source_offset to
+     * selects multiple passes or an overlay/resource/archive child is scanned. Add source_offset to
      * each copied record's offset (zero for passes on the same device), and
-     * keep its scan_id and parent_id: they are how the merged result tells
-     * an overlay's records from the input's.
+     * keep its scan_id, parent_id, scan_part and child metadata. Compressed
+     * archive children use source_offset zero so decoded positions stay
+     * relative to the member; their archive_offset is already physical in
+     * the containing input and must not be rebased. Child metadata must not
+     * replace the containing input's type or size, even for offset zero.
      * Both handles are borrowed; neither may be freed
      * here. Source is freed immediately after this call, so copy its records
      * and strings into destination-owned storage. Return false on failure and
@@ -458,7 +489,9 @@ XXFC_API bool xx_scan_get_overlay(xx_scan_engine *engine, xx_io_device *device, 
  * Scan an existing device. NULL options selects defaults; pd may be NULL.
  * A non-memory input smaller than xx_get_file_buffer_size() is copied into a
  * temporary memory device before detection and scanning; it is freed before
- * return. Callbacks must not retain that device or its backing buffer.
+ * return. Archive child scans retain their selected memory, temporary-file or
+ * bounded source device and skip this eager input copy. Callbacks must not
+ * retain a child device or its backing buffer.
  * UNKNOWN resolves through get_file_types; an explicit type bypasses detection.
  * PE32/PE64 use scan_pe, ELF32/ELF64 use scan_elf, and MACHO32/MACHO64 use
  * scan_macho. Other types prefer their dedicated scan_* callback. Non-PE
@@ -473,10 +506,32 @@ XXFC_API bool xx_scan_get_overlay(xx_scan_engine *engine, xx_io_device *device, 
  * overlay_scan, resources_scan, archives_scan and all_types_scan cleared.
  * get_file_types and append_result are required when an overlay exists;
  * merged offsets remain absolute in the original input. Scan callbacks
- * receive overlay_scan cleared.
+ * receive overlay_scan, resources_scan and archives_scan cleared.
+ * resources_scan visits nonempty PE/.NET resources and ELF GResources once
+ * for the preferred type. Payloads are scanned as stored, including compressed
+ * GResources; malformed input or more than 65,536 resource leaves fails.
+ * archives_scan visits ZIP (including JAR/APK/IPA), LHA, GZIP, BZIP2 and
+ * Mach-O Fat members. Compressed output stays in memory only while its decoded
+ * size is less than xx_get_file_buffer_size(); equality or a larger size uses
+ * xx_io_temp_open(), with automatic cleanup after the child scan. Temporary
+ * streams respect an active memory-only policy. GZIP/BZIP2 spill to temporary
+ * storage as their decoded size becomes known. ZIP Store, ordinary LHA LH0/LZ4
+ * and Mach-O Fat slices use bounded xx_io_sub views of the source, after any
+ * required integrity validation. Masked LHA payloads require decoding. No
+ * archive-derived output paths are opened. The storage threshold does not
+ * bound decoder-internal buffers. Directories are skipped; encrypted/unsupported methods,
+ * malformed data, integrity failures and archive limits fail the whole scan.
+ * Concatenated GZIP/BZIP2 streams form one logical decoded child.
+ * Children get distinct IDs and scan_part RESOURCE or ARCHIVE. A member name
+ * is supplied through file_name and archive_member. Resource types are passed
+ * through resource_type. All child traversal flags are cleared, so nested
+ * resources, archives and overlays are not traversed. Input passes run first,
+ * then resource, archive and overlay children. Unsupported container formats
+ * have no corresponding child pass. get_file_types and append_result are
+ * required when a child exists. Partial results are freed on any failure.
  * Each scan of a device draws a new random nonzero options.scan_id; all of
- * its passes share it. The input's scan has parent_id 0, an overlay's has
- * the input scan's scan_id. Caller-supplied values are ignored.
+ * its passes share it. The input's scan has parent_id 0, a child's has
+ * the input scan's scan_id. Caller-supplied IDs and child metadata are ignored.
  * The device stays open. NULL is returned for invalid arguments, incomplete
  * callback tables, engine failure, or cancellation. Validation errors are
  * reported through pd when supplied.

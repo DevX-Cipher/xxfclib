@@ -44,7 +44,7 @@ static int die_engine_legacy_scan(xx_io_device *device, DBase *database, const x
     /* The console expands directories before calling these entry points.
      * Its recursive flag does not request recursion inside this one input. */
     local.recursive_scan = false;
-    if (local.all_types_scan || local.overlay_scan) {
+    if (local.all_types_scan || local.overlay_scan || local.resources_scan || local.archives_scan) {
         owned = xx_scan_device(&engine, device, &local, pd);
     } else {
         /* Preserve the historical automatic Binary/COM fallback passes.

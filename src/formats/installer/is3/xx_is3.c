@@ -54,6 +54,7 @@
 #include "xxfclib/algo/store/xx_store.h"
 #include "xxfclib/io/xx_io.h"
 #include "xxfclib/memory/xx_memory.h"
+#include "../../xx_archive_output_name.h"
 #include "xxfclib/strings/xx_string.h"
 
 #include <limits.h>
@@ -656,8 +657,14 @@ bool xx_is3_unpack_current_archive_record(Abstractformat *format, xx_archive_rec
         base = owned_base;
     }
     if (!base) goto done;
-    path = (base[0] && base[xx_str_len(base) - 1U] != '/' && base[xx_str_len(base) - 1U] != '\\') ? xx_str_concat3(base, "/", member->name)
-                                                                                                  : xx_str_concat(base, member->name);
+    {
+        char *relative = xx_archive_output_name(member->name, 1252, 0);
+        XX_ARCHIVE_OUTPUT_RESOLVE(relative, stream->items, stream->count, stream->index, name, 1252, 0);
+        if (!relative) goto done;
+    path = (base[0] && base[xx_str_len(base) - 1U] != '/' && base[xx_str_len(base) - 1U] != '\\') ? xx_str_concat3(base, "/", relative)
+                                                                                                  : xx_str_concat(base, relative);
+        xx_mem_free(relative);
+    }
     if (!path || !xx_store_create_dirs_a(path, false)) goto done;
     {
         xx_io_device *destination = xx_io_file_open(path, "wb");

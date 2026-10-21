@@ -55,6 +55,14 @@ extern "C" {
 #define XX_DOTNET_MDT_GenericParam 0x2A
 #define XX_DOTNET_MDT_MethodSpec 0x2B
 #define XX_DOTNET_MDT_GenericParamConstraint 0x2C
+#define XX_DOTNET_MDT_Document 0x30
+#define XX_DOTNET_MDT_MethodDebugInformation 0x31
+#define XX_DOTNET_MDT_LocalScope 0x32
+#define XX_DOTNET_MDT_LocalVariable 0x33
+#define XX_DOTNET_MDT_LocalConstant 0x34
+#define XX_DOTNET_MDT_ImportScope 0x35
+#define XX_DOTNET_MDT_StateMachineMethod 0x36
+#define XX_DOTNET_MDT_CustomDebugInformation 0x37
 
 typedef struct {
     int bValid;

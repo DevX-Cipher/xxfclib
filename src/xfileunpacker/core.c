@@ -17,6 +17,7 @@
 #include "sfx_backend.h"
 #include "upx_backend.h"
 #include "xxfc_readers.h"
+#include "../formats/xx_archive_output_name.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -390,6 +391,46 @@ static bool safe_extract_name(const char *name) {
 #endif
     }
     return true;
+}
+
+/* Match the selected reader's filesystem mapping before the generic guard.
+ * This is deliberately a small allowlist: a ZIP with a rooted path, a drive
+ * escape or traversal still has exactly the strict policy above. */
+static char *mapped_extract_name(xx_file_type_t type, const char *name) {
+    switch (type) {
+    case XX_FILE_TYPE_ARQ: case XX_FILE_TYPE_SFX_ARQ: {
+        char *mapped;
+        if (!name || name[0] == '/' || name[0] == '\\') return NULL;
+        mapped = xx_str_dup(name);
+        if (mapped) {
+            char *p;
+            for (p = mapped; *p; ++p)
+                if (*p == ':' || *p == '<' || *p == '>' || *p == '"' || *p == '|' || *p == '?' || *p == '*') *p = '_';
+        }
+        return mapped;
+    }
+    case XX_FILE_TYPE_TARX1: case XX_FILE_TYPE_TARX2:
+        return xx_archive_output_name(name, 0, XX_ARCHIVE_NAME_ROOTED | XX_ARCHIVE_NAME_DRIVE | XX_ARCHIVE_NAME_NATIVE_TAR);
+    case XX_FILE_TYPE_CAB: case XX_FILE_TYPE_SFX_CAB:
+        return xx_archive_output_name(name, 0, XX_ARCHIVE_NAME_ROOTED);
+    case XX_FILE_TYPE_CLAYLZ: case XX_FILE_TYPE_LHA: case XX_FILE_TYPE_SFX_LHA:
+        return xx_archive_output_name(name, 437, 0);
+    case XX_FILE_TYPE_IS3: case XX_FILE_TYPE_NOTETAB:
+        return xx_archive_output_name(name, 1252, 0);
+    case XX_FILE_TYPE_AMIGALZX: case XX_FILE_TYPE_SFX_LZX:
+        return xx_archive_output_name(name, 28591, 0);
+    case XX_FILE_TYPE_SHAR:
+        return xx_archive_output_name(name, 0, 0);
+    default:
+        return xx_str_dup(name);
+    }
+}
+
+static bool mapped_name_can_suffix(xx_file_type_t type) {
+    return type == XX_FILE_TYPE_CAB || type == XX_FILE_TYPE_SFX_CAB ||
+        type == XX_FILE_TYPE_CLAYLZ || type == XX_FILE_TYPE_LHA || type == XX_FILE_TYPE_SFX_LHA || type == XX_FILE_TYPE_IS3 ||
+        type == XX_FILE_TYPE_NOTETAB || type == XX_FILE_TYPE_AMIGALZX ||
+        type == XX_FILE_TYPE_SFX_LZX || type == XX_FILE_TYPE_SHAR;
 }
 
 /* Enough of what is at a path to tell that nothing replaced or changed it. */
@@ -1704,6 +1745,7 @@ reader_opened:
             bool encrypted = xx_archive_record_get_meta_bool(record, XX_META_ID_IS_ENCRYPTED,
                                                              false);
             char *destination = NULL;
+            char *output_name = unpack_to ? mapped_extract_name(opened.type, entry.name) : NULL;
             path_stamp before = {0};
             unsigned long refusals;
             int level;
@@ -1711,6 +1753,7 @@ reader_opened:
                 emit(request, true, "operation cancelled");
                 --total; /* Never started: not one of the members done. */
                 status = 1;
+                xx_str_free(output_name);
                 xx_str_free(owned);
                 break;
             }
@@ -1722,7 +1765,7 @@ reader_opened:
                     monitor.busy_before[level] = pd->records[level].is_busy;
                 monitor.active = true;
             }
-            unsafe = unpack_to && !safe_extract_name(entry.name);
+            unsafe = unpack_to && !safe_extract_name(output_name);
             success = !unpack_to || !unsafe;
             itself = false;
             if (success && unpack_to) {
@@ -1730,15 +1773,26 @@ reader_opened:
                  * for the reason of a failure (failure_reason). */
                 bool split = splits_backslash(opened.type);
                 if (!entry.is_directory &&
-                    (destination = member_destination(unpack_to, entry.name, split)) != NULL)
+                    (destination = member_destination(unpack_to, output_name, split)) != NULL)
                     stamp_path(destination, &before);
                 /* The archive is never replaced by one of its members,
                  * whether the reader splits a '\' in its name or keeps it. */
                 itself = before.present && is_archive_file(destination, request->archive_path);
-                if (!itself && destination && strchr(entry.name, '\\')) {
-                    char *other = member_destination(unpack_to, entry.name, !split);
+                if (!itself && destination && strchr(output_name, '\\')) {
+                    char *other = member_destination(unpack_to, output_name, !split);
                     itself = other && is_archive_file(other, request->archive_path);
                     free(other);
+                }
+                /* A name collision may give the reader a stable record
+                 * suffix. Protect that possible destination as well. */
+                if (!itself && output_name && mapped_name_can_suffix(opened.type)) {
+                    char *suffixed = xx_str_dup(output_name);
+                    if (suffixed && xx_archive_output_suffix(&suffixed, (size_t)visited)) {
+                        char *other = member_destination(unpack_to, suffixed, split);
+                        itself = other && is_archive_file(other, request->archive_path);
+                        free(other);
+                    }
+                    xx_str_free(suffixed);
                 }
                 if (itself) success = false;
                 xx_io_extract_clear();
@@ -1765,6 +1819,7 @@ reader_opened:
                 (!entry.failure || !strcmp(entry.failure, "already exists; not replaced")))
                 entry.failure = "cut";
             free(destination);
+            xx_str_free(output_name);
             if (cut) {
                 /* Cut short by Cancel: not a defect of the member, so it is
                  * neither reported nor counted as failed. */

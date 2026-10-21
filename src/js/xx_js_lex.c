@@ -25,13 +25,47 @@
 
 #include "xx_js_lex.h"
 
-static const char *g_pKeywords[] = {"break", "case",  "catch",      "continue", "default", "delete", "do",    "else",  "finally", "for",    "function",
-                                    "if",    "in",    "instanceof", "new",      "return",  "switch", "this",  "throw", "try",     "typeof", "var",
-                                    "void",  "while", "with",       "null",     "true",    "false",  "const", "let",   NULL};
+typedef struct {
+    const char *pText;
+    size_t nSize;
+    JSTokType type;
+} JSLexLiteral;
 
-static const JSTokType g_keywordTypes[] = {T_BREAK,    T_CASE, T_CATCH, T_CONTINUE,   T_DEFAULT, T_DELETE, T_DO,     T_ELSE,  T_FINALLY, T_FOR,
-                                           T_FUNCTION, T_IF,   T_IN,    T_INSTANCEOF, T_NEW,     T_RETURN, T_SWITCH, T_THIS,  T_THROW,   T_TRY,
-                                           T_TYPEOF,   T_VAR,  T_VOID,  T_WHILE,      T_WITH,    T_NULL,   T_TRUE,   T_FALSE, T_VAR,     T_VAR};
+/* Literal lengths are fixed; calculating them for every source token adds
+ * repeated scans to both of the lexer lookup loops. */
+#define JS_LEX_LITERAL(text, token) {text, sizeof(text) - 1, token}
+
+static const JSLexLiteral g_keywords[] = {JS_LEX_LITERAL("break", T_BREAK),
+                                         JS_LEX_LITERAL("case", T_CASE),
+                                         JS_LEX_LITERAL("catch", T_CATCH),
+                                         JS_LEX_LITERAL("continue", T_CONTINUE),
+                                         JS_LEX_LITERAL("default", T_DEFAULT),
+                                         JS_LEX_LITERAL("delete", T_DELETE),
+                                         JS_LEX_LITERAL("do", T_DO),
+                                         JS_LEX_LITERAL("else", T_ELSE),
+                                         JS_LEX_LITERAL("finally", T_FINALLY),
+                                         JS_LEX_LITERAL("for", T_FOR),
+                                         JS_LEX_LITERAL("function", T_FUNCTION),
+                                         JS_LEX_LITERAL("if", T_IF),
+                                         JS_LEX_LITERAL("in", T_IN),
+                                         JS_LEX_LITERAL("instanceof", T_INSTANCEOF),
+                                         JS_LEX_LITERAL("new", T_NEW),
+                                         JS_LEX_LITERAL("return", T_RETURN),
+                                         JS_LEX_LITERAL("switch", T_SWITCH),
+                                         JS_LEX_LITERAL("this", T_THIS),
+                                         JS_LEX_LITERAL("throw", T_THROW),
+                                         JS_LEX_LITERAL("try", T_TRY),
+                                         JS_LEX_LITERAL("typeof", T_TYPEOF),
+                                         JS_LEX_LITERAL("var", T_VAR),
+                                         JS_LEX_LITERAL("void", T_VOID),
+                                         JS_LEX_LITERAL("while", T_WHILE),
+                                         JS_LEX_LITERAL("with", T_WITH),
+                                         JS_LEX_LITERAL("null", T_NULL),
+                                         JS_LEX_LITERAL("true", T_TRUE),
+                                         JS_LEX_LITERAL("false", T_FALSE),
+                                         JS_LEX_LITERAL("const", T_VAR),
+                                         JS_LEX_LITERAL("let", T_VAR),
+                                         {NULL, 0, T_EOF}};
 
 static int is_ident_start(int nChar)
 {
@@ -220,9 +254,10 @@ int js_lex_run(JSLexer *pLexer, const char *pSource, char **ppError)
             token.type = T_IDENT;
             token.pText = xx_js_strndup(pStart, nSize);
 
-            for (i = 0; g_pKeywords[i]; i++) {
-                if ((xx_rt_strlen(g_pKeywords[i]) == nSize) && (xx_rt_memcmp(g_pKeywords[i], pStart, nSize) == 0)) {
-                    token.type = g_keywordTypes[i];
+            for (i = 0; g_keywords[i].pText; i++) {
+                if ((g_keywords[i].nSize == nSize) && (g_keywords[i].pText[0] == pStart[0]) &&
+                    (xx_rt_memcmp(g_keywords[i].pText, pStart, nSize) == 0)) {
+                    token.type = g_keywords[i].type;
                     break;
                 }
             }
@@ -527,67 +562,65 @@ int js_lex_run(JSLexer *pLexer, const char *pSource, char **ppError)
          * '**=': QJSEngine rejects exponentiation, so lexing them as two
          * tokens keeps the SyntaxError the reference reports.               */
         {
-            struct {
-                const char *pText;
-                JSTokType type;
-            } punctuators[] = {{">>>=", T_USHR_ASSIGN},
-                               {"===", T_SEQ},
-                               {"!==", T_SNE},
-                               {"<<=", T_SHL_ASSIGN},
-                               {">>=", T_SHR_ASSIGN},
-                               {">>>", T_USHR},
-                               {"...", T_ELLIPSIS},
-                               {"==", T_EQ},
-                               {"!=", T_NE},
-                               {"<=", T_LE},
-                               {">=", T_GE},
-                               {"&&", T_LAND},
-                               {"||", T_LOR},
-                               {"++", T_INC},
-                               {"--", T_DEC},
-                               {"<<", T_SHL},
-                               {">>", T_SHR},
-                               {"+=", T_ADD_ASSIGN},
-                               {"-=", T_SUB_ASSIGN},
-                               {"*=", T_MUL_ASSIGN},
-                               {"/=", T_DIV_ASSIGN},
-                               {"%=", T_MOD_ASSIGN},
-                               {"&=", T_AND_ASSIGN},
-                               {"|=", T_OR_ASSIGN},
-                               {"^=", T_XOR_ASSIGN},
-                               {"=>", T_ARROW},
-                               {"{", T_LBRACE},
-                               {"}", T_RBRACE},
-                               {"(", T_LPAREN},
-                               {")", T_RPAREN},
-                               {"[", T_LBRACKET},
-                               {"]", T_RBRACKET},
-                               {";", T_SEMI},
-                               {",", T_COMMA},
-                               {"<", T_LT},
-                               {">", T_GT},
-                               {"+", T_ADD},
-                               {"-", T_SUB},
-                               {"*", T_MUL},
-                               {"/", T_DIV},
-                               {"%", T_MOD},
-                               {"&", T_AND},
-                               {"|", T_OR},
-                               {"^", T_XOR},
-                               {"!", T_NOT},
-                               {"~", T_BNOT},
-                               {"?", T_QUESTION},
-                               {":", T_COLON},
-                               {"=", T_ASSIGN},
-                               {".", T_DOT},
-                               {NULL, T_EOF}};
+            static const JSLexLiteral punctuators[] = {JS_LEX_LITERAL(">>>=", T_USHR_ASSIGN),
+                                                       JS_LEX_LITERAL("===", T_SEQ),
+                                                       JS_LEX_LITERAL("!==", T_SNE),
+                                                       JS_LEX_LITERAL("<<=", T_SHL_ASSIGN),
+                                                       JS_LEX_LITERAL(">>=", T_SHR_ASSIGN),
+                                                       JS_LEX_LITERAL(">>>", T_USHR),
+                                                       JS_LEX_LITERAL("...", T_ELLIPSIS),
+                                                       JS_LEX_LITERAL("==", T_EQ),
+                                                       JS_LEX_LITERAL("!=", T_NE),
+                                                       JS_LEX_LITERAL("<=", T_LE),
+                                                       JS_LEX_LITERAL(">=", T_GE),
+                                                       JS_LEX_LITERAL("&&", T_LAND),
+                                                       JS_LEX_LITERAL("||", T_LOR),
+                                                       JS_LEX_LITERAL("++", T_INC),
+                                                       JS_LEX_LITERAL("--", T_DEC),
+                                                       JS_LEX_LITERAL("<<", T_SHL),
+                                                       JS_LEX_LITERAL(">>", T_SHR),
+                                                       JS_LEX_LITERAL("+=", T_ADD_ASSIGN),
+                                                       JS_LEX_LITERAL("-=", T_SUB_ASSIGN),
+                                                       JS_LEX_LITERAL("*=", T_MUL_ASSIGN),
+                                                       JS_LEX_LITERAL("/=", T_DIV_ASSIGN),
+                                                       JS_LEX_LITERAL("%=", T_MOD_ASSIGN),
+                                                       JS_LEX_LITERAL("&=", T_AND_ASSIGN),
+                                                       JS_LEX_LITERAL("|=", T_OR_ASSIGN),
+                                                       JS_LEX_LITERAL("^=", T_XOR_ASSIGN),
+                                                       JS_LEX_LITERAL("=>", T_ARROW),
+                                                       JS_LEX_LITERAL("{", T_LBRACE),
+                                                       JS_LEX_LITERAL("}", T_RBRACE),
+                                                       JS_LEX_LITERAL("(", T_LPAREN),
+                                                       JS_LEX_LITERAL(")", T_RPAREN),
+                                                       JS_LEX_LITERAL("[", T_LBRACKET),
+                                                       JS_LEX_LITERAL("]", T_RBRACKET),
+                                                       JS_LEX_LITERAL(";", T_SEMI),
+                                                       JS_LEX_LITERAL(",", T_COMMA),
+                                                       JS_LEX_LITERAL("<", T_LT),
+                                                       JS_LEX_LITERAL(">", T_GT),
+                                                       JS_LEX_LITERAL("+", T_ADD),
+                                                       JS_LEX_LITERAL("-", T_SUB),
+                                                       JS_LEX_LITERAL("*", T_MUL),
+                                                       JS_LEX_LITERAL("/", T_DIV),
+                                                       JS_LEX_LITERAL("%", T_MOD),
+                                                       JS_LEX_LITERAL("&", T_AND),
+                                                       JS_LEX_LITERAL("|", T_OR),
+                                                       JS_LEX_LITERAL("^", T_XOR),
+                                                       JS_LEX_LITERAL("!", T_NOT),
+                                                       JS_LEX_LITERAL("~", T_BNOT),
+                                                       JS_LEX_LITERAL("?", T_QUESTION),
+                                                       JS_LEX_LITERAL(":", T_COLON),
+                                                       JS_LEX_LITERAL("=", T_ASSIGN),
+                                                       JS_LEX_LITERAL(".", T_DOT),
+                                                       {NULL, 0, T_EOF}};
+#undef JS_LEX_LITERAL
             int i = 0;
             int bFound = 0;
 
             for (i = 0; punctuators[i].pText; i++) {
-                size_t nSize = xx_rt_strlen(punctuators[i].pText);
+                size_t nSize = punctuators[i].nSize;
 
-                if (xx_rt_strncmp(p, punctuators[i].pText, nSize) == 0) {
+                if ((p[0] == punctuators[i].pText[0]) && (xx_rt_strncmp(p, punctuators[i].pText, nSize) == 0)) {
                     token.type = punctuators[i].type;
                     tok_push(pLexer, token);
                     p += nSize;

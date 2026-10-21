@@ -66,8 +66,9 @@ typedef xx_scan_result ScanResult;
 /** Initialise the signature implementation of every xx_scan_engine callback.
  * The engine borrows database until xx_scan_engine_cleanup(); it never frees it.
  * Results returned by callbacks are owned and released with xx_scan_free_result().
- * Use xx_scan_file/device/memory for bounded scans, parent passes and overlays.
- * Recursive, resource, archive-member and first-wrapper modes are unsupported.
+ * Use xx_scan_file/device/memory for bounded scans, parent passes, overlays
+ * and PE/ELF resources, plus decoded ZIP/LHA/GZIP/BZIP2 members and Mach-O Fat
+ * slices. Recursive and first-wrapper modes are unsupported.
  * Returns false for a NULL engine or database. Initialise a fresh/cleaned engine. */
 XXFC_API bool die_engine_init(xx_scan_engine *engine, DBase *database);
 

@@ -53,6 +53,9 @@ static void parse_net_tables(xx_dotnet_inspection *state)
     static const unsigned forwarded[] = {MD(Field), MD(MethodDef)};
     static const unsigned implementation[] = {MD(File), MD(AssemblyRef), MD(ExportedType)};
     static const unsigned owner[] = {MD(TypeDef), MD(MethodDef)};
+    static const unsigned debug_parent[] = {MD(MethodDef), MD(Field), MD(TypeRef), MD(TypeDef), MD(Param), MD(InterfaceImpl), MD(MemberRef), MD(Module),
+        MD(DeclSecurity), MD(Property), MD(Event), MD(StandAloneSig), MD(ModuleRef), MD(TypeSpec), MD(Assembly), MD(AssemblyRef), MD(File), MD(ExportedType),
+        MD(ManifestResource), MD(GenericParam), MD(GenericParamConstraint), MD(MethodSpec), MD(Document), MD(LocalScope), MD(LocalVariable), MD(LocalConstant), MD(ImportScope)};
     xx_dotnet_inspect_cli *cli = &state->cli;
     xx_executable_input *input = state->pe.pInput;
     int64_t pos = cli->nTablesOffset, end = pos + cli->nTablesSize;
@@ -64,7 +67,10 @@ static void parse_net_tables(xx_dotnet_inspection *state)
     if (pos <= 0 || cli->nTablesSize < 24) return;
     heaps = xx_exec_u8(input, pos + 6);
     valid = xx_exec_u64(input, pos + 8, false);
-    if ((valid >> 45) != 0) return;
+    /* Reserved 0x2d..0x2f and 0x38..0x3f have no known row schema.
+     * Reject their presence, including zero-row bits, rather than silently
+     * treating subsequent table bytes as another table. */
+    if (valid & UINT64_C(0xff00e00000000000)) return;
     pos += 24;
     for (i = 0; i < 64; ++i) {
         if (valid & (UINT64_C(1) << i)) {
@@ -146,6 +152,14 @@ static void parse_net_tables(xx_dotnet_inspection *state)
     ROW(GenericParam, 4 + cli->nTypeOrMethodDefSize + str);
     ROW(MethodSpec, cli->nMethodDefOrRefSize + blob);
     ROW(GenericParamConstraint, IX(GenericParam) + cli->nTypeDefOrRefSize);
+    ROW(Document, blob + guid + blob + guid);
+    ROW(MethodDebugInformation, IX(Document) + blob);
+    ROW(LocalScope, IX(MethodDef) + IX(ImportScope) + IX(LocalVariable) + IX(LocalConstant) + 8);
+    ROW(LocalVariable, 4 + str);
+    ROW(LocalConstant, str + blob);
+    ROW(ImportScope, IX(ImportScope) + blob);
+    ROW(StateMachineMethod, 2 * IX(MethodDef));
+    ROW(CustomDebugInformation, coded_width(cli, 5, debug_parent, sizeof(debug_parent) / sizeof(debug_parent[0])) + guid + blob);
 #undef ROW
 #undef LIST
 #undef IX

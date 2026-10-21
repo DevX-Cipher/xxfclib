@@ -2056,7 +2056,9 @@ any_signature_cleanup:
         case A_isOverlayScan: return js_bool(0);
         case A_isVerbose: return js_bool(pEngine->pOptions->verbose);
         case A_isProfiling: return js_bool(pEngine->pOptions->profiling);
-        case A_getScanID: return js_str(pCtx, "");
+        case A_getScanID:
+            return js_str(pCtx, pEngine->pOptions->resource_type ? pEngine->pOptions->resource_type :
+                               pEngine->pOptions->archive_member ? pEngine->pOptions->archive_member : "");
         case A_getStartOffset: return js_num(0);
 
         /* Binary_Script::bytesCountToString uses XBinary's default base. */
@@ -2454,10 +2456,10 @@ any_signature_cleanup:
             return result;
         }
 
-        case A_isOverlay:
-        case A_isResource:
-        case A_isDebugData:
-        case A_isFilePart: return js_bool(0);
+        case A_isOverlay: return js_bool(pEngine->pOptions->scan_part == XX_SCAN_PART_OVERLAY);
+        case A_isResource: return js_bool(pEngine->pOptions->scan_part == XX_SCAN_PART_RESOURCE);
+        case A_isDebugData: return js_bool(0);
+        case A_isFilePart: return js_bool(pEngine->pOptions->scan_part != XX_SCAN_PART_INPUT);
 
         case A_isReleaseBuild: return js_bool(1);
         case A_isDebugBuild: return js_bool(0);
@@ -3442,6 +3444,7 @@ static JSVal fn_remove_result(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArg
             cd_free((void *)pRecord->version);
             cd_free((void *)pRecord->info);
             cd_free((void *)pRecord->format_id);
+            cd_free((void *)pRecord->archive_member);
             x_memmove(pEngine->pResult->pRecords + i, pEngine->pResult->pRecords + i + 1, (size_t)(pEngine->pResult->nCount - i - 1) * sizeof(xx_scan_record));
             pEngine->pResult->nCount--;
             break;

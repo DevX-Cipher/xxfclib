@@ -5,6 +5,13 @@
 #include "xxfclib/formats/archive/tar/xx_tar.h"
 #include "xxfclib/formats/archive/zip/xx_zip.h"
 #include "xxfclib/formats/archive/uue/xx_uue.h"
+#include "xxfclib/formats/archive/sfx_lha/xx_sfx_lha.h"
+#include "xxfclib/formats/archive/bigaf/xx_bigaf.h"
+#include "xxfclib/formats/archive/chz/xx_chz.h"
+#include "xxfclib/formats/archive/sfx_chz/xx_sfx_chz.h"
+#include "xxfclib/formats/archive/spis/xx_spis.h"
+#include "xxfclib/formats/archive/swag/xx_swag.h"
+#include "xxfclib/formats/archive/sfx_swag/xx_sfx_swag.h"
 #include "xxfclib/formats/other/base64/xx_base64.h"
 #include "xxfclib/formats/xx_legacy_archive.h"
 #include <string.h>
@@ -200,6 +207,20 @@ bool xxfc_is_incomplete(const xxfc_opened *opened)
     }
     if (type == XX_FILE_TYPE_UUE)
         return !((const xx_uue *)opened->format)->is_terminated;
+    if (type == XX_FILE_TYPE_SFX_LHA)
+        return ((const xx_sfx_lha *)opened->format)->incomplete_tail;
+    if (type == XX_FILE_TYPE_BIGAF)
+        return !((const xx_bigaf *)opened->format)->is_complete;
+    if (type == XX_FILE_TYPE_CHZ)
+        return !((const xx_chz *)opened->format)->is_complete;
+    if (type == XX_FILE_TYPE_SFX_CHZ)
+        return !((const xx_sfx_chz *)opened->format)->is_complete;
+    if (type == XX_FILE_TYPE_SPIS)
+        return !((const xx_spis *)opened->format)->is_complete;
+    if (type == XX_FILE_TYPE_SWAG)
+        return !((const xx_swag *)opened->format)->is_complete;
+    if (type == XX_FILE_TYPE_SFX_SWAG)
+        return !((const xx_sfx_swag *)opened->format)->is_complete;
     switch (type) {
 #include "xxfc_legacy_incomplete.inc"
         return ((const xx_legacy_archive_info *)opened->format)->incomplete;

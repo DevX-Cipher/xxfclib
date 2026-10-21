@@ -53,6 +53,7 @@
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/strings/xx_string.h"
 #include "xxfclib/algo/lzh/xx_lzh.h"
+#include "xxfclib/algo/crc/xx_crc.h"
 
 #include <stdio.h>
 #include "xxfclib/data/xx_data.h"
@@ -77,6 +78,8 @@ typedef struct xx_swag_stream_s {
     size_t count;
     size_t index;
     int64_t archive_size;
+    bool duplicate_footer;
+    bool incomplete_tail;
 } xx_swag_stream;
 
 static void xx_swag_vtable_destroy(Abstractformat *self);
@@ -324,6 +327,14 @@ static xx_swag_stream *xx_swag_parse(Abstractformat *self, xx_pd_struct *pd)
     if (stream->count == 0U) goto fail;
     if (pd && xx_pd_is_stopped(pd)) goto fail;
 
+    stream->incomplete_tail = stream->count != (size_t)declared_count;
+    if (span - offset == 2 * XX_SWAG_FOOTER_SIZE || span - offset == 2 * XX_SWAG_FOOTER_SIZE + 1) {
+        uint8_t duplicate[XX_SWAG_FOOTER_SIZE];
+        int64_t footer_at = span - 2 * XX_SWAG_FOOTER_SIZE;
+        if (xx_swag_read_at(self, self->base_address + footer_at, duplicate, sizeof(duplicate)) &&
+            xx_rt_memcmp(duplicate, footer, sizeof(footer)) == 0) stream->duplicate_footer = true;
+    }
+
     stream->archive_size = span;
     return stream;
 
@@ -450,6 +461,17 @@ static bool xx_swag_decode(Abstractformat *self, const xx_swag_member *member, u
         xx_mem_free(plain);
         return false;
     }
+    {
+        uint8_t crc16[2];
+        if (!xx_swag_read_at(self, member->header_offset + member->header_size - 2, crc16, sizeof(crc16)) ||
+            xx_crc16_arc_calc(0, plain, written) != xx_data_get_u16(crc16, 2, 0, false)) {
+            xx_mem_free(plain);
+            return false;
+        }
+        /* The LHA member CRC16 authenticates the full decoded stream. The
+         * auxiliary CRC32 register is stale in historical PAS collections,
+         * including otherwise CRC16-valid stock SWAG releases. */
+    }
     *out = plain;
     *out_size = xx_swag_pascal_text_size(member->name, plain, written);
     return true;
@@ -542,6 +564,7 @@ bool xx_swag_handle_base_info(Abstractformat *self, xx_pd_struct *pd)
     self->format_size = stream->archive_size;
     self->number_of_archive_records = stream->count;
     archive->number_of_records = stream->count;
+    archive->is_complete = !stream->incomplete_tail;
     xx_swag_stream_free(stream);
     return true;
 }
@@ -647,7 +670,14 @@ xx_archive_record_state *xx_swag_create_archive_records_reading(Abstractformat *
 
 const xx_archive_record *xx_swag_get_current_archive_record(Abstractformat *self, xx_archive_record_state *state)
 {
-    return self && state && state->format == self && state->has_record ? &state->current_record : NULL;
+    xx_swag_stream *stream;
+    if (!self || !state || state->format != self || !state->has_record) return NULL;
+    stream = (xx_swag_stream *)state->internal_state;
+    if (stream && (stream->duplicate_footer || stream->incomplete_tail) &&
+        !xx_archive_record_set_meta_str(&state->current_record, XX_META_ID_COMMENT,
+            stream->duplicate_footer ? "Repeated identical SWAG footer; member checksums remain verified" :
+                                     "Incomplete SWAG tail; only complete checksum-verified members can be extracted")) return NULL;
+    return &state->current_record;
 }
 
 bool xx_swag_archive_record_move_to_next(Abstractformat *self, xx_archive_record_state *state, xx_pd_struct *pd)

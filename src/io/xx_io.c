@@ -70,6 +70,35 @@ int xx_io_close(xx_io_device *device)
     return device->close ? device->close(device) : -1;
 }
 
+int xx_io_resize(xx_io_device *device, int64_t new_size)
+{
+    if (!device || new_size < 0 || !device->resize) return -1;
+    if (device->buffer_state) return xx_io_buffer_resize_dispatch(device, new_size);
+    return device->resize(device, new_size);
+}
+
+/* -1 identifies another device kind. Built-ins know their access flags;
+ * ordinary custom callbacks define their random-access semantics. */
+int xx_io_file_read_write_at_capability(xx_io_device *device);
+int xx_io_mem_read_write_at_capability(xx_io_device *device);
+int xx_io_sub_read_write_at_capability(xx_io_device *device);
+static int xx_io_multivolume_read_write_at_capability(xx_io_device *device);
+
+bool xx_io_can_read_write_at(xx_io_device *device)
+{
+    int capability;
+    if (!device || !device->read || !device->write ||
+        (!device->seek && !device->seek64) || !device->tell || xx_io_total_size(device) < 0) return false;
+    capability = xx_io_file_read_write_at_capability(device);
+    if (capability >= 0) return capability != 0;
+    capability = xx_io_mem_read_write_at_capability(device);
+    if (capability >= 0) return capability != 0;
+    capability = xx_io_sub_read_write_at_capability(device);
+    if (capability >= 0) return capability != 0;
+    capability = xx_io_multivolume_read_write_at_capability(device);
+    return capability != 0;
+}
+
 bool xx_io_check(xx_io_device *device, int64_t offset, int64_t size)
 {
     int64_t total = xx_io_total_size(device);
@@ -139,6 +168,16 @@ static xx_io_multivolume_state *xx_io_multivolume_state_of(xx_io_device *self)
 {
     if (!self || self->close != xx_io_multivolume_close_cb) return NULL;
     return (xx_io_multivolume_state *)self->priv;
+}
+
+static int xx_io_multivolume_read_write_at_capability(xx_io_device *device)
+{
+    xx_io_multivolume_state *state = xx_io_multivolume_state_of(device);
+    size_t i;
+    if (!state) return -1;
+    for (i = 0; i < state->count; ++i)
+        if (state->entries[i].volume.size && !xx_io_can_read_write_at(state->entries[i].volume.device)) return 0;
+    return 1;
 }
 
 /* Find the first range ending after pos, skipping any empty ranges. */

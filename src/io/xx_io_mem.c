@@ -143,6 +143,14 @@ static int xx_io_mem_close_cb(xx_io_device *self)
     return 0;
 }
 
+int xx_io_mem_read_write_at_capability(xx_io_device *device)
+{
+    const xx_io_mem_state_t *state;
+    if (!device || !device->priv || device->close != xx_io_mem_close_cb) return -1;
+    state = (const xx_io_mem_state_t *)device->priv;
+    return !state->is_read_only;
+}
+
 static int64_t xx_io_mem_total_size_cb(xx_io_device *self)
 {
     if (!self || !self->priv) {

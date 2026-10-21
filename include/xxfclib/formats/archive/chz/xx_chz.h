@@ -10,6 +10,7 @@ extern "C" {
 /** Raw ChArc record chain. Stored and ChArc-compressed members. */
 typedef struct xx_chz {
     Abstractformat format;
+    bool is_complete; /**< False when only complete prefix members remain. */
 } xx_chz;
 XXFC_API void xx_chz_init(xx_chz *, xx_io_device *, int64_t);
 XXFC_API xx_chz *xx_chz_create(xx_io_device *, int64_t);

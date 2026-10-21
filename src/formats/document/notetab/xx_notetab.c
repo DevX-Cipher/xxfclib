@@ -40,6 +40,7 @@
 #include "xxfclib/algo/store/xx_store.h"
 #include "xxfclib/io/xx_io.h"
 #include "xxfclib/memory/xx_memory.h"
+#include "../../xx_archive_output_name.h"
 #include "xxfclib/strings/xx_string.h"
 
 #include <limits.h>
@@ -550,7 +551,6 @@ bool xx_notetab_unpack_current_archive_record(Abstractformat *format, xx_archive
     char *owned_base = NULL;
     char *path = NULL;
     uint8_t *body = NULL;
-    size_t previous;
     bool result = false;
     bool created = false;
     if (!format || !state || state->format != format || !state->has_record || !(stream = (notetab_stream *)state->internal_state) || stream->index >= stream->count ||
@@ -563,16 +563,6 @@ bool xx_notetab_unpack_current_archive_record(Abstractformat *format, xx_archive
         if (!body || !notetab_read_at(format->device, format->base_address + clip->body_offset, body, (size_t)clip->body_size)) goto done;
     }
     path_option = notetab_option(&state->options, XX_META_ID_OPT_UNPACK_PATH);
-    /* Windows folds case in output paths. NoteTab can store both H="cds" and
-     * H="Cds"; the reference extractor keeps the first clip on disk. */
-    if (path_option) {
-        for (previous = 0U; previous < stream->index; ++previous) {
-            if (xx_str_icmp(stream->items[previous].name, clip->name) == 0) {
-                result = true;
-                goto done;
-            }
-        }
-    }
     if (!path_option) {
         result = true;
         goto done;
@@ -583,8 +573,14 @@ bool xx_notetab_unpack_current_archive_record(Abstractformat *format, xx_archive
         base = owned_base;
     }
     if (!base) goto done;
+    {
+        char *relative = xx_archive_output_name(clip->name, 1252, 0);
+        XX_ARCHIVE_OUTPUT_RESOLVE(relative, stream->items, stream->count, stream->index, name, 1252, 0);
+        if (!relative) goto done;
     path =
-        (base[0] && base[xx_str_len(base) - 1U] != '/' && base[xx_str_len(base) - 1U] != '\\') ? xx_str_concat3(base, "/", clip->name) : xx_str_concat(base, clip->name);
+        (base[0] && base[xx_str_len(base) - 1U] != '/' && base[xx_str_len(base) - 1U] != '\\') ? xx_str_concat3(base, "/", relative) : xx_str_concat(base, relative);
+        xx_mem_free(relative);
+    }
     if (!path || !xx_store_create_dirs_a(path, false)) goto done;
     {
         xx_io_device *destination = xx_io_file_open(path, "wb");

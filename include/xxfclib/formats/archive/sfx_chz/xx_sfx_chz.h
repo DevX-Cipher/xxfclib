@@ -11,6 +11,8 @@ extern "C" {
 #endif
 typedef struct xx_sfx_chz {
     Abstractformat format;
+    Abstractformat *inner;
+    bool is_complete;
 } xx_sfx_chz;
 XXFC_API void xx_sfx_chz_init(xx_sfx_chz *, xx_io_device *, int64_t);
 XXFC_API xx_sfx_chz *xx_sfx_chz_create(xx_io_device *, int64_t);

@@ -257,6 +257,9 @@ static ssize_t xx_io_buffer_read_cb(xx_io_device *device, void *data, size_t cou
     if (!state) return -1;
     if (!count) return 0;
     if (!data || state->failed) return -1;
+    /* Shrinking an attached device preserves its logical cursor, which can
+     * consequently remain beyond EOF. Avoid subtracting it from the size. */
+    if (state->position >= state->size) return 0;
     if (count > (size_t)PTRDIFF_MAX) count = (size_t)PTRDIFF_MAX;
     if ((uint64_t)(state->size - state->position) < count) count = (size_t)(state->size - state->position);
     if (!device->buffer_enabled && count) {
@@ -297,7 +300,10 @@ static int xx_io_buffer_seek64_cb(xx_io_device *device, int64_t offset, int when
     else if (whence == SEEK_CUR) base = state->position;
     else if (whence == SEEK_END) base = state->size;
     else return -1;
-    if (offset < -base || offset > state->size - base) return -1;
+    if (offset < -base || offset > INT64_MAX - base) return -1;
+    /* Read-only wrappers retain their bounded cursor. Resizable attached
+     * devices have the underlying file's ability to seek beyond EOF. */
+    if ((!state->host || !state->host->resize) && base + offset > state->size) return -1;
     state->position = base + offset;
     return 0;
 }
@@ -465,7 +471,7 @@ bool xx_io_set_buffer_enabled(xx_io_device *device, bool enabled)
     if (!device->read || (!device->seek64 && !device->seek) || !device->tell) return false;
     size = xx_io_total_size(device);
     position = device->tell(device);
-    if (size < 0 || position < 0 || position > size) return false;
+    if (size < 0 || position < 0 || (position > size && !device->resize)) return false;
     wrapper = xx_io_buffer_open(device, 0, xx_get_file_memory_limit(), false);
     if (!wrapper) return false;
     state = wrapper->buffer_state;
@@ -498,6 +504,47 @@ int xx_io_buffer_seek_dispatch(xx_io_device *device, int64_t offset, int whence)
 int64_t xx_io_buffer_tell_dispatch(xx_io_device *device)
 {
     return xx_io_buffer_tell_cb(device);
+}
+
+int xx_io_buffer_resize_dispatch(xx_io_device *device, int64_t new_size)
+{
+    xx_io_buffer_state *state = xx_io_buffer_state_of(device);
+    int64_t physical_position;
+    int result;
+    bool enabled;
+    if (!state || !state->host || !device->resize || new_size < 0) return -1;
+
+    /* Temporarily expose the original device to its callbacks. In particular,
+     * file callbacks may route direct resize calls here while a cache exists;
+     * removing the attachment prevents that forwarding from recursing. */
+    enabled = device->buffer_enabled;
+    device->buffer_state = NULL;
+    device->buffer_enabled = false;
+    physical_position = device->tell ? device->tell(device) : -1;
+    if (physical_position < 0) {
+        device->buffer_state = state;
+        device->buffer_enabled = enabled;
+        return -1;
+    }
+    if (physical_position != state->position && xx_io_buffer_source_seek(state, state->position) != 0) {
+        (void)xx_io_buffer_source_seek(state, physical_position);
+        device->buffer_state = state;
+        device->buffer_enabled = enabled;
+        return -1;
+    }
+    result = device->resize(device, new_size);
+    if (result != 0) {
+        /* A refused resize leaves the logical cursor and every cached byte
+         * intact, including an already promoted whole-file cache. */
+        (void)xx_io_buffer_source_seek(state, physical_position);
+    } else {
+        state->size = new_size;
+        xx_io_buffer_clear(state);
+        state->failed = false;
+    }
+    device->buffer_state = state;
+    device->buffer_enabled = enabled;
+    return result;
 }
 
 int xx_io_buffer_close_dispatch(xx_io_device *device)

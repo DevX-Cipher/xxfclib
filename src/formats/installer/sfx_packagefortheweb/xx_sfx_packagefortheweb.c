@@ -79,25 +79,36 @@ static bool carrier_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
     for (attempt = 0; attempt < (cab >= 0 ? 2U : 1U); ++attempt) {
         int64_t start = cab >= 0 ? cab + (attempt ? 12 : 0) : overlay, region_end = cab >= 0 ? section_end : limit;
         unsigned i;
+        bool new_header;
         if (!pm_read(f, start, h, 4) || (size = xx_data_get_u32(h, 4, 0, false)) < 16 || size > 1048576 || !carrier_range(region_end, start + 4, (uint64_t)size + 36))
             continue;
         settings = (uint8_t *)xx_mem_alloc(size);
         if (!settings || !pm_read(f, start + 4, settings, size)) goto done;
-        for (i = 0; i < size; ++i) settings[i] ^= (uint8_t)(0x61 + i % 26);
-        if (xx_rt_memcmp(settings, "SCG", 3) || !pw_cab(f, start + 4 + size, region_end, &end, pd) ||
-            xx_data_get_u32(settings + 4, 4, 0, false) != (uint64_t)(end - start - 4 - size)) {
+        /* Later PackageForTheWeb writers replaced the XOR/SCG settings
+         * grammar with this opaque header. The length still places a fully
+         * bounded CAB immediately after it; a generic PE/CAB is insufficient
+         * to claim this producer. Do not present opaque settings as SCG. */
+        new_header = !xx_rt_memcmp(settings, "\xdc\xed\xbd\xa9", 4);
+        if (!new_header)
+            for (i = 0; i < size; ++i) settings[i] ^= (uint8_t)(0x61 + i % 26);
+        if ((!new_header && xx_rt_memcmp(settings, "SCG", 3)) || !pw_cab(f, start + 4 + size, region_end, &end, pd) ||
+            (!new_header && xx_data_get_u32(settings + 4, 4, 0, false) != (uint64_t)(end - start - 4 - size))) {
             xx_mem_free(settings);
             settings = NULL;
             continue;
         }
-        if (!pm_add(f, s, "settings.scg", start + 4, size)) {
-            goto done;
+        if (new_header) {
+            xx_mem_free(settings);
+            settings = NULL;
+        } else {
+            if (!pm_add(f, s, "settings.scg", start + 4, size)) goto done;
+            s->items[s->count - 1].memory = settings;
+            settings = NULL;
         }
-        s->items[s->count - 1].memory = settings;
-        settings = NULL;
         if (!pm_add(f, s, "payload.cab", start + 4 + size, end - start - 4 - size)) {
             goto done;
         }
+        if (new_header && !(s->items[s->count - 1].display_name = xx_str_dup("pftw1.pkg"))) goto done;
         s->size = cab >= 0 && overlay > end ? overlay : end;
         ok = true;
         break;

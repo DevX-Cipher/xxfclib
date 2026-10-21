@@ -148,9 +148,11 @@ bool xx_blake2sp_init(xx_blake2sp_context *context)
 #endif
 
 #ifdef XX_BLAKE2_X86
+XX_TARGET_AVX2
 static inline __m256i xx_blake2_rotr12_avx2(__m256i x) {
     return _mm256_or_si256(_mm256_srli_epi32(x, 12), _mm256_slli_epi32(x, 20));
 }
+XX_TARGET_AVX2
 static inline __m256i xx_blake2_rotr7_avx2(__m256i x) {
     return _mm256_or_si256(_mm256_srli_epi32(x, 7), _mm256_slli_epi32(x, 25));
 }

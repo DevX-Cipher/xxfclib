@@ -38,6 +38,71 @@ static bool sfx_lha_read(Abstractformat *f, int64_t at, void *out, size_t size)
     return true;
 }
 
+/* A split DOS SFX can end inside a later member. Admit a prefix only when
+ * every preceding level-0 header is bounded and checksummed and the next
+ * complete checksummed header explicitly declares bytes beyond this volume.
+ * The ordinary LHA reader validates the bounded prefix and its payload CRCs;
+ * malformed headers and failed payloads never become salvage records. */
+static bool sfx_lha_try_prefix(xx_sfx_lha *r, int64_t at, int64_t limit, xx_pd_struct *pd)
+{
+    uint8_t carrier[2], header[257];
+    int64_t cursor = at, span;
+    size_t hs, i;
+    uint64_t packed;
+    unsigned sum, count = 0;
+    uint8_t *bytes;
+    xx_io_device *device;
+    xx_archive_record_state *state;
+    bool valid = true, truncated = false;
+    if (!sfx_lha_read(&r->format, 0, carrier, 2) ||
+        (xx_rt_memcmp(carrier, "MZ", 2) && carrier[0] != 0xeb)) return false;
+    while (cursor >= at && cursor <= limit - 24 && count < 4096) {
+        if (sfx_lha_stop(pd) || !sfx_lha_read(&r->format, cursor, header, 24)) return false;
+        hs = (size_t)header[0] + 2;
+        if (hs < 24 || hs > (uint64_t)(limit - cursor) || header[20] != 0 || header[2] != '-' || header[3] != 'l' || header[6] != '-' ||
+            !sfx_lha_read(&r->format, cursor, header, hs) || 24U + header[21] > hs) return false;
+        sum = 0;
+        for (i = 2; i < hs; ++i) sum += header[i];
+        if ((uint8_t)sum != header[1]) return false;
+        packed = xx_data_get_u32(header + 7, 4, 0, false);
+        if (packed > (uint64_t)(limit - cursor - (int64_t)hs)) {
+            truncated = true;
+            break;
+        }
+        cursor += (int64_t)hs + (int64_t)packed;
+        ++count;
+    }
+    span = cursor - at;
+    if (!truncated || !count || span <= 0 || span > 64 * 1024 * 1024 || sfx_lha_stop(pd)) return false;
+    bytes = (uint8_t *)xx_mem_alloc((size_t)span);
+    if (!bytes) return false;
+    if (!sfx_lha_read(&r->format, at, bytes, (size_t)span) || !(device = xx_io_mem_open_ro(bytes, (size_t)span))) {
+        xx_mem_free(bytes);
+        return false;
+    }
+    xx_lha_init(&r->inner, device, 0);
+    r->inner.sanitize_sfx_drive = true;
+    valid = xx_lha_handle_base_info(&r->inner.format, pd) && r->inner.format.number_of_archive_records == count && r->inner.format.format_size == span;
+    state = valid ? xx_lha_create_archive_records_reading(&r->inner.format, NULL, pd) : NULL;
+    if (!state) valid = false;
+    while (valid && state->has_record) {
+        if (!xx_lha_unpack_current_archive_record(&r->inner.format, state, pd)) valid = false;
+        else if (!xx_lha_archive_record_move_to_next(&r->inner.format, state, pd)) break;
+    }
+    if (state) xx_lha_free_archive_records_reading(&r->inner.format, state);
+    if (!valid || sfx_lha_stop(pd)) {
+        xx_lha_destroy(&r->inner);
+        xx_io_close(device);
+        xx_mem_free(bytes);
+        return false;
+    }
+    r->bounded_device = device;
+    r->bounded_bytes = bytes;
+    r->payload_offset = at;
+    r->incomplete_tail = true;
+    r->inner_ready = true;
+    return true;
+}
 static bool sfx_lha_try_at(xx_sfx_lha *r, int64_t at, int64_t limit, xx_pd_struct *pd)
 {
     if (at < 0 || at > limit - 24 || sfx_lha_stop(pd)) return false;
@@ -46,7 +111,7 @@ static bool sfx_lha_try_at(xx_sfx_lha *r, int64_t at, int64_t limit, xx_pd_struc
     if (!xx_lha_handle_base_info(&r->inner.format, pd) || !r->inner.format.number_of_archive_records || r->inner.format.format_size <= 0 ||
         r->inner.format.format_size > limit - at) {
         xx_lha_destroy(&r->inner);
-        return false;
+        return sfx_lha_try_prefix(r, at, limit, pd);
     }
     r->payload_offset = at;
     r->inner_ready = true;
@@ -179,11 +244,24 @@ static uint64_t sfx_lha_count(Abstractformat *f, xx_pd_struct *pd)
 {
     return xx_sfx_lha_handle_base_info(f, pd) ? f->number_of_archive_records : 0;
 }
+static void sfx_lha_public_offsets(xx_sfx_lha *r, xx_archive_record_state *state)
+{
+    int64_t origin;
+    if (!r->bounded_device || !state || !state->has_record) return;
+    origin = r->format.base_address + r->payload_offset;
+    /* The codec retains its own memory-relative member extents. Translate
+     * only the freshly populated public record, once after create/next. */
+    if (state->current_record.header_offset >= 0) state->current_record.header_offset += origin;
+    if (state->current_record.data_offset >= 0) state->current_record.data_offset += origin;
+}
 static xx_archive_record_state *sfx_lha_records(Abstractformat *f, const xx_list_s *opts, xx_pd_struct *pd)
 {
     xx_sfx_lha *r = (xx_sfx_lha *)f;
+    xx_archive_record_state *state;
     if (!sfx_lha_ensure(r, pd)) return NULL;
-    return xx_lha_create_archive_records_reading(&r->inner.format, opts, pd);
+    state = xx_lha_create_archive_records_reading(&r->inner.format, opts, pd);
+    sfx_lha_public_offsets(r, state);
+    return state;
 }
 static const xx_archive_record *sfx_lha_current(Abstractformat *f, xx_archive_record_state *state)
 {
@@ -191,7 +269,12 @@ static const xx_archive_record *sfx_lha_current(Abstractformat *f, xx_archive_re
 }
 static bool sfx_lha_next(Abstractformat *f, xx_archive_record_state *state, xx_pd_struct *pd)
 {
-    return xx_lha_archive_record_move_to_next(&((xx_sfx_lha *)f)->inner.format, state, pd);
+    xx_sfx_lha *r = (xx_sfx_lha *)f;
+    bool next = xx_lha_archive_record_move_to_next(&r->inner.format, state, pd);
+    if (next) sfx_lha_public_offsets(r, state);
+    if (!next && r->incomplete_tail && !sfx_lha_stop(pd))
+        xx_pd_set_error(pd, 1, "SFX LHA volume ends inside the next member; complete prefix recovered");
+    return next;
 }
 static bool sfx_lha_unpack(Abstractformat *f, xx_archive_record_state *state, xx_pd_struct *pd)
 {

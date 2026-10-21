@@ -6,53 +6,18 @@
 #include "xxfclib/formats/archive/sfx_chz/xx_sfx_chz.h"
 #include "../../common/xx_executable_carrier.h"
 
+#include "xxfclib/formats/archive/chz/xx_chz.h"
+
 static bool executable_carrier_chz_at(Abstractformat *f, pm_stream *s, int64_t at, xx_pd_struct *pd)
 {
-    int64_t limit = pm_available(f);
-    uint8_t h[24];
-    unsigned depth = 0, records = 0;
-    while (at < limit) {
-        uint32_t tag;
-        uint64_t n;
-        uint16_t name;
-        char label[48];
-        if (carrier_stop(pd) || ++records > 4096 || !pm_read(f, at, h, 4)) {
-            return false;
-        }
-        tag = xx_data_get_u32(h, 4, 0, false);
-        if (tag == 0x46684353) {
-            uint32_t raw;
-            if (!pm_read(f, at, h, 24) || (n = xx_data_get_u32(h + 4, 4, 0, false)) > INT32_MAX || (raw = xx_data_get_u32(h + 8, 4, 0, false)) > INT32_MAX ||
-                !(name = xx_data_get_u16(h + 22, 2, 0, false)) || name > 4096 || n < 24U + name || !carrier_range(limit, at, n) || h[20] > 1 ||
-                (h[20] == 0 && n - 24 - name != raw) || (raw && n == 24U + name))
-                return false;
-            {
-                uint8_t namebuf[4096];
-                unsigned j;
-                if (!pm_read(f, at + 24, namebuf, name)) return false;
-                for (j = 0; j < name; ++j)
-                    if (namebuf[j] < 32 || namebuf[j] == 127) return false;
-            }
-            xx_rt_snprintf(label, sizeof(label), "member-%u.%s", (unsigned)s->count, h[20] ? "charc" : "bin");
-            if (!pm_add(f, s, label, at + 24 + name, (int64_t)n - 24 - name)) return false;
-            at += (int64_t)n;
-        } else if (tag == 0x44684353) {
-            unsigned j;
-            if (depth == 64 || !pm_read(f, at, h, 10) || h[8] || !(name = h[9]) || !carrier_range(limit, at, 10U + name)) return false;
-            for (j = 0; j < name; ++j) {
-                uint8_t v;
-                if (!pm_read(f, at + 10 + j, &v, 1) || v < 32 || v == 127) return false;
-            }
-            ++depth;
-            at += 10 + name;
-        } else if (tag == 0x64684353) {
-            if (!depth) return false;
-            --depth;
-            at += 4;
-        } else return false;
-    }
-    s->size = limit;
-    return !depth && s->count != 0;
+    xx_chz *child = xx_chz_create(f->device, f->base_address + at);
+    int64_t size = -1;
+    bool valid = child && xx_chz_handle_base_info(&child->format, pd);
+    if (valid) size = child->format.format_size;
+    xx_chz_free(child);
+    /* The native chain reader retains only complete prefix records and owns
+     * ChArc decoding. Do not publish its packed streams as raw files. */
+    return valid && size > 0 && executable_carrier_component(f, s, at, size, "payload.chz");
 }
 static bool sfx_carrier_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
 {
@@ -71,11 +36,24 @@ static bool pm_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
 {
     return sfx_carrier_parse(f, s, pd) && carrier_members(s, pd);
 }
+#define SFX_MEMBER_TYPE xx_sfx_chz
+static Abstractformat *member_child_create(xx_io_device *d, int64_t at)
+{
+    xx_chz *child = xx_chz_create(d, at);
+    return child ? &child->format : NULL;
+}
+static void member_child_free(Abstractformat *f) { xx_chz_free((xx_chz *)f); }
+static bool member_child_complete(Abstractformat *f) { return ((xx_chz *)f)->is_complete; }
+#include "xx_sfx_member_delegate.h"
+
 void xx_sfx_chz_init(xx_sfx_chz *r, xx_io_device *d, int64_t b)
 {
     if (r) {
         xx_mem_zero(r, sizeof(*r));
         pm_init(&r->format, d, b, XX_FILE_TYPE_SFX_CHZ, "exe");
+        member_callbacks(&r->format);
+        r->format.check_is_valid = xx_sfx_chz_check_is_valid;
+        r->format.handle_base_info = xx_sfx_chz_handle_base_info;
     }
 }
 xx_sfx_chz *xx_sfx_chz_create(xx_io_device *d, int64_t b)
@@ -86,7 +64,7 @@ xx_sfx_chz *xx_sfx_chz_create(xx_io_device *d, int64_t b)
 }
 void xx_sfx_chz_destroy(xx_sfx_chz *r)
 {
-    if (r) xx_format_cleanup_extra_parameters(&r->format);
+    if (r) member_destroy(&r->format);
 }
 void xx_sfx_chz_free(xx_sfx_chz *r)
 {
@@ -97,9 +75,9 @@ void xx_sfx_chz_free(xx_sfx_chz *r)
 }
 bool xx_sfx_chz_check_is_valid(Abstractformat *f, xx_pd_struct *pd)
 {
-    return pm_valid(f, pd);
+    return member_open(f, pd);
 }
 bool xx_sfx_chz_handle_base_info(Abstractformat *f, xx_pd_struct *pd)
 {
-    return pm_handle(f, pd);
+    return member_open(f, pd);
 }

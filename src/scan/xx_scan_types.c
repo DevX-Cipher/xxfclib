@@ -12,6 +12,9 @@
 #include "xxfclib/formats/installer/npm/xx_npm.h"
 #include "xxfclib/formats/executable/pyc/xx_pyc.h"
 #include "xxfclib/formats/executable/dotnet/xx_dotnet.h"
+#include "xxfclib/formats/archive/lha/xx_lha.h"
+#include "xxfclib/formats/archive/gz/xx_gz.h"
+#include "xxfclib/formats/archive/bz2/xx_bz2.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -237,6 +240,8 @@ static xx_file_type_t xx_scan_parent_type(xx_file_type_t type)
         case XX_FILE_TYPE_NPM: return XX_FILE_TYPE_TAR_GZ;
         case XX_FILE_TYPE_TAR_GZ: return XX_FILE_TYPE_GZ;
         case XX_FILE_TYPE_GZ:
+        case XX_FILE_TYPE_LHA:
+        case XX_FILE_TYPE_BZ2:
         case XX_FILE_TYPE_RAR: return XX_FILE_TYPE_ARCHIVE;
         case XX_FILE_TYPE_JPEG:
         case XX_FILE_TYPE_PNG: return XX_FILE_TYPE_IMAGE;
@@ -358,11 +363,32 @@ static xx_list_t *xx_scan_detect_type_window(xx_io_device *device, const xx_scan
     }
     if (head_size >= 2U && head[0] == 0x1fU && head[1] == 0x8bU) {
         xx_npm npm;
+        xx_gz gzip;
         bool valid;
         xx_npm_init(&npm, device, 0);
         valid = xx_npm_check_is_valid(&npm.tar_gz.format, NULL);
         xx_npm_destroy(&npm);
         if (valid) return xx_scan_type_list(XX_FILE_TYPE_NPM, pd);
+        xx_gz_init(&gzip, device, 0);
+        valid = xx_gz_check_is_valid(&gzip.format, pd);
+        xx_gz_destroy(&gzip);
+        if (valid) return xx_scan_type_list(XX_FILE_TYPE_GZ, pd);
+    }
+    if (head_size >= 4U && !memcmp(head, "BZh", 3U) && head[3] >= '1' && head[3] <= '9') {
+        xx_bz2 bzip2;
+        bool valid;
+        xx_bz2_init(&bzip2, device, 0);
+        valid = xx_bz2_check_is_valid(&bzip2.format, pd);
+        xx_bz2_destroy(&bzip2);
+        if (valid) return xx_scan_type_list(XX_FILE_TYPE_BZ2, pd);
+    }
+    if (head_size >= 7U && head[2] == '-' && head[3] == 'l' && (head[4] == 'h' || head[4] == 'z') && head[6] == '-') {
+        xx_lha lha;
+        bool valid;
+        xx_lha_init(&lha, device, 0);
+        valid = xx_lha_check_is_valid(&lha.format, pd);
+        xx_lha_destroy(&lha);
+        if (valid) return xx_scan_type_list(XX_FILE_TYPE_LHA, pd);
     }
     if (head_size >= 8U && !memcmp(head, "dex\n", 4) && head[7] == 0U) return xx_scan_type_list(XX_FILE_TYPE_DEX, pd);
     if (xx_scan_pdf_header_offset(device, size, pd) >= 0) return xx_scan_type_list(XX_FILE_TYPE_PDF, pd);

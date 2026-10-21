@@ -182,7 +182,7 @@ static bool xx_bigaf_number(const uint8_t *data, size_t size, int64_t *value)
 
         if ((digit < (uint8_t)'0') || (digit > (uint8_t)'9')) return false;
         /* A 20-character field has room for more than int64_t holds. */
-        if (result > (int64_t)922337203685477580) return false;
+        if (result > (INT64_MAX - (int64_t)(digit - (uint8_t)'0')) / 10) return false;
         result = (result * 10) + (int64_t)(digit - (uint8_t)'0');
     }
     *value = result;
@@ -236,7 +236,7 @@ static xx_bigaf_stream *xx_bigaf_parse(Abstractformat *self, xx_pd_struct *pd)
      * bytes. */
     if (!xx_bigaf_number(header + 68, 20U, &first)) return NULL;
     if (!xx_bigaf_number(header + 88, 20U, &last)) return NULL;
-    if ((first <= 0) || (first >= span)) return NULL;
+    if ((first < XX_BIGAF_HEADER_SIZE) || (first >= span)) return NULL;
 
     stream = (xx_bigaf_stream *)xx_mem_alloc(sizeof(*stream));
     if (!stream) return NULL;
@@ -299,6 +299,16 @@ static xx_bigaf_stream *xx_bigaf_parse(Abstractformat *self, xx_pd_struct *pd)
             xx_str_free(name);
             goto partial;
         }
+        {
+            uint8_t terminator[2];
+            int64_t terminator_offset = offset + XX_BIGAF_MEMBER_HEADER + name_length;
+            if (terminator_offset & 1) ++terminator_offset;
+            if (!xx_bigaf_read_at(self, self->base_address + terminator_offset, terminator, 2) ||
+                terminator[0] != '`' || terminator[1] != '\n') {
+                xx_str_free(name);
+                goto partial;
+            }
+        }
 
         xx_mem_zero(&member, sizeof(member));
         member.name = name;
@@ -311,6 +321,7 @@ static xx_bigaf_stream *xx_bigaf_parse(Abstractformat *self, xx_pd_struct *pd)
             xx_str_free(name);
             goto fail;
         }
+        stream->archive_size = data_offset + size;
 
         if (offset == last) break;
         /* The chain has no length field, so nothing in the container itself
@@ -318,18 +329,21 @@ static xx_bigaf_stream *xx_bigaf_parse(Abstractformat *self, xx_pd_struct *pd)
          * parsed: that is an endless walk, not an archive. Requiring the
          * chain to move strictly forward is what makes termination a property
          * of the parser rather than of the input. */
-        if ((next != 0) && (next <= offset)) goto partial;
+        if ((next != 0) && (next < data_offset + size || next <= offset)) goto partial;
         offset = next;
     }
 
-    if (stream->count == 0U || hit_member_limit || offset != last) goto fail;
+    if (hit_member_limit) goto fail;
+    if (stream->count == 0U || offset != last) goto partial;
     stream->complete = true;
     stream->archive_size = span;
     return stream;
 
 partial:
-    /* An invalid chain or truncated member cannot identify a valid archive,
-     * even when earlier members were readable. */
+    /* Publish only complete, bounded stored objects. A bad later link does
+     * not invalidate those bytes; an invalid first member still proves no
+     * archive at all. The incomplete-chain comment survives enumeration. */
+    if (stream->count && !(pd && xx_pd_is_stopped(pd))) return stream;
 fail:
     xx_bigaf_stream_free(stream);
     return NULL;
@@ -519,7 +533,12 @@ xx_archive_record_state *xx_bigaf_create_archive_records_reading(Abstractformat 
 
 const xx_archive_record *xx_bigaf_get_current_archive_record(Abstractformat *self, xx_archive_record_state *state)
 {
-    return self && state && state->format == self && state->has_record ? &state->current_record : NULL;
+    xx_bigaf_stream *stream;
+    if (!self || !state || state->format != self || !state->has_record) return NULL;
+    stream = (xx_bigaf_stream *)state->internal_state;
+    if (stream && !stream->complete && !xx_archive_record_set_meta_str(&state->current_record, XX_META_ID_COMMENT,
+            "Incomplete BIGAF member chain; only complete bounded members are available")) return NULL;
+    return &state->current_record;
 }
 
 bool xx_bigaf_archive_record_move_to_next(Abstractformat *self, xx_archive_record_state *state, xx_pd_struct *pd)

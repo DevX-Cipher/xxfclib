@@ -41,6 +41,7 @@ void xx_scan_result_free(xx_scan_result *pResult)
         xx_rt_free((void *)pResult->pRecords[i].version);
         xx_rt_free((void *)pResult->pRecords[i].info);
         xx_rt_free((void *)pResult->pRecords[i].format_id);
+        xx_rt_free((void *)pResult->pRecords[i].archive_member);
     }
 
     xx_rt_free(pResult->pRecords);
@@ -132,11 +133,12 @@ bool xx_scan_append_result(xx_scan_engine *engine, xx_scan_result *destination, 
         }
         *output = *input;
         output->offset += source_offset;
-        output->type = output->name = output->version = output->info = output->format_id = NULL;
+        output->type = output->name = output->version = output->info = output->format_id = output->archive_member = NULL;
         copy.nCount++;
         if (!xx_scan_copy_string(input->type, &output->type) || !xx_scan_copy_string(input->name, &output->name) ||
             !xx_scan_copy_string(input->version, &output->version) || !xx_scan_copy_string(input->info, &output->info) ||
-            !xx_scan_copy_string(input->format_id, &output->format_id)) goto out_of_memory;
+            !xx_scan_copy_string(input->format_id, &output->format_id) ||
+            !xx_scan_copy_string(input->archive_member, &output->archive_member)) goto out_of_memory;
     }
     if (source->nErrorCount) {
         copy.ppErrors = (char **)xx_rt_calloc((size_t)source->nErrorCount, sizeof(char *));
@@ -403,7 +405,24 @@ static const char *record_file_type(const xx_scan_result *result, const xx_scan_
 static int same_record_group(const xx_scan_record *left, const xx_scan_record *right)
 {
     return left->file_type == right->file_type && left->offset == right->offset && left->size == right->size &&
-           left->scan_id == right->scan_id && left->parent_id == right->parent_id;
+           left->scan_id == right->scan_id && left->parent_id == right->parent_id && left->scan_part == right->scan_part &&
+           (left->scan_part != XX_SCAN_PART_ARCHIVE ||
+            (left->archive_offset == right->archive_offset && left->archive_size == right->archive_size &&
+             left->archive_compressed == right->archive_compressed &&
+             xx_rt_strcmp(left->archive_member ? left->archive_member : "", right->archive_member ? right->archive_member : "") == 0));
+}
+
+static void append_group_header(CDBuf *buf, const xx_scan_result *result, const xx_scan_record *record)
+{
+    if (record && record->scan_part == XX_SCAN_PART_ARCHIVE) {
+        cdbuf_appendf(buf, "Archive member: %s: %s [Packed offset = 0x%llx, Packed size = 0x%llx, %s offset = 0x%llx, Size = 0x%llx]",
+                      record->archive_member ? record->archive_member : "", record_file_type(result, record),
+                      (unsigned long long)record->archive_offset, (unsigned long long)record->archive_size,
+                      record->archive_compressed ? "Member" : "Input", (unsigned long long)record->offset,
+                      (unsigned long long)record->size);
+    } else {
+        cdbuf_append_str(buf, record_file_type(result, record));
+    }
 }
 
 static int first_record_in_group(const xx_scan_result *result, int index)
@@ -429,7 +448,7 @@ char *xx_scan_format_text(xx_scan_result *pResult, xx_scan_options *pOptions)
 
     for (i = 0; i < pResult->nCount; i++) {
         if (!first_record_in_group(pResult, i)) continue;
-        cdbuf_append_str(&buf, record_file_type(pResult, &pResult->pRecords[i]));
+        append_group_header(&buf, pResult, &pResult->pRecords[i]);
         cdbuf_append_ch(&buf, '\n');
         for (j = i; j < pResult->nCount; ++j) {
             if (!same_record_group(&pResult->pRecords[i], &pResult->pRecords[j])) continue;
@@ -459,7 +478,18 @@ xxfc_status_t xx_scan_print_text(xx_scan_result *result, xx_scan_options *option
     }
     for (i = 0; status == XXFC_OK && i < result->nCount; ++i) {
         if (!first_record_in_group(result, i)) continue;
-        status = xx_terminal_print(terminal, record_file_type(result, &result->pRecords[i]));
+        if (result->pRecords[i].scan_part == XX_SCAN_PART_ARCHIVE) {
+            CDBuf header;
+            char *text;
+            cdbuf_init(&header);
+            append_group_header(&header, result, &result->pRecords[i]);
+            text = cdbuf_detach(&header, NULL);
+            if (!text) return XXFC_ERR_OUT_OF_MEMORY;
+            status = xx_terminal_print(terminal, text);
+            cd_free(text);
+        } else {
+            status = xx_terminal_print(terminal, record_file_type(result, &result->pRecords[i]));
+        }
         if (status == XXFC_OK) status = xx_terminal_print(terminal, "\n");
         for (j = i; status == XXFC_OK && j < result->nCount; ++j) {
             xx_scan_record *record = &result->pRecords[j];
@@ -572,7 +602,7 @@ char *xx_scan_format_json(xx_scan_result *pResult, xx_scan_options *pOptions)
         if (nGroups++) cdbuf_append_str(&buf, ",\n");
 
         /* ScanItemModel leaves a hidden-only group's header as a bare leaf. */
-        if (!nVisible) {
+        if (!nVisible && (!header || header->scan_part != XX_SCAN_PART_ARCHIVE)) {
             cdbuf_append_str(&buf, "        {\n            \"info\": \"\",\n            \"name\": \"\",\n            \"string\": ");
             json_string(&buf, record_file_type(pResult, header));
             cdbuf_append_str(&buf, ",\n            \"type\": \"\",\n            \"version\": \"\"\n        }");
@@ -582,8 +612,19 @@ char *xx_scan_format_json(xx_scan_result *pResult, xx_scan_options *pOptions)
         cdbuf_append_str(&buf, "        {\n            \"filetype\": ");
         json_string(&buf, record_file_type(pResult, header));
         cdbuf_append_str(&buf, ",\n            \"info\": \"\",\n");
-        cdbuf_appendf(&buf, "            \"offset\": \"%lld\",\n            \"parentfilepart\": \"Header\",\n",
-                      (long long)(header->file_type == XX_FILE_TYPE_UNKNOWN ? 0 : header->offset));
+        cdbuf_appendf(&buf, "            \"offset\": \"%lld\",\n            \"parentfilepart\": \"%s\",\n",
+                      (long long)(header->file_type == XX_FILE_TYPE_UNKNOWN ? 0 : header->offset),
+                      header->scan_part == XX_SCAN_PART_ARCHIVE ? "Archive" :
+                      header->scan_part == XX_SCAN_PART_RESOURCE ? "Resource" :
+                      header->scan_part == XX_SCAN_PART_OVERLAY ? "Overlay" : "Header");
+        if (header->scan_part == XX_SCAN_PART_ARCHIVE) {
+            cdbuf_append_str(&buf, "            \"archive_member\": ");
+            json_string(&buf, header->archive_member);
+            cdbuf_appendf(&buf, ",\n            \"archive_offset\": \"%lld\",\n            \"archive_size\": \"%lld\",\n"
+                                "            \"archive_compressed\": %s,\n            \"offsetbasis\": \"%s\",\n",
+                          (long long)header->archive_offset, (long long)header->archive_size,
+                          header->archive_compressed ? "true" : "false", header->archive_compressed ? "member" : "input");
+        }
         cdbuf_appendf(&buf, "            \"size\": \"%lld\",\n            \"values\": [\n",
                       (long long)(header->file_type == XX_FILE_TYPE_UNKNOWN ? pResult->nFileSize : header->size));
         for (j = i; j < pResult->nCount; ++j) {

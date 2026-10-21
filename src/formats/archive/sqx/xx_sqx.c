@@ -75,6 +75,7 @@ typedef struct xx_sqx_member_s {
     int64_t compressed_size;
     int64_t uncompressed_size;
     uint32_t method;
+    uint32_t crc32;
     uint64_t timestamp;
     bool is_folder;
 } xx_sqx_member;
@@ -411,6 +412,7 @@ static bool xx_sqx_walk(Abstractformat *self, xx_pd_struct *pd, xx_sqx_stream *s
             /* The container's own method byte, unchanged: the mapping to a
              * codec lives only in the decode. */
             member.method = (uint32_t)body[5];
+            member.crc32 = xx_data_get_u32(body + 6, 4, 0, false);
             member.timestamp = (uint64_t)xx_data_get_u32(body + 14, 4, 0, false);
             member.is_folder = is_folder;
             if (!xx_sqx_add(stream, &member)) {
@@ -515,9 +517,18 @@ static bool xx_sqx_decode(Abstractformat *self, const xx_sqx_member *member, uin
      * Falling through to the stored path would hand back a bitstream dressed
      * as file data. */
     if (member->method > 4U) return false;
-    /* Every coded stream emits at least one block. */
+    /* Empty members carry no coded block, even in a solid archive. They
+     * must not replay or reset the preceding dictionary merely to emit an
+     * empty file. A one-sided zero size is still malformed. */
     if (member->compressed_size == 0 || member->uncompressed_size == 0) {
-        return false;
+        /* SQX stores the uncomplemented CRC accumulator; an empty member
+         * retains its initial value. No payload exists to justify another. */
+        if (member->compressed_size != 0 || member->uncompressed_size != 0 || member->crc32 != UINT32_MAX) return false;
+        plain = (uint8_t *)xx_mem_alloc(1U);
+        if (!plain) return false;
+        *out = plain;
+        *out_size = 0U;
+        return true;
     }
 
     total = xx_io_total_size(self->device);

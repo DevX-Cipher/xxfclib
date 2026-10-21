@@ -33,6 +33,14 @@ XXFC_API bool xx_lzip_has_header(const uint8_t *data, size_t size);
 XXFC_API bool xx_lzip_decode_device(xx_io_device *source, int64_t source_offset, int64_t source_size, xx_io_device *destination, int64_t *output_size,
                                     size_t *member_count, xx_pd_struct *pd);
 
+/** Decode the consecutive validated members at the start of an extent.
+ * Ordinary trailing data is left outside consumed_size. A truncated or
+ * corrupt next Lzip header/member remains an error. The strict API above
+ * continues to require an exact stream extent.
+ */
+XXFC_API bool xx_lzip_decode_prefix_device(xx_io_device *source, int64_t source_offset, int64_t source_size, xx_io_device *destination,
+                                           int64_t *output_size, size_t *member_count, int64_t *consumed_size, xx_pd_struct *pd);
+
 #ifdef __cplusplus
 }
 #endif

@@ -164,145 +164,101 @@ static int signature_less(const DBSignature *pA, const DBSignature *pB)
     return xx_rt_strcmp(pNameA, pNameB) < 0;
 }
 
-static void signature_swap(DBSignature *pA, DBSignature *pB)
+/* Cache immutable comparison fields once per sort. The original index lets
+ * the same sorting algorithm move these smaller rows, then permute records
+ * in place without a second allocation or changing the public model. */
+typedef struct {
+    size_t nOriginalIndex;
+    const char *pName;
+    const char *pPriority;
+    size_t nPrioritySize;
+    int nFileTypeOrder;
+} signature_cached_record;
+
+static int signature_cached_less(const signature_cached_record *pA, const signature_cached_record *pB)
 {
-    DBSignature temporary = *pA;
-    *pA = *pB;
-    *pB = temporary;
-}
+    if (pA->nFileTypeOrder != pB->nFileTypeOrder) return pA->nFileTypeOrder < pB->nFileTypeOrder;
 
-/* Reproduce the reference Linux std::sort's median-of-three introsort and
- * final insertion pass. Its comparator is intransitive for mixed priority
- * names, so using a different sorting algorithm produces different results.
- * Explicit bounds replace the reference's unguarded scans: custom database
- * names must never let that comparator read outside the array. */
-static size_t signature_partition(DBSignature *pRecords, size_t first, size_t last)
-{
-    size_t a = first + 1;
-    size_t b = first + (last - first) / 2;
-    size_t c = last - 1;
-    size_t median;
-    size_t left = first + 1;
-    size_t right = last;
+    if (pA->nPrioritySize && pB->nPrioritySize) {
+        size_t i;
+        size_t nCommon = pA->nPrioritySize < pB->nPrioritySize ? pA->nPrioritySize : pB->nPrioritySize;
 
-    if (signature_less(&pRecords[a], &pRecords[b])) {
-        if (signature_less(&pRecords[b], &pRecords[c])) median = b;
-        else if (signature_less(&pRecords[a], &pRecords[c])) median = c;
-        else median = a;
-    } else if (signature_less(&pRecords[a], &pRecords[c])) median = a;
-    else if (signature_less(&pRecords[b], &pRecords[c])) median = c;
-    else median = b;
-
-    signature_swap(&pRecords[first], &pRecords[median]);
-    for (;;) {
-        while (left < last && signature_less(&pRecords[left], &pRecords[first])) ++left;
-        --right;
-        while (right > first && signature_less(&pRecords[first], &pRecords[right])) --right;
-        if (left >= right) return left;
-        signature_swap(&pRecords[left], &pRecords[right]);
-        ++left;
-    }
-}
-
-static void signature_adjust_heap(DBSignature *pRecords, size_t hole, size_t count, DBSignature value)
-{
-    size_t top = hole;
-    size_t child = hole;
-
-    while (child < (count - 1) / 2) {
-        child = 2 * (child + 1);
-        if (signature_less(&pRecords[child], &pRecords[child - 1])) --child;
-        pRecords[hole] = pRecords[child];
-        hole = child;
-    }
-    if ((count & 1) == 0 && child == (count - 2) / 2) {
-        child = 2 * (child + 1);
-        pRecords[hole] = pRecords[child - 1];
-        hole = child - 1;
-    }
-    while (hole > top) {
-        size_t parent = (hole - 1) / 2;
-        if (!signature_less(&pRecords[parent], &value)) break;
-        pRecords[hole] = pRecords[parent];
-        hole = parent;
-    }
-    pRecords[hole] = value;
-}
-
-static void signature_heap_sort(DBSignature *pRecords, size_t count)
-{
-    size_t parent;
-
-    if (count < 2) return;
-    parent = (count - 2) / 2;
-    for (;;) {
-        signature_adjust_heap(pRecords, parent, count, pRecords[parent]);
-        if (parent == 0) break;
-        --parent;
-    }
-    while (count > 1) {
-        DBSignature value = pRecords[--count];
-        pRecords[count] = pRecords[0];
-        signature_adjust_heap(pRecords, 0, count, value);
-    }
-}
-
-static void signature_introsort(DBSignature *pRecords, size_t first, size_t last, unsigned int depth)
-{
-    while (last - first > 16) {
-        size_t cut;
-        if (depth == 0) {
-            signature_heap_sort(pRecords + first, last - first);
-            return;
+        for (i = 0; i < nCommon; ++i) {
+            unsigned char a = (unsigned char)pA->pPriority[i];
+            unsigned char b = (unsigned char)pB->pPriority[i];
+            if (a != b) return a < b;
         }
-        --depth;
-        cut = signature_partition(pRecords, first, last);
-        signature_introsort(pRecords, cut, last, depth);
-        last = cut;
+        if (pA->nPrioritySize != pB->nPrioritySize) return pA->nPrioritySize < pB->nPrioritySize;
     }
+
+    return xx_rt_strcmp(pA->pName, pB->pName) < 0;
 }
 
-static void signature_insert(DBSignature *pRecords, size_t index)
-{
-    DBSignature value = pRecords[index];
-    size_t hole = index;
+/* Keep the original allocation-free path available if the optional cache
+ * cannot be allocated. Both paths use exactly the same sorting algorithm. */
+#define SIGNATURE_SORT_RECORD DBSignature
+#define SIGNATURE_SORT_LESS signature_less
+#define SIGNATURE_SORT_FUNCTION(name) signature_direct_##name
+#include "xx_sort_scan_algorithm.inc"
+#undef SIGNATURE_SORT_FUNCTION
+#undef SIGNATURE_SORT_LESS
+#undef SIGNATURE_SORT_RECORD
 
-    while (hole > 0 && signature_less(&value, &pRecords[hole - 1])) {
-        pRecords[hole] = pRecords[hole - 1];
-        --hole;
-    }
-    pRecords[hole] = value;
-}
+#define SIGNATURE_SORT_RECORD signature_cached_record
+#define SIGNATURE_SORT_LESS signature_cached_less
+#define SIGNATURE_SORT_FUNCTION(name) signature_cached_##name
+#include "xx_sort_scan_algorithm.inc"
+#undef SIGNATURE_SORT_FUNCTION
+#undef SIGNATURE_SORT_LESS
+#undef SIGNATURE_SORT_RECORD
 
 void xx_scan_sort_database_records(DBase *database)
 {
     size_t count;
-    size_t threshold;
     size_t i;
-    unsigned int depth = 0;
     DBSignature *pRecords;
+    signature_cached_record *pCached = NULL;
 
     if (!database || !database->pRecords || database->nCount < 2) return;
     pRecords = database->pRecords;
     count = (size_t)database->nCount;
-    for (i = count; i > 1; i >>= 1) ++depth;
-    signature_introsort(pRecords, 0, count, 2 * depth);
 
-    threshold = count < 16 ? count : 16;
-    for (i = 1; i < threshold; ++i) {
-        if (signature_less(&pRecords[i], &pRecords[0])) {
-            DBSignature value = pRecords[i];
-            size_t hole = i;
-            while (hole > 0) {
-                pRecords[hole] = pRecords[hole - 1];
-                --hole;
-            }
-            pRecords[0] = value;
-        } else {
-            signature_insert(pRecords, i);
-        }
+    if (count <= (size_t)-1 / sizeof(*pCached)) {
+        pCached = (signature_cached_record *)xx_rt_malloc(count * sizeof(*pCached));
     }
-    for (i = threshold; i < count; ++i) signature_insert(pRecords, i);
+    if (!pCached) {
+        signature_direct_sort(pRecords, count);
+        return;
+    }
+
+    for (i = 0; i < count; ++i) {
+        pCached[i].nOriginalIndex = i;
+        pCached[i].pName = pRecords[i].pName ? pRecords[i].pName : "";
+        pCached[i].pPriority = NULL;
+        pCached[i].nPrioritySize = 0;
+        pCached[i].nFileTypeOrder = signature_file_type_order(pRecords[i].fileType);
+        signature_priority(pCached[i].pName, &pCached[i].pPriority, &pCached[i].nPrioritySize);
+    }
+    signature_cached_sort(pCached, count);
+
+    /* Each cached row identifies the original record for its destination.
+     * Follow each permutation cycle, marking completed rows as fixed points. */
+    for (i = 0; i < count; ++i) {
+        size_t hole = i;
+        DBSignature value;
+
+        if (pCached[i].nOriginalIndex == i) continue;
+        value = pRecords[i];
+        while (pCached[hole].nOriginalIndex != i) {
+            size_t source = pCached[hole].nOriginalIndex;
+            pRecords[hole] = pRecords[source];
+            pCached[hole].nOriginalIndex = hole;
+            hole = source;
+        }
+        pRecords[hole] = value;
+        pCached[hole].nOriginalIndex = hole;
+    }
+    xx_rt_free(pCached);
 }
 
 void db_sort(DBase *pDb)

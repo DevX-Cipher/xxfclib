@@ -13,6 +13,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/xxsettings.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/xxterminal.cmake")
 
 set(XXFC_FORMATS_PROFILE_SOURCES
+    src/history/xx_history.c
     ${XXFORMATS_SOURCES}
     ${XXSETTINGS_SOURCES}
     ${XXTERMINAL_SOURCES})

@@ -23,11 +23,11 @@ static xx_scan_result *die_scan_device(xx_scan_engine *engine, xx_io_device *dev
     if (xx_pd_is_stopped(pd)) return NULL;
     if (options) local = *options;
     else xx_scan_options_init(&local);
-    if (local.recursive_scan || local.resources_scan || local.archives_scan || local.first_wrapper_only) {
+    if (local.recursive_scan || local.first_wrapper_only) {
         xx_pd_set_error(pd, XXFC_ERR_INVALID_ARG, "Unsupported DIE scan mode");
         return NULL;
     }
-    if (local.all_types_scan || local.overlay_scan) return xx_scan_device(engine, device, &local, pd);
+    if (local.all_types_scan || local.overlay_scan || local.resources_scan || local.archives_scan) return xx_scan_device(engine, device, &local, pd);
     type = die_engine_xft_from_native(local.file_type);
     if (local.file_type != XX_FILE_TYPE_UNKNOWN && type == XFT_UNKNOWN) {
         xx_pd_set_error(pd, XXFC_ERR_INVALID_ARG, "Unsupported DIE file type");
@@ -67,6 +67,10 @@ static xx_scan_result *die_scan_device(xx_scan_engine *engine, xx_io_device *dev
     }
     for (i = 0; i < result->nCount; ++i) {
         xx_scan_record *record = &result->pRecords[i];
+        /* These native archive formats share the Binary signature database,
+         * but their records still describe the detected container type. */
+        if (type == XFT_BINARY && local.file_type != XX_FILE_TYPE_UNKNOWN && local.file_type != XX_FILE_TYPE_BINARY)
+            record->file_type = local.file_type;
         if (record->offset < 0 || record->offset > INT64_MAX - local.offset) {
             xx_pd_set_error(pd, XXFC_ERR_OUT_OF_BOUNDS, "DIE record range overflows");
             xx_scan_free_result(engine, result);
@@ -220,7 +224,11 @@ xx_file_type_t die_engine_native_from_xft(XFileType type)
 XFileType die_engine_xft_from_native(xx_file_type_t type)
 {
     switch (type) {
-        case XX_FILE_TYPE_BINARY: return XFT_BINARY;
+        case XX_FILE_TYPE_BINARY:
+        /* DIE has no dedicated signature directories for these containers. */
+        case XX_FILE_TYPE_LHA:
+        case XX_FILE_TYPE_GZ:
+        case XX_FILE_TYPE_BZ2: return XFT_BINARY;
         case XX_FILE_TYPE_COM: return XFT_COM;
         case XX_FILE_TYPE_MSDOS: return XFT_MSDOS;
         case XX_FILE_TYPE_NE: return XFT_NE;
@@ -235,7 +243,8 @@ XFileType die_engine_xft_from_native(xx_file_type_t type)
         case XX_FILE_TYPE_MACHO: return XFT_MACHO;
         case XX_FILE_TYPE_MACHO32: return XFT_MACHO32;
         case XX_FILE_TYPE_MACHO64: return XFT_MACHO64;
-        case XX_FILE_TYPE_ZIP: return XFT_ZIP;
+        case XX_FILE_TYPE_ZIP:
+        case XX_FILE_TYPE_ZIP64: return XFT_ZIP;
         case XX_FILE_TYPE_JAR: return XFT_JAR;
         case XX_FILE_TYPE_APK: return XFT_APK;
         case XX_FILE_TYPE_IPA: return XFT_IPA;

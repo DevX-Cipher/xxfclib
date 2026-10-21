@@ -12,6 +12,7 @@ ssize_t xx_io_buffer_read_dispatch(xx_io_device *device, void *buffer, size_t si
 ssize_t xx_io_buffer_write_dispatch(xx_io_device *device, const void *buffer, size_t size);
 int xx_io_buffer_seek_dispatch(xx_io_device *device, int64_t offset, int whence);
 int64_t xx_io_buffer_tell_dispatch(xx_io_device *device);
+int xx_io_buffer_resize_dispatch(xx_io_device *device, int64_t new_size);
 int xx_io_buffer_close_dispatch(xx_io_device *device);
 
 #endif /* XX_IO_BUFFER_INTERNAL_H */

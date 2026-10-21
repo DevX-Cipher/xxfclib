@@ -13,6 +13,7 @@
 #include "xxfclib/global/xx_global.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/strings/xx_string.h"
+#include "../../xx_archive_output_name.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -22,11 +23,14 @@
 
 typedef struct warc_member_s {
     char *name;
+    char *target_uri;
+    char *record_id;
     int64_t header_offset;
     int64_t header_size;
     int64_t data_offset;
     uint64_t data_size;
     uint8_t type;
+    bool directory_uri;
 } warc_member;
 
 typedef struct warc_stream_s {
@@ -184,13 +188,30 @@ static bool warc_safe_uri_name(const uint8_t *uri, size_t uri_size, char **resul
     } else if (warc_eq_ci(uri, colon, "http") || warc_eq_ci(uri, colon, "https") || warc_eq_ci(uri, colon, "ftp")) {
         size_t slash = colon + 3U;
         while (slash < uri_size && uri[slash] != '/') ++slash;
-        if (slash == uri_size) return false;
-        path_offset = slash + 1U;
+        path_offset = slash < uri_size ? slash + 1U : slash;
     } else {
         return false;
     }
-    if (path_offset >= uri_size || uri[path_offset] == '/' || uri[uri_size - 1U] == '/') return false;
+    if (path_offset < uri_size && uri[path_offset] == '/') return false;
     path_size = uri_size - path_offset;
+    /* A directory URI still has a response body. Its block is written in
+     * the record namespace, never as the URI directory itself. */
+    if (!path_size || uri[uri_size - 1U] == '/') {
+        size_t i;
+        char *extended;
+        for (i = 0; i < path_size; ++i)
+            if (uri[path_offset + i] < 32 || uri[path_offset + i] == 127 || uri[path_offset + i] == '\\') return false;
+        extended = (char *)xx_mem_alloc(uri_size + 6);
+        if (!extended) return false;
+        memcpy(extended, uri, uri_size);
+        if (!path_size && (uri_size == 0 || uri[uri_size - 1] != '/')) extended[uri_size++] = '/';
+        memcpy(extended + uri_size, "index", 5);
+        {
+            bool ok = warc_safe_uri_name((const uint8_t *)extended, uri_size + 5, result);
+            xx_mem_free(extended);
+            return ok;
+        }
+    }
     valid_utf8 = warc_valid_utf8(uri + path_offset, path_size);
     name = (char *)xx_mem_alloc(path_size + 1U);
     if (!name) return false;
@@ -250,6 +271,8 @@ static void warc_stream_free(void *opaque)
     if (!stream) return;
     for (index = 0U; index < stream->count; ++index) {
         if (stream->items[index].name) xx_mem_free(stream->items[index].name);
+        if (stream->items[index].target_uri) xx_mem_free(stream->items[index].target_uri);
+        if (stream->items[index].record_id) xx_mem_free(stream->items[index].record_id);
     }
     if (stream->items) xx_mem_free(stream->items);
     xx_mem_free(stream);
@@ -258,11 +281,7 @@ static void warc_stream_free(void *opaque)
 static bool warc_add_member(warc_stream *stream, const warc_member *member)
 {
     warc_member *grown;
-    size_t index;
     if (!stream || !member || !member->name || stream->count >= WARC_MAX_RECORDS || stream->count > SIZE_MAX / sizeof(*grown) - 1U) return false;
-    for (index = 0U; index < stream->count; ++index) {
-        if (xx_rt_strcmp(stream->items[index].name, member->name) == 0) return false;
-    }
     grown = (warc_member *)xx_mem_realloc(stream->items, (stream->count + 1U) * sizeof(*grown));
     if (!grown) return false;
     stream->items = grown;
@@ -392,7 +411,17 @@ static bool warc_parse_record(Abstractformat *format, int64_t relative_offset, w
         ++target;
         target_size -= 2U;
     }
-    if (member->type != 0U && target && warc_safe_uri_name(target, target_size, &member->name)) *visible = true;
+    if (member->type != 0U && target && warc_safe_uri_name(target, target_size, &member->name)) {
+        char *safe = xx_archive_output_name(member->name, 0, 0);
+        xx_mem_free(member->name); member->name = safe;
+        member->directory_uri = target_size && target[target_size - 1] == '/';
+        member->target_uri = xx_str_create_len(target_size);
+        member->record_id = xx_str_create_len(record_id_size);
+        if (!member->name || !member->target_uri || !member->record_id) goto done;
+        memcpy(member->target_uri, target, target_size); member->target_uri[target_size] = 0;
+        memcpy(member->record_id, record_id, record_id_size); member->record_id[record_id_size] = 0;
+        *visible = true;
+    }
     *next_offset = data_relative + (int64_t)data_size + 4U;
     result = *next_offset > relative_offset && *next_offset <= size;
 done:
@@ -400,6 +429,8 @@ done:
         xx_mem_free(member->name);
         member->name = NULL;
     }
+    if (!result && member->target_uri) { xx_mem_free(member->target_uri); member->target_uri = NULL; }
+    if (!result && member->record_id) { xx_mem_free(member->record_id); member->record_id = NULL; }
     if (header) xx_mem_free(header);
     return result;
 }
@@ -426,6 +457,8 @@ static bool warc_parse(Abstractformat *format, warc_stream **result, xx_pd_struc
         if (visible) {
             if (!warc_add_member(stream, &member)) {
                 if (member.name) xx_mem_free(member.name);
+                if (member.target_uri) xx_mem_free(member.target_uri);
+                if (member.record_id) xx_mem_free(member.record_id);
                 goto fail;
             }
         } else if (member.name) {
@@ -435,6 +468,31 @@ static bool warc_parse(Abstractformat *format, warc_stream **result, xx_pd_struc
         ++physical_count;
     }
     if (physical_count == 0U || offset != size) goto fail;
+    {
+        /* Resolve against the entire original namespace before changing any
+         * name. Ordinary, unambiguous URI paths keep the established API;
+         * bodies whose paths collide use unique source-record offsets. */
+        bool *indexed = (bool *)xx_mem_calloc(stream->count, sizeof(bool));
+        size_t i, j;
+        if (stream->count && !indexed) goto fail;
+        for (i = 0; i < stream->count; ++i) {
+            indexed[i] = stream->count > 2048 || stream->items[i].directory_uri ||
+                xx_archive_output_equal_prefix("records", stream->items[i].name);
+            for (j = 0; !indexed[i] && j < stream->count; ++j)
+                if (i != j && xx_archive_output_equal_prefix(stream->items[i].name, stream->items[j].name)) indexed[i] = true;
+        }
+        for (i = 0; i < stream->count; ++i) {
+            if (indexed[i]) {
+                char name[64], *copy;
+                snprintf(name, sizeof(name), "records/%016llx/block.warc",
+                         (unsigned long long)(stream->items[i].header_offset - format->base_address));
+                copy = xx_str_dup(name);
+                if (!copy) { xx_mem_free(indexed); goto fail; }
+                xx_mem_free(stream->items[i].name); stream->items[i].name = copy;
+            }
+        }
+        xx_mem_free(indexed);
+    }
     stream->archive_size = offset;
     *result = stream;
     return true;
@@ -480,7 +538,10 @@ static bool warc_set_record(xx_archive_record *record, const warc_member *member
     record->header_size = member->header_size;
     record->data_offset = member->data_offset;
     record->compressed_size = member->data_size;
-    return xx_archive_record_set_original_name(record, member->name) && xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSED_SIZE, member->data_size) &&
+    return xx_archive_record_set_original_name(record, member->name) &&
+           xx_archive_record_set_meta_str(record, XX_META_ID_COMMENT, member->target_uri) &&
+           xx_archive_record_set_meta_str(record, XX_META_ID_EXTRA_FIELD, member->record_id) &&
+           xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSED_SIZE, member->data_size) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_UNCOMPRESSED_SIZE, member->data_size) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSION_METHOD, 0U) && xx_archive_record_set_meta_u64(record, XX_META_ID_FLAGS, member->type) &&
            xx_archive_record_set_meta_bool(record, XX_META_ID_IS_ENCRYPTED, false) && xx_archive_record_set_meta_bool(record, XX_META_ID_IS_FOLDER, false);

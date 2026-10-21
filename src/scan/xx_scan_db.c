@@ -35,6 +35,7 @@
 #include "xxfclib/fs/xx_fs.h"
 #include "xxfclib/list/xx_list.h"
 #include "xxfclib/strings/xx_string.h"
+#include "../io/platforms/xx_io_platform.h"
 
 static const struct {
     const char *pDirectory;
@@ -98,7 +99,7 @@ static void db_sort_loaded_records(DBase *pDb, int nBefore, DBKind kind)
         int hole = i;
         while (hole > nBefore) {
             DBSignature *previous = &pDb->pRecords[hole - 1];
-            int previousOrder = db_directory_order(previous->fileType);
+            int previousOrder = previous->fileType == value.fileType ? order : db_directory_order(previous->fileType);
             if (previousOrder < order ||
                 (previousOrder == order && cd_stricmp_ascii(previous->pName, value.pName) <= 0)) break;
             pDb->pRecords[hole] = *previous;
@@ -117,25 +118,28 @@ static void db_sort_loaded_records(DBase *pDb, int nBefore, DBKind kind)
     xx_scan_sort_database_records(pDb);
 }
 
-static int is_signature_file(const char *pPath)
+static int is_signature_path(const char *pPath)
 {
-    char *pSuffix = NULL;
-    int bResult = 0;
+    const char *pName = pPath;
+    const char *pCursor;
+    const char *pDot;
 
-    if (!xx_fs_is_file(pPath)) {
+    if (!pPath) {
         return 0;
     }
 
-    pSuffix = xx_fs_path_suffix(pPath);
-
-    if (pSuffix == NULL) {
+    /* Match xx_fs_path_suffix without allocating a name and suffix for
+     * every entry. Both path separators, leading dots and an empty trailing
+     * suffix retain the filesystem helper's semantics. */
+    for (pCursor = pPath; *pCursor; ++pCursor) {
+        if (xx_fs_is_separator(*pCursor)) pName = pCursor + 1;
+    }
+    pDot = xx_rt_strrchr(pName, '.');
+    if (pDot && pDot != pName && pDot[1] && cd_stricmp_ascii(pDot + 1, "sg") != 0) {
         return 0;
     }
 
-    bResult = ((pSuffix[0] == 0) || (cd_stricmp_ascii(pSuffix, "sg") == 0)) ? 1 : 0;
-    xx_str_free(pSuffix);
-
-    return bResult;
+    return 1;
 }
 
 static int is_signature_name(const char *pName)
@@ -173,9 +177,77 @@ static void db_add(DBase *pDb, const char *pName, const char *pPath, char *pText
     pRecord->nElapsedTime = 0;
 }
 
+/* Read directly into the allocator owned by DBSignature. Using the common
+ * file device preserves I/O policy while avoiding an intermediate text
+ * allocation and copy through xx_fs_read_file. */
+static char *db_read_signature(const char *pPath, size_t *pSize)
+{
+    xx_io_device *pFile = xx_io_file_open(pPath, "rb");
+    int64_t nTotal;
+    ssize_t nRead;
+    char *pText;
+
+    *pSize = 0;
+    if (!pFile) return NULL;
+    nTotal = xx_io_total_size(pFile);
+    if (nTotal < 0 || (uint64_t)nTotal >= (uint64_t)SIZE_MAX) {
+        xx_io_close(pFile);
+        return NULL;
+    }
+    pText = (char *)cd_try_malloc((size_t)nTotal + 1U);
+    if (!pText) {
+        xx_io_close(pFile);
+        return NULL;
+    }
+    /* A newly opened device is at zero; its size query preserves position. */
+    nRead = nTotal > 0 ? xx_io_read(pFile, pText, (size_t)nTotal) : 0;
+    xx_io_close(pFile);
+    if (nRead < 0) {
+        cd_free(pText);
+        return NULL;
+    }
+    /* Preserve xx_fs_read_file's short-read behavior for shrinking files. */
+    pText[(size_t)nRead] = '\0';
+    *pSize = (size_t)nRead;
+    return pText;
+}
+
+/* Reuse a directory descriptor for a batch of small files. The platform
+ * reader applies the same read policy and validates regular files before
+ * and after opening; no FILE buffer or temporary device is needed. */
+static char *db_read_signature_at(intptr_t nDirectory, const char *pName, size_t *pSize)
+{
+    int64_t nTotal;
+    intptr_t nFile = xx_io_platform_read_regular_at(nDirectory, pName, &nTotal);
+    ssize_t nRead;
+    char *pText;
+
+    *pSize = 0;
+    if (nFile == -1) return NULL;
+    if ((uint64_t)nTotal >= (uint64_t)SIZE_MAX) {
+        xx_io_platform_close_descriptor(nFile);
+        return NULL;
+    }
+    pText = (char *)cd_try_malloc((size_t)nTotal + 1U);
+    if (!pText) {
+        xx_io_platform_close_descriptor(nFile);
+        return NULL;
+    }
+    nRead = nTotal > 0 ? xx_io_platform_read_descriptor(nFile, pText, (size_t)nTotal) : 0;
+    xx_io_platform_close_descriptor(nFile);
+    if (nRead < 0) {
+        cd_free(pText);
+        return NULL;
+    }
+    pText[(size_t)nRead] = '\0';
+    *pSize = (size_t)nRead;
+    return pText;
+}
+
 static void db_load_directory(DBase *pDb, const char *pPath, XFileType fileType, DBKind kind)
 {
     xx_list_t list;
+    intptr_t nDirectory;
     size_t nCount = 0;
     size_t i = 0;
 
@@ -200,6 +272,9 @@ static void db_load_directory(DBase *pDb, const char *pPath, XFileType fileType,
     }
 
     nCount = xx_list_count(&list);
+    /* Unsupported platforms and directories that cannot be opened retain
+     * the existing file-device path. Keep the process working directory. */
+    nDirectory = nCount ? xx_io_platform_read_directory_open(pPath) : -1;
 
     for (i = 0; i < nCount; i++) {
         xx_fs_entry_t *pEntry = *(xx_fs_entry_t **)xx_list_at(&list, i);
@@ -208,24 +283,25 @@ static void db_load_directory(DBase *pDb, const char *pPath, XFileType fileType,
             continue;
         }
 
-        if (is_signature_file(pEntry->path)) {
-            int64_t nSize = 0;
-            char *pText = xx_fs_read_file(pEntry->path, &nSize);
+        if (is_signature_path(pEntry->path)) {
+            size_t nSize = 0;
+            char *pText = NULL;
+
+            if (nDirectory != -1) {
+                pText = db_read_signature_at(nDirectory, pEntry->name, &nSize);
+            } else if (xx_fs_is_file(pEntry->path)) {
+                pText = db_read_signature(pEntry->path, &nSize);
+            }
 
             if (pText) {
-                /* db_add copies the name and path but takes the text, and the
-                 * record is released with cd_free. Hand it a cd_malloc block
-                 * rather than relying on the two allocators coinciding. */
-                char *pOwned = cd_strndup(pText, (size_t)nSize);
-
-                xx_str_free(pText);
-                db_add(pDb, pEntry->name, pEntry->path, pOwned, (size_t)nSize, fileType, kind);
+                db_add(pDb, pEntry->name, pEntry->path, pText, nSize, fileType, kind);
             }
         }
 
         xx_fs_entry_free(pEntry);
     }
 
+    if (nDirectory != -1) xx_io_platform_close_descriptor(nDirectory);
     xx_list_cleanup(&list);
 }
 
@@ -423,13 +499,22 @@ static int db_create_tar_internal(const char *pDbPath, const char *pTarPath, int
         }
 
         if (xx_fs_list_dir_sorted(pDirPath, &list, XX_FS_SORT_NAME)) {
+            intptr_t nDirectory;
             nCount = xx_list_count(&list);
+            nDirectory = nCount ? xx_io_platform_read_directory_open(pDirPath) : -1;
             for (j = 0; j < nCount; j++) {
                 xx_fs_entry_t *pEntry = *(xx_fs_entry_t **)xx_list_at(&list, j);
-                if (pEntry && is_signature_file(pEntry->path)) {
-                    int64_t nFileSize = 0;
-                    char *pText = xx_fs_read_file(pEntry->path, &nFileSize);
-                    if (pText && nFileSize >= 0) {
+                if (pEntry && is_signature_path(pEntry->path)) {
+                    size_t nFileSize = 0;
+                    char *pText = NULL;
+                    /* Compilation uses the same regular-file reader and
+                     * database-owned buffer as directory loading. */
+                    if (nDirectory != -1) {
+                        pText = db_read_signature_at(nDirectory, pEntry->name, &nFileSize);
+                    } else if (xx_fs_is_file(pEntry->path)) {
+                        pText = db_read_signature(pEntry->path, &nFileSize);
+                    }
+                    if (pText) {
                         char sRelPath[256];
                         char *pC = NULL;
 
@@ -460,13 +545,14 @@ static int db_create_tar_internal(const char *pDbPath, const char *pTarPath, int
                             tar_write_data(pTar, pText, (size_t)nFileSize);
                         }
 
-                        xx_str_free(pText);
+                        cd_free(pText);
                     }
                 }
                 if (pEntry) {
                     xx_fs_entry_free(pEntry);
                 }
             }
+            if (nDirectory != -1) xx_io_platform_close_descriptor(nDirectory);
         }
 
         xx_list_cleanup(&list);
@@ -556,6 +642,14 @@ int db_load_tar(DBase *pDb, const char *pTarPath, DBKind kind)
         return 0;
     }
 
+    /* TAR members are read in order. A bounded read-ahead buffer amortizes
+     * the small header/payload reads without retaining the whole archive.
+     * Failed wrapping leaves the original file device owned here. */
+    {
+        xx_io_device *pBuffered = xx_io_buffer_open(pFile, 64U * 1024U, 0, true);
+        if (pBuffered) pFile = pBuffered;
+    }
+
     nBefore = pDb->nCount;
 
     while (xx_io_read(pFile, header, 512) == 512) {
@@ -606,7 +700,11 @@ int db_load_tar(DBase *pDb, const char *pTarPath, DBKind kind)
 
         nPad = (512 - (nSize % 512)) % 512;
         if (nPad > 0) {
-            xx_io_seek(pFile, (long)nPad, SEEK_CUR);
+            /* The header fields are already copied. Consume padding into
+             * the spare header buffer so sequential reads keep stdio's
+             * buffer, rather than seeking between every archive member.
+             * As before, a complete payload survives missing final padding. */
+            (void)xx_io_read(pFile, header, nPad);
         }
 
         fileType = file_type_from_tar_path(sName, &pBaseName);

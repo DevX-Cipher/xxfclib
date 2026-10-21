@@ -120,9 +120,7 @@ endif()
 # CRT-free Windows targets supply compiler helpers in assembly. Keep the
 # assemblers out of configurations where the normal compiler runtime owns
 # those symbols.
-if(XXFC_MSVC_X64 AND XXFC_SHARED_NO_CRT AND
-   (BUILD_SHARED_LIBS OR XXFC_BUILD_BOTH OR
-    (XXFC_STATIC_NO_CRT AND XXFC_HAS_STATIC_TARGET)))
+if(MSVC AND (XXFC_MSVC_X64 OR CMAKE_C_COMPILER_ARCHITECTURE_ID STREQUAL "X86" OR CMAKE_SIZEOF_VOID_P EQUAL 4))
     enable_language(ASM_MASM)
 elseif(XXFC_MSVC_ARM64 AND XXFC_STATIC_NO_CRT AND XXFC_HAS_STATIC_TARGET)
     if(CMAKE_VERSION VERSION_LESS 3.26)
@@ -154,6 +152,8 @@ if(XXFC_BUILD_CODEPAGE_TESTS)
     add_test(NAME xxfc_codepages COMMAND xxfc_codepage_tests)
 endif()
 set(XXFCLIB_PUBLIC_HEADERS
+    include/xxfclib/history/xx_history.h
+    include/xxfclib/process/xx_process_structs.h
     include/xxfclib/codepages/xx_codepage.h
     include/xxfclib/formats/executable/pyc/xx_pyc.h
     include/xxfclib/formats/document/pdf/xxpdf.h
@@ -1889,6 +1889,8 @@ set(XXFCLIB_SOURCES
     src/scan/xx_scan_engine.c
     src/scan/xx_scan_types.c
     src/scan/xx_scan_overlay.c
+    src/scan/xx_scan_resources.c
+    src/scan/xx_scan_archives.c
     src/sig/xx_sig.c
     # Embedded ECMAScript interpreter.
     src/js/xx_js_deps.c
@@ -1949,6 +1951,7 @@ set(XXFCLIB_SOURCES
     src/settings/xx_settings_value.c
     src/settings/xx_shortcuts.c
     src/io/xx_io.c
+    src/history/xx_history.c
     src/io/xx_io_buffer.c
     src/io/xx_io_snapshot.c
     src/data/xx_byte_transform.c
@@ -1957,6 +1960,7 @@ set(XXFCLIB_SOURCES
     src/io/xx_io_memory_only.c
     src/io/xx_io_sub.c
     src/io/xx_io_process.c
+    src/process/xx_process_structs.c
     src/memory/xx_memory.c
     src/memory/xx_memory_rt.c
     src/memory/platforms/xx_memory_sse2.c
@@ -4841,6 +4845,26 @@ if(WIN32)
     list(APPEND XXFCLIB_SOURCES
         src/platforms/xx_entry_windows.c
         src/io/platforms/xx_io_windows.c
+        src/process/platforms/xx_process_structs_win32.c
+        src/process/platforms/xx_process_peb_layouts.h
+        src/process/platforms/xx_process_teb_layouts.h
+        src/process/platforms/xx_process_params_layouts.h
+        src/process/platforms/xx_process_loader_layouts.h
+        src/process/platforms/xx_process_related_layouts.h
+        src/process/platforms/xx_process_heap_layouts.h
+        src/process/platforms/xx_process_segment_heap_layouts.h
+        src/process/platforms/xx_process_wow64_heap_identity.h
+        src/process/platforms/xx_process_wow64_heap_layouts.h
+        src/process/platforms/xx_process_wow64_segment_heap_layouts.h
+        src/process/platforms/xx_process_heap_legacy_children.h
+        src/process/platforms/xx_process_heap_context_children.h
+        src/process/platforms/xx_process_heap_suballocator_layouts.h
+        src/process/platforms/xx_process_wow64_heap_suballocator_layouts.h
+        src/process/platforms/xx_process_heap_suballocator_discovery.h
+        src/process/platforms/xx_process_heap_vs_chunk_layouts.h
+        src/process/platforms/xx_process_wow64_heap_vs_chunk_layouts.h
+        src/process/platforms/xx_process_heap_vs_chunk_discovery.h
+        src/process/platforms/xx_process_heap_discovery.h
         src/memory/platforms/xx_memory_windows.c
         src/strings/platforms/xx_string_windows.c
         src/fs/platforms/xx_fs_windows.c
@@ -4856,6 +4880,7 @@ if(WIN32)
 else()
     list(APPEND XXFCLIB_SOURCES
         src/io/platforms/xx_io_posix.c
+        src/process/platforms/xx_process_structs_posix.c
         src/memory/platforms/xx_memory_posix.c
         src/strings/platforms/xx_string_posix.c
         src/fs/platforms/xx_fs_posix.c
@@ -4871,6 +4896,13 @@ endif()
 
 include(GNUInstallDirs)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+    # The generic POSIX process collector excludes FreeBSD; its public kernel
+    # query ABI and process-memory discovery are implemented separately.
+    list(REMOVE_ITEM XXFCLIB_SOURCES src/process/platforms/xx_process_structs_posix.c)
+    list(APPEND XXFCLIB_SOURCES src/process/platforms/xx_process_structs_freebsd.c)
+endif()
+
 if(APPLE)
     list(APPEND XXFCLIB_SOURCES src/settings/platforms/xx_settings_macos.c)
 elseif(NOT WIN32)
@@ -4885,6 +4917,7 @@ endif()
 include(src/die_engine/xx_die_engine_cdisasm.cmake)
 
 function(xxfclib_configure_target target is_shared)
+    target_compile_definitions(${target} PRIVATE XXFC_PROCESS_STRUCTS_USE_RUNTIME)
     if(is_shared)
         target_link_libraries(${target} PRIVATE cdisasm::cdisasm)
     else()
@@ -5371,6 +5404,12 @@ function(xxfclib_configure_target target is_shared)
             # x64 when the complete format set contains hosted C code.
             target_link_libraries(${target} PRIVATE kernel32.lib)
         endif()
+
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            target_sources(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/algo/lzma/asm/lzma_x64.asm")
+        elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
+            target_sources(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/algo/lzma/asm/lzma_x86.asm")
+        endif()
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
         if(CMAKE_DL_LIBS)
@@ -5782,6 +5821,19 @@ if(XXFC_BUILD_TESTS)
                          -OutputRoot "${CMAKE_CURRENT_BINARY_DIR}/rar_hash_results")
         set_tests_properties(test_rar_hash_corpus PROPERTIES TIMEOUT 600 LABELS "integration;rar;hash;encryption")
     endif()
+
+    add_executable(test_io_resize tests/io_resize/test_io_resize.c)
+    target_link_libraries(test_io_resize PRIVATE xxfclib::xxfclib)
+    if(MSVC)
+        target_compile_definitions(test_io_resize PRIVATE _CRT_SECURE_NO_WARNINGS)
+    elseif(UNIX)
+        target_compile_definitions(test_io_resize PRIVATE _POSIX_C_SOURCE=200809L _FILE_OFFSET_BITS=64)
+    endif()
+    add_test(NAME xxfc.io.resize COMMAND test_io_resize)
+
+    add_executable(test_history tests/history/test_history.c)
+    target_link_libraries(test_history PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc.history COMMAND test_history)
 
     add_executable(test_io_multivolume tests/test_io_multivolume.c)
     target_link_libraries(test_io_multivolume PRIVATE xxfclib::xxfclib)

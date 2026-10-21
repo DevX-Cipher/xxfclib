@@ -66,6 +66,7 @@ static bool xx_lzip_decode_stream(Abstractformat *self, xx_io_device *destinatio
     int64_t total_size;
     int64_t input_size;
     int64_t decoded_size;
+    int64_t consumed_size;
     size_t members;
     if (!self || !self->device || self->base_address < 0 || !uncompressed_size || !member_count || !stream_size || (pd && xx_pd_is_stopped(pd))) {
         return false;
@@ -80,13 +81,13 @@ static bool xx_lzip_decode_stream(Abstractformat *self, xx_io_device *destinatio
     counter.target = destination;
     sink.write = xx_lzip_counter_write;
     sink.priv = &counter;
-    if (!xx_lzip_decode_device(self->device, self->base_address, input_size, &sink, &decoded_size, &members, pd) || counter.failed || decoded_size < 0 ||
+    if (!xx_lzip_decode_prefix_device(self->device, self->base_address, input_size, &sink, &decoded_size, &members, &consumed_size, pd) || counter.failed || decoded_size < 0 ||
         (uint64_t)decoded_size != counter.written || members == 0U) {
         return false;
     }
     *uncompressed_size = counter.written;
     *member_count = (uint64_t)members;
-    *stream_size = input_size;
+    *stream_size = consumed_size;
     return true;
 }
 

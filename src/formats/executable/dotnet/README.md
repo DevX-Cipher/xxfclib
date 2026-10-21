@@ -9,6 +9,14 @@ queries on a successfully parsed `xx_dotnet_inspection`:
 
 - `xx_dotnet_inspect_table_row`: one-based metadata RID to row offset/size.
 - `xx_dotnet_inspect_blob`: blob index to payload offset/size.
+- `xx_dotnet_metadata_table_name`: names for all 45 CLI tables and the eight
+  Portable PDB table schemas (reserved table numbers return null).
+- `xx_dotnet_inspect_decode_row`: every named column of one metadata row,
+  preserving its raw value, resolved token, heap/reference range, validity,
+  and bounded text. Strings, GUIDs, ordinary signatures, and constants are
+  decoded. Attribute, marshaling, security, and producer-specific debug
+  payloads retain their bytes as bounded hexadecimal previews. Invalid
+  column values are diagnostic records; an unreadable row returns false.
 - `xx_dotnet_inspect_method_body`: RVA to tiny/fat method header, code extent,
   local-signature token and exception-section metadata.
 
@@ -19,7 +27,7 @@ Method bodies must fit one raw-backed PE range. Local-signature/catch tokens,
 exception ranges and chained sections are checked. These are structural
 readers; instruction verification and exception execution belong to a runtime.
 
-The focused hosted static C11 build contains 50 C sources:
+The focused hosted static C11 build uses the `dotnet_emul` source profile:
 
 ```powershell
 cmake -S D:/qt5/_mylibs/xxfclib -B build/xxfclib-dotnet -DXXFC_BUILD_PROFILE=dotnet_emul

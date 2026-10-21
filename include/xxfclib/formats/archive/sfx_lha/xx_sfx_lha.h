@@ -20,6 +20,9 @@ typedef struct xx_sfx_lha {
     uint8_t *bounded_bytes;
     bool inner_ready;
     bool checked;
+    /* A checksummed level-0 member extends past this volume. Only complete
+     * earlier members are exposed; the archive as a whole is incomplete. */
+    bool incomplete_tail;
 } xx_sfx_lha;
 XXFC_API void xx_sfx_lha_init(xx_sfx_lha *, xx_io_device *, int64_t);
 XXFC_API xx_sfx_lha *xx_sfx_lha_create(xx_io_device *, int64_t);

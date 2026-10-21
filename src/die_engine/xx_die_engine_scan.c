@@ -293,6 +293,11 @@ void die_engine_record_init(DieEngine *pEngine, xx_scan_record *pRecord)
     pRecord->size = xx_io_total_size(pEngine->device);
     pRecord->scan_id = pEngine->pOptions->scan_id;
     pRecord->parent_id = pEngine->pOptions->parent_id;
+    pRecord->scan_part = pEngine->pOptions->scan_part;
+    pRecord->archive_member = pEngine->pOptions->archive_member ? cd_strdup(pEngine->pOptions->archive_member) : NULL;
+    pRecord->archive_offset = pEngine->pOptions->archive_offset;
+    pRecord->archive_size = pEngine->pOptions->archive_size;
+    pRecord->archive_compressed = pEngine->pOptions->archive_compressed;
 }
 
 static void end_script_profile(DieEngine *pEngine, DBSignature *pRecord, cd_i64 nStart)
@@ -547,8 +552,13 @@ static int scan_run_pass(xx_io_device *device, XFileType fileType, int bIsCliAss
         cd_free(pEngine);
         return 0;
     }
+    /* Archive members retain their extraction storage: small decoded bytes
+     * are already resident, large ones stay in a temporary file, and stored
+     * members stay borrowed views. Cache reads without whole-file copies. */
     if (xx_io_seek64(device, 0, SEEK_SET) != 0 ||
-        !(pEngine->device = xx_io_buffer_open_auto(device, 0, xx_get_file_memory_limit(), false))) {
+        !(pEngine->device = pOptions->scan_part == XX_SCAN_PART_ARCHIVE
+                               ? xx_io_buffer_open(device, 0, 0, false)
+                               : xx_io_buffer_open_auto(device, 0, xx_get_file_memory_limit(), false))) {
         xx_pd_set_error(pd, XXFC_ERR_IO, "Cannot open DIE signature input");
         cd_free(pEngine);
         return 0;

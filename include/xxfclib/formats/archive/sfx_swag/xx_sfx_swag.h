@@ -11,6 +11,8 @@ extern "C" {
 #endif
 typedef struct xx_sfx_swag {
     Abstractformat format;
+    Abstractformat *inner;
+    bool is_complete;
 } xx_sfx_swag;
 XXFC_API void xx_sfx_swag_init(xx_sfx_swag *, xx_io_device *, int64_t);
 XXFC_API xx_sfx_swag *xx_sfx_swag_create(xx_io_device *, int64_t);

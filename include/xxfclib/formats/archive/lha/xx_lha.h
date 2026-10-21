@@ -44,6 +44,17 @@ XXFC_API uint64_t xx_lha_get_number_of_archive_records(Abstractformat *self, xx_
 XXFC_API xx_archive_record_state *xx_lha_create_archive_records_reading(Abstractformat *self, const xx_list_s *options, xx_pd_struct *pd);
 XXFC_API const xx_archive_record *xx_lha_get_current_archive_record(Abstractformat *self, xx_archive_record_state *state);
 XXFC_API bool xx_lha_unpack_current_archive_record(Abstractformat *self, xx_archive_record_state *state, xx_pd_struct *pd);
+/** Decode and verify the current regular member into a borrowed device.
+ * No pathname is opened and neither device is closed. The source cursor is
+ * restored. The reading state's maximum member size and memory limits take
+ * precedence over format parameters. The memory limit includes packed and plain
+ * buffers for compressed or masked payloads. Ordinary stored LH0/LZ4 members
+ * use a fixed-size copy buffer and do not allocate those whole-member buffers;
+ * their member-size limit still applies.
+ * Payload size and CRC16 must match before any destination bytes are written.
+ * Directories write nothing; unsupported payloads (including symbolic links)
+ * fail. A destination write failure can leave a verified output prefix. */
+XXFC_API bool xx_lha_unpack_current_archive_record_to_device(Abstractformat *self, xx_archive_record_state *state, xx_io_device *destination, xx_pd_struct *pd);
 XXFC_API bool xx_lha_archive_record_move_to_next(Abstractformat *self, xx_archive_record_state *state, xx_pd_struct *pd);
 XXFC_API void xx_lha_free_archive_records_reading(Abstractformat *self, xx_archive_record_state *state);
 

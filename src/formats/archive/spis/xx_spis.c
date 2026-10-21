@@ -69,6 +69,7 @@ typedef struct xx_spis_stream_s {
     int64_t archive_size;
     uint32_t key;
     bool key_ready;
+    bool truncated_tail;
 } xx_spis_stream;
 
 static void xx_spis_vtable_destroy(Abstractformat *self);
@@ -446,7 +447,7 @@ static xx_spis_stream *xx_spis_parse(Abstractformat *self, xx_pd_struct *pd)
             }
         }
 
-        if (span - offset < XX_SPIS_RECORD_HEADER_SIZE) goto fail;
+        if (span - offset < XX_SPIS_RECORD_HEADER_SIZE) goto partial;
         if (!xx_spis_read_at(self, self->base_address + offset, header, (size_t)XX_SPIS_RECORD_HEADER_SIZE)) {
             goto fail;
         }
@@ -471,14 +472,14 @@ static xx_spis_stream *xx_spis_parse(Abstractformat *self, xx_pd_struct *pd)
             goto fail;
         }
         if (!xx_spis_range_within(span, offset + XX_SPIS_RECORD_HEADER_SIZE, (int64_t)name_size)) {
-            goto fail;
+            goto partial;
         }
         available = span - offset - XX_SPIS_RECORD_HEADER_SIZE - (int64_t)name_size;
         /* The reference salvages a final member cut short by EOF, but every
          * member is authenticated by a sum over its DECOMPRESSED bytes, so
          * there is nothing to check a prefix against: an extent past EOF is a
          * rejection here. */
-        if ((int64_t)packed_size > available) goto fail;
+        if ((int64_t)packed_size > available) goto partial;
 
         name_bytes = (uint8_t *)xx_mem_alloc((size_t)name_size);
         if (!name_bytes) goto fail;
@@ -521,6 +522,14 @@ static xx_spis_stream *xx_spis_parse(Abstractformat *self, xx_pd_struct *pd)
     stream->archive_size = span;
     return stream;
 
+partial:
+    /* No bytes from the short member are published. Earlier records still
+     * undergo their complete decode and byte-sum checks at extraction. */
+    if (stream->count != 0U && !(pd && xx_pd_is_stopped(pd))) {
+        stream->truncated_tail = true;
+        stream->archive_size = offset;
+        return stream;
+    }
 fail:
     xx_mem_free(name_bytes);
     xx_spis_stream_free(stream);
@@ -966,6 +975,7 @@ bool xx_spis_handle_base_info(Abstractformat *self, xx_pd_struct *pd)
     self->format_size = stream->archive_size;
     self->number_of_archive_records = stream->count;
     archive->number_of_records = stream->count;
+    archive->is_complete = !stream->truncated_tail;
     xx_spis_stream_free(stream);
     return true;
 }
@@ -1062,7 +1072,12 @@ xx_archive_record_state *xx_spis_create_archive_records_reading(Abstractformat *
 
 const xx_archive_record *xx_spis_get_current_archive_record(Abstractformat *self, xx_archive_record_state *state)
 {
-    return self && state && state->format == self && state->has_record ? &state->current_record : NULL;
+    xx_spis_stream *stream;
+    if (!self || !state || state->format != self || !state->has_record) return NULL;
+    stream = (xx_spis_stream *)state->internal_state;
+    if (stream && stream->truncated_tail && !xx_archive_record_set_meta_str(&state->current_record, XX_META_ID_COMMENT,
+            "Truncated SPIS tail; only complete members with verified decoded checksums can be extracted")) return NULL;
+    return &state->current_record;
 }
 
 bool xx_spis_archive_record_move_to_next(Abstractformat *self, xx_archive_record_state *state, xx_pd_struct *pd)

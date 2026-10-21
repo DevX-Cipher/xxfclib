@@ -23,6 +23,8 @@
 #include "xxfclib/global/xx_global.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/rt/xx_rt.h"
+#include "xx_scan_resources_internal.h"
+#include "xx_scan_archives_internal.h"
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -109,7 +111,8 @@ static xx_scan_format_callback xx_scan_select_callback(const xx_scan_engine *eng
         case XX_FILE_TYPE_MACHO64: callback = engine->scan_macho; break;
         case XX_FILE_TYPE_MACHOFAT: callback = engine->scan_machofat; break;
         case XX_FILE_TYPE_JAVA_CLASS: callback = engine->scan_java_class; break;
-        case XX_FILE_TYPE_ZIP: callback = engine->scan_zip; break;
+        case XX_FILE_TYPE_ZIP:
+        case XX_FILE_TYPE_ZIP64: callback = engine->scan_zip; break;
         case XX_FILE_TYPE_JAR: callback = engine->scan_jar; break;
         case XX_FILE_TYPE_NPM: callback = engine->scan_npm; break;
         case XX_FILE_TYPE_IPA: callback = engine->scan_ipa; break;
@@ -194,6 +197,8 @@ static xx_scan_result *xx_scan_run_plan(xx_scan_engine *engine, xx_io_device *de
         if (pd && pd->is_stop) goto failed;
         pass.file_type = types[index];
         pass.overlay_scan = false;
+        pass.resources_scan = false;
+        pass.archives_scan = false;
         if (options->all_types_scan) {
             pass.all_types_scan = false;
             if (xx_io_seek64(device, pass.offset, SEEK_SET) != 0) {
@@ -280,7 +285,178 @@ static bool xx_scan_resolve_options(xx_scan_engine *engine, xx_io_device *device
 }
 
 static xx_scan_result *xx_scan_internal(xx_scan_engine *engine, xx_io_device *device, const xx_scan_options *options, const xx_scan_result *forbidden_result,
-                                        uint64_t parent_id, xx_pd_struct *pd);
+                                        uint64_t parent_id, xx_scan_part scan_part, xx_pd_struct *pd);
+
+typedef struct xx_scan_resources_context {
+    xx_scan_engine *engine;
+    xx_io_device *device;
+    const xx_scan_options *options;
+    xx_scan_result *result;
+} xx_scan_resources_context;
+
+/* The resource reader lends its record only for this call. Scan the payload
+ * synchronously and merge before its view and result are released. */
+static bool xx_scan_run_resource(void *context, const xx_resource_record *resource, xx_pd_struct *pd)
+{
+    xx_scan_resources_context *scan = (xx_scan_resources_context *)context;
+    xx_scan_engine *engine = scan->engine;
+    xx_scan_options child_options = *scan->options;
+    xx_io_device *child_device;
+    xx_scan_result *part;
+    bool appended;
+    bool preserve_metadata;
+    XFileType parent_type = XFT_UNKNOWN;
+    int64_t parent_size = 0;
+    char resource_type_id[16];
+
+    if (xx_pd_is_stopped(pd)) return false;
+    if (!engine->get_file_types || !engine->append_result) {
+        xx_pd_set_error(pd, XXFC_ERR_INVALID_ARG, !engine->get_file_types ? "Missing scan file-type callback" : "Missing scan result append callback");
+        return false;
+    }
+    child_device = xx_io_sub_open_ro(scan->device, resource->offset, resource->size);
+    if (!child_device) {
+        xx_pd_set_error(pd, XXFC_ERR_OUT_OF_MEMORY, "Cannot create scan resource device");
+        return false;
+    }
+    child_options.offset = 0;
+    child_options.size = resource->size;
+    child_options.file_type = XX_FILE_TYPE_UNKNOWN;
+    child_options.file_name = resource->name; /* Borrowed until this synchronous child scan returns. */
+    child_options.resource_type = resource->type_name;
+    if (!child_options.resource_type && resource->type_id != UINT32_MAX) {
+        xx_rt_snprintf(resource_type_id, sizeof(resource_type_id), "%u", (unsigned int)resource->type_id);
+        child_options.resource_type = resource_type_id;
+    }
+    child_options.recursive_scan = false;
+    child_options.overlay_scan = false;
+    child_options.resources_scan = false;
+    child_options.archives_scan = false;
+    child_options.all_types_scan = false;
+    part = xx_scan_internal(engine, child_device, &child_options, scan->result, scan->options->scan_id, XX_SCAN_PART_RESOURCE, pd);
+    if (!part) {
+        xx_io_close(child_device);
+        return false;
+    }
+    if (xx_pd_is_stopped(pd) || (pd && pd->last_error)) {
+        engine->free_result(engine, part);
+        xx_io_close(child_device);
+        return false;
+    }
+    /* The standard merger interprets offset zero as another parent-format
+     * pass. A resource can alias the input's first bytes, even when its scan
+     * has no detections, so keep the containing input's metadata in that case.
+     * Private result models remain opaque to the common scanner. */
+    preserve_metadata = resource->offset == 0 && engine->append_result == xx_scan_append_result;
+    if (preserve_metadata) {
+        parent_type = scan->result->fileType;
+        parent_size = scan->result->nFileSize;
+    }
+    appended = engine->append_result(engine, scan->result, part, resource->offset, pd);
+    if (preserve_metadata) {
+        scan->result->fileType = parent_type;
+        scan->result->nFileSize = parent_size;
+    }
+    engine->free_result(engine, part);
+    xx_io_close(child_device);
+    if (!appended || xx_pd_is_stopped(pd) || (pd && pd->last_error)) {
+        if (pd && !pd->last_error && !pd->is_stop) xx_pd_set_error(pd, XXFC_ERR_GENERIC, "Cannot append scan resource result");
+        return false;
+    }
+    return true;
+}
+
+static xx_scan_result *xx_scan_run_resources(xx_scan_engine *engine, xx_io_device *device, const xx_scan_options *options, xx_scan_result *result,
+                                             xx_pd_struct *pd)
+{
+    xx_scan_resources_context context;
+    context.engine = engine;
+    context.device = device;
+    context.options = options;
+    context.result = result;
+    if (!xx_scan_visit_resources(device, options->file_type, options->offset, options->size, xx_scan_run_resource, &context, pd)) {
+        if (pd && !pd->last_error && !pd->is_stop) xx_pd_set_error(pd, XXFC_ERR_GENERIC, "Scan resource enumeration failed");
+        engine->free_result(engine, result);
+        return NULL;
+    }
+    return result;
+}
+
+/* The extraction helper owns the decoded device and lends it only for this
+ * synchronous callback. Packed positions and decoded positions stay distinct. */
+static bool xx_scan_run_archive_member(void *context, const xx_scan_archive_member *member, xx_pd_struct *pd)
+{
+    xx_scan_resources_context *scan = (xx_scan_resources_context *)context;
+    xx_scan_engine *engine = scan->engine;
+    xx_scan_options child_options = *scan->options;
+    xx_scan_result *part;
+    int64_t source_offset = member->is_compressed ? 0 : member->source_offset;
+    XFileType parent_type = XFT_UNKNOWN;
+    int64_t parent_size = 0;
+    bool preserve_metadata;
+    bool appended;
+
+    if (xx_pd_is_stopped(pd)) return false;
+    if (!engine->get_file_types || !engine->append_result) {
+        xx_pd_set_error(pd, XXFC_ERR_INVALID_ARG, !engine->get_file_types ? "Missing scan file-type callback" : "Missing scan result append callback");
+        return false;
+    }
+    child_options.offset = 0;
+    child_options.size = member->size;
+    child_options.file_type = XX_FILE_TYPE_UNKNOWN;
+    child_options.file_name = member->name;
+    child_options.resource_type = NULL;
+    child_options.archive_member = member->name;
+    child_options.archive_offset = member->source_offset;
+    child_options.archive_size = member->source_size;
+    child_options.archive_compressed = member->is_compressed;
+    child_options.recursive_scan = false;
+    child_options.overlay_scan = false;
+    child_options.resources_scan = false;
+    child_options.archives_scan = false;
+    child_options.all_types_scan = false;
+    part = xx_scan_internal(engine, member->device, &child_options, scan->result, scan->options->scan_id, XX_SCAN_PART_ARCHIVE, pd);
+    if (!part) return false;
+    if (xx_pd_is_stopped(pd) || (pd && pd->last_error)) {
+        engine->free_result(engine, part);
+        return false;
+    }
+    /* The standard zero-offset merger normally selects parent-format metadata.
+     * Decoded members use that offset to keep positions relative to the member,
+     * so preserve the container's metadata explicitly for the standard model. */
+    preserve_metadata = source_offset == 0 && engine->append_result == xx_scan_append_result;
+    if (preserve_metadata) {
+        parent_type = scan->result->fileType;
+        parent_size = scan->result->nFileSize;
+    }
+    appended = engine->append_result(engine, scan->result, part, source_offset, pd);
+    if (preserve_metadata) {
+        scan->result->fileType = parent_type;
+        scan->result->nFileSize = parent_size;
+    }
+    engine->free_result(engine, part);
+    if (!appended || xx_pd_is_stopped(pd) || (pd && pd->last_error)) {
+        if (pd && !pd->last_error && !pd->is_stop) xx_pd_set_error(pd, XXFC_ERR_GENERIC, "Cannot append scan archive result");
+        return false;
+    }
+    return true;
+}
+
+static xx_scan_result *xx_scan_run_archives(xx_scan_engine *engine, xx_io_device *device, const xx_scan_options *options, xx_scan_result *result,
+                                            xx_pd_struct *pd)
+{
+    xx_scan_resources_context context;
+    context.engine = engine;
+    context.device = device;
+    context.options = options;
+    context.result = result;
+    if (!xx_scan_visit_archives(device, options, xx_scan_run_archive_member, &context, pd)) {
+        if (pd && !pd->last_error && !pd->is_stop) xx_pd_set_error(pd, XXFC_ERR_GENERIC, "Scan archive extraction failed");
+        engine->free_result(engine, result);
+        return NULL;
+    }
+    return result;
+}
 
 static xx_scan_result *xx_scan_run_overlay(xx_scan_engine *engine, xx_io_device *device, const xx_scan_options *options, xx_scan_result *result, xx_pd_struct *pd)
 {
@@ -339,7 +515,7 @@ static xx_scan_result *xx_scan_run_overlay(xx_scan_engine *engine, xx_io_device 
 
     /* Use the same detection, buffering and dispatch path as a normal scan.
        The borrowed outer result must not be returned or freed by the child. */
-    part = xx_scan_internal(engine, overlay_device, &overlay_options, result, options->scan_id, pd);
+    part = xx_scan_internal(engine, overlay_device, &overlay_options, result, options->scan_id, XX_SCAN_PART_OVERLAY, pd);
     if (!part) goto failed;
     if (pd && pd->is_stop) {
         engine->free_result(engine, part);
@@ -359,10 +535,10 @@ failed:
     return NULL;
 }
 
-/* parent_id is 0 for the caller's input and, for an overlay, the scan_id of
+/* parent_id is 0 for the caller's input and, for a child, the scan_id of
  * the scan that found it. Every call draws its own scan_id. */
 static xx_scan_result *xx_scan_internal(xx_scan_engine *engine, xx_io_device *device, const xx_scan_options *options, const xx_scan_result *forbidden_result,
-                                        uint64_t parent_id, xx_pd_struct *pd)
+                                        uint64_t parent_id, xx_scan_part scan_part, xx_pd_struct *pd)
 {
     xx_scan_options defaults;
     xx_scan_options resolved;
@@ -399,7 +575,9 @@ static xx_scan_result *xx_scan_internal(xx_scan_engine *engine, xx_io_device *de
         return NULL;
     }
 
-    if (device_size >= 0 && (uint64_t)device_size < (uint64_t)xx_get_file_buffer_size() && !xx_io_is_memory(device)) {
+    /* Archive extraction already chooses resident memory, a temporary file,
+     * or a borrowed stored-member view. Preserve that storage decision. */
+    if (scan_part != XX_SCAN_PART_ARCHIVE && device_size >= 0 && (uint64_t)device_size < (uint64_t)xx_get_file_buffer_size() && !xx_io_is_memory(device)) {
         size_t size = (size_t)device_size;
         size_t copied = 0;
         if (size) {
@@ -434,8 +612,18 @@ static xx_scan_result *xx_scan_internal(xx_scan_engine *engine, xx_io_device *de
     resolved = *options;
     resolved.scan_id = xx_scan_new_id();
     resolved.parent_id = parent_id;
+    resolved.scan_part = scan_part;
+    if (scan_part != XX_SCAN_PART_RESOURCE) resolved.resource_type = NULL;
+    if (scan_part != XX_SCAN_PART_ARCHIVE) {
+        resolved.archive_member = NULL;
+        resolved.archive_offset = 0;
+        resolved.archive_size = 0;
+        resolved.archive_compressed = false;
+    }
     if (!xx_scan_resolve_options(engine, scan_device, &resolved, pd)) goto done;
     result = xx_scan_run_plan(engine, scan_device, &resolved, forbidden_result, pd);
+    if (result && resolved.resources_scan) result = xx_scan_run_resources(engine, scan_device, &resolved, result, pd);
+    if (result && resolved.archives_scan) result = xx_scan_run_archives(engine, scan_device, &resolved, result, pd);
     if (result && resolved.overlay_scan) result = xx_scan_run_overlay(engine, scan_device, &resolved, result, pd);
 
 done:
@@ -446,7 +634,7 @@ done:
 
 xx_scan_result *xx_scan(xx_scan_engine *engine, xx_io_device *device, const xx_scan_options *options, xx_pd_struct *pd)
 {
-    return xx_scan_internal(engine, device, options, NULL, 0, pd);
+    return xx_scan_internal(engine, device, options, NULL, 0, XX_SCAN_PART_INPUT, pd);
 }
 
 xx_scan_result *xx_scan_device(xx_scan_engine *engine, xx_io_device *device, const xx_scan_options *options, xx_pd_struct *pd)

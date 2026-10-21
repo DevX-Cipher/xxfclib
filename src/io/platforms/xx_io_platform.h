@@ -70,6 +70,29 @@ int xx_io_platform_file_close(void *handle);
  */
 int64_t xx_io_platform_file_size(void *handle);
 
+/* A read-only stream cannot have buffered writes waiting to extend the file,
+ * so its platform may obtain the size without seeking. Only use this for
+ * handles opened with mode 'r' and no '+'. */
+int64_t xx_io_platform_file_size_read_only(void *handle);
+
+/* Optional directory-relative, read-only access for batches of small regular
+ * files. Native descriptors avoid allocating a FILE and a device per entry.
+ * Handles are opaque to callers; -1 means unavailable or failed. Platforms
+ * without this path return -1 from read_directory_open so callers can retain
+ * their ordinary file-device fallback. Both opens enforce the read policy.
+ * read_regular_at follows symlinks but accepts only a regular file, returning
+ * its nonnegative size. The caller owns text allocation and closes every
+ * successful directory or file handle with close_descriptor. */
+intptr_t xx_io_platform_read_directory_open(const char *path);
+intptr_t xx_io_platform_read_regular_at(intptr_t directory, const char *name, int64_t *size);
+ssize_t xx_io_platform_read_descriptor(intptr_t handle, void *buf, size_t n);
+int xx_io_platform_close_descriptor(intptr_t handle);
+
+/* Resize is available only for writable, whole regular files. The operation
+ * keeps the file position, including a position beyond the resulting EOF. */
+bool xx_io_platform_file_can_resize(void *handle, const char *mode);
+int xx_io_platform_file_resize(void *handle, int64_t new_size);
+
 bool xx_io_platform_file_exists_a(const char *path);
 bool xx_io_platform_file_exists_w(const wchar_t *path);
 bool xx_io_platform_file_remove_a(const char *path);
@@ -111,14 +134,23 @@ bool xx_io_platform_secure_random(uint8_t *output, size_t size);
  * @brief Open another process's address space for reading and writing.
  *
  * @p pid is the target process id, or 0 for the current process (which lets
- * the device be exercised without a child). On POSIX this opens
- * /proc/<pid>/mem; on Windows it OpenProcess()es with VM read/write rights.
+ * the device be exercised without a child). Linux opens /proc/<pid>/mem,
+ * macOS obtains a Mach task port, and Windows opens a process with VM rights.
  * Reads and writes address memory directly (the offset is an absolute
  * address), so there is no meaningful total size.
  *
  * @return An opaque handle, or NULL on failure.
  */
 void *xx_io_platform_process_open(uint64_t pid);
+
+/** Open with explicit read (1), write (2), or combined (3) access. */
+void *xx_io_platform_process_open_ex(uint64_t pid, unsigned access);
+
+/* Process-only allocation/error hooks keep xx_io_process.c usable without
+ * the filesystem, format engines or CRT-dependent Windows allocation. */
+void *xx_io_platform_process_alloc(size_t size); /* Zero-filled. */
+void xx_io_platform_process_free(void *pointer);
+void xx_io_platform_process_set_error(int error); /* errno / Win32 LastError. */
 
 /** Read @p n bytes at absolute address @p addr. Returns bytes read, or -1. */
 ssize_t xx_io_platform_process_read(void *handle, uint64_t addr, void *buf, size_t n);
@@ -132,9 +164,9 @@ int xx_io_platform_process_close(void *handle);
 /**
  * @brief Adopt a caller-supplied native process handle for the process device.
  *
- * @p native is a Windows process HANDLE, or on POSIX a file descriptor for the
- * target's memory (such as an open /proc/<pid>/mem), passed as
- * (void*)(intptr_t)fd. Returns the internal handle the process read/write/close
+ * @p native is a Windows process HANDLE, a macOS task port cast through
+ * uintptr_t, or a Linux descriptor for the target's memory (such as an open
+ * /proc/<pid>/mem), passed as (void*)(intptr_t)fd. Returns the internal handle the process read/write/close
  * hooks expect, or NULL if @p native is not usable. The returned handle refers
  * to the same OS object; the caller keeps ownership.
  */

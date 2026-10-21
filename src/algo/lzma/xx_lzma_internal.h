@@ -86,35 +86,24 @@ typedef struct {
     uint32_t dict_size;
 } lzma_props;
 
+#include "asm/xx_lzma_asm.h"
+
+#if XX_LZMA_HAS_ASM
+#define Z7_LZMA_DEC_OPT 1
+#define LZMA_DECODE_REAL xx_lzma_decode_real_x64
+#endif
+#include "LzmaDec.h"
+
 /* =========================================================================
- * LZMA decoder state (probability arrays on heap)
+ * LZMA decoder state
  * ========================================================================= */
-typedef struct {
+typedef struct lzma_decoder_s {
+    CLzmaDec dec;
     lzma_props props;
-    lzma_prob *lit_probs; /* 0x300 << (lc + lp) entries */
-    lzma_prob is_match[LZMA_NUM_STATES][1 << LZMA_NUM_POS_BITS_MAX];
-    lzma_prob is_rep[LZMA_NUM_STATES];
-    lzma_prob is_rep_g0[LZMA_NUM_STATES];
-    lzma_prob is_rep_g1[LZMA_NUM_STATES];
-    lzma_prob is_rep_g2[LZMA_NUM_STATES];
-    lzma_prob is_rep0_long[LZMA_NUM_STATES][1 << LZMA_NUM_POS_BITS_MAX];
-    lzma_prob pos_slot[LZMA_NUM_LEN_TO_POS_STATES][1 << 6];
-    lzma_prob pos_decoders[LZMA_FULL_DISTANCES - LZMA_NUM_LEN_TO_POS_STATES * 4];
-    lzma_prob pos_align[1 << LZMA_NUM_ALIGN_BITS];
-    lzma_prob len_choice[2];
-    lzma_prob len_choice2[2];
-    lzma_prob len_low[2][1 << LZMA_NUM_POS_BITS_MAX][8];
-    lzma_prob len_mid[2][1 << LZMA_NUM_POS_BITS_MAX][8];
-    lzma_prob len_high[2][256];
-    /* Dictionary / sliding window */
-    uint8_t *dict;
-    uint64_t dict_pos;
-    uint32_t dict_mask; /* dict_size - 1 (power of 2) or UINT32_MAX */
-    uint32_t dict_filled;
+    uint64_t dict_flush_pos;
     uint32_t dict_limit;
-    /* Decoder state */
-    int state;
-    uint32_t rep[4];
+    uint32_t dict_mask;
+    uint32_t dict_filled;
     bool needs_init;
 } lzma_decoder;
 

@@ -33,7 +33,13 @@
 typedef struct xx_io_file_state {
     void *handle;
     char *path;
+    int read_write_at;
+    int read_only;
 } xx_io_file_state;
+
+/* Internal dispatch keeps an attached read cache coherent for direct calls
+ * through the optional callback as well as calls through xx_io_resize. */
+int xx_io_buffer_resize_dispatch(xx_io_device *device, int64_t new_size);
 
 static int xx_io_file_close_cb(xx_io_device *self);
 
@@ -41,6 +47,12 @@ static xx_io_file_state *xx_io_file_state_of(xx_io_device *self)
 {
     if (!self || self->close != xx_io_file_close_cb) return NULL;
     return (xx_io_file_state *)self->priv;
+}
+
+int xx_io_file_read_write_at_capability(xx_io_device *device)
+{
+    xx_io_file_state *state = xx_io_file_state_of(device);
+    return state ? state->read_write_at : -1;
 }
 
 static ssize_t xx_io_file_read_cb(xx_io_device *self, void *buf, size_t n)
@@ -71,6 +83,18 @@ static ssize_t xx_io_file_write_cb(xx_io_device *self, const void *buf, size_t n
     written = xx_io_platform_file_write(state->handle, buf, n);
     xx_io_file_temp_failed(state, kept);
     return written;
+}
+
+static int xx_io_file_resize_cb(xx_io_device *self, int64_t new_size)
+{
+    xx_io_file_state *state = xx_io_file_state_of(self);
+    int kept, result;
+    if (!state || !state->handle) return -1;
+    if (self->buffer_state) return xx_io_buffer_resize_dispatch(self, new_size);
+    kept = xx_io_extract_errno();
+    result = xx_io_platform_file_resize(state->handle, new_size);
+    xx_io_file_temp_failed(state, kept);
+    return result;
 }
 
 static int xx_io_file_seek_cb(xx_io_device *self, long off, int whence)
@@ -127,10 +151,13 @@ static int64_t xx_io_file_total_size_cb(xx_io_device *self)
     if (!state || !state->handle) {
         return -1;
     }
+    if (state->read_only) {
+        return xx_io_platform_file_size_read_only(state->handle);
+    }
     return xx_io_platform_file_size(state->handle);
 }
 
-static xx_io_device *xx_io_file_wrap(void *handle, const char *path)
+static xx_io_device *xx_io_file_wrap(void *handle, const char *path, const char *mode)
 {
     xx_io_file_state *state;
     xx_io_device *dev;
@@ -159,6 +186,16 @@ static xx_io_device *xx_io_file_wrap(void *handle, const char *path)
         xx_rt_memcpy(state->path, path, path_size + 1U);
     }
     state->handle = handle;
+    if (mode) {
+        int update = 0, append = 0;
+        const char *p;
+        for (p = mode; *p; ++p) {
+            if (*p == '+') update = 1;
+            if (*p == 'a') append = 1;
+        }
+        state->read_write_at = update && !append;
+        state->read_only = mode[0] == 'r' && !update;
+    }
 
     dev = (xx_io_device *)xx_mem_calloc(1, sizeof(xx_io_device));
     if (!dev) {
@@ -178,6 +215,7 @@ static xx_io_device *xx_io_file_wrap(void *handle, const char *path)
     dev->priv = state;
     dev->seek64 = xx_io_file_seek64_cb;
     dev->tell = xx_io_file_tell_cb;
+    if (xx_io_platform_file_can_resize(handle, mode)) dev->resize = xx_io_file_resize_cb;
 
     return dev;
 }
@@ -185,13 +223,13 @@ static xx_io_device *xx_io_file_wrap(void *handle, const char *path)
 xx_io_device *xx_io_file_open(const char *path, const char *mode)
 {
     if (!path || !mode) return NULL;
-    return xx_io_file_wrap(xx_io_platform_file_open(path, mode), path);
+    return xx_io_file_wrap(xx_io_platform_file_open(path, mode), path, mode);
 }
 
 xx_io_device *xx_io_temp_open(void)
 {
     if (xx_io_memory_only_active()) return xx_io_memory_temp_open();
-    return xx_io_file_wrap(xx_io_platform_temp_open(), NULL);
+    return xx_io_file_wrap(xx_io_platform_temp_open(), NULL, "w+b");
 }
 
 const char *xx_io_source_path(xx_io_device *device)
@@ -289,7 +327,7 @@ xx_io_device *xx_io_stage_open(const char *destination, const char *candidate, b
     *retry = destination && candidate;
     if (!*retry || xx_io_stage_same_leaf(destination, candidate) || xx_io_platform_file_exists_a(candidate)) return NULL;
     present = xx_io_platform_file_exists_a(destination);
-    device = xx_io_file_open(candidate, "wbx");
+    device = xx_io_file_open(candidate, "w+bx");
     if (!device) {
         /* Taken meanwhile, which is no failure; else the folder refuses it. */
         if (xx_io_platform_file_exists_a(candidate)) xx_io_extract_restore(kept);

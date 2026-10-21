@@ -16,6 +16,51 @@ typedef struct xx_dotnet_method_body {
     bool init_locals, has_exception_handlers;
 } xx_dotnet_method_body;
 
+#define XX_DOTNET_METADATA_MAX_COLUMNS 9
+#define XX_DOTNET_METADATA_TEXT_CAPACITY 512
+typedef enum xx_dotnet_metadata_kind {
+    XX_DOTNET_METADATA_INTEGER,
+    XX_DOTNET_METADATA_FLAGS,
+    XX_DOTNET_METADATA_STRING,
+    XX_DOTNET_METADATA_GUID,
+    XX_DOTNET_METADATA_BLOB,
+    XX_DOTNET_METADATA_TABLE,
+    XX_DOTNET_METADATA_CODED,
+    XX_DOTNET_METADATA_LIST,
+    XX_DOTNET_METADATA_TOKEN
+} xx_dotnet_metadata_kind;
+typedef struct xx_dotnet_metadata_column {
+    const char *name;
+    xx_dotnet_metadata_kind kind;
+    uint32_t raw, token;
+    int64_t offset; /* Heap payload offset, or referenced row offset. */
+    uint32_t size;  /* Heap payload bytes, or referenced row size. */
+    bool valid, is_null, truncated;
+    char text[XX_DOTNET_METADATA_TEXT_CAPACITY];
+} xx_dotnet_metadata_column;
+typedef struct xx_dotnet_metadata_row {
+    const char *name;
+    unsigned table, count;
+    uint32_t token, size;
+    int64_t offset;
+    bool valid;
+    xx_dotnet_metadata_column columns[XX_DOTNET_METADATA_MAX_COLUMNS];
+} xx_dotnet_metadata_row;
+
+/* ECMA-335 tables 0x00..0x2c and embedded Portable PDB tables 0x30..0x37.
+ * NULL names identify reserved/unsupported table numbers. No allocation is
+ * transferred to callers. A successful query preserves every raw value;
+ * invalid heap/reference/signature values set column.valid and row.valid
+ * false with a diagnostic in text. False means the row itself cannot be
+ * read. Text is bounded, terminal-safe UTF-8; truncated is explicit. Large
+ * blobs retain their complete offset/size plus a bounded hexadecimal preview.
+ * Ordinary field/method/property/local/type/generic-instantiation signatures
+ * are decoded with depth/work limits. Custom attribute, marshaling, security
+ * and debug payloads retain their bytes, since interpretation can require
+ * external assemblies or producer-specific schemas. */
+XXFC_API const char *xx_dotnet_metadata_table_name(unsigned table);
+XXFC_API bool xx_dotnet_inspect_decode_row(xx_dotnet_inspection *state, unsigned table, uint32_t rid, xx_dotnet_metadata_row *row);
+
 /* Queries borrow an analyzed inspection and allocate nothing. Offsets are
  * relative to its format base, including when the underlying device embeds
  * the PE. Both the inspection-view and parent-device cursors are preserved.

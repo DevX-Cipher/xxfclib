@@ -37,6 +37,9 @@
 #if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
 #define _DARWIN_C_SOURCE
 #endif
+#if defined(__linux__) && !defined(_DEFAULT_SOURCE)
+#define _DEFAULT_SOURCE
+#endif
 
 #include "xx_fs_platform.h"
 
@@ -78,32 +81,43 @@ bool xx_fs_platform_enumerate(const char *path, xx_fs_platform_entry_fn callback
         return false;
     }
     while ((item = readdir(directory)) != NULL) {
-        size_t path_length;
-        size_t name_length;
-        char *full;
         bool is_dir;
+        bool known_type = false;
 
         if (xx_fs_posix_is_dot(item->d_name)) {
             continue;
         }
-        /* d_type would save a stat, but it is not in POSIX and reports
-         * DT_UNKNOWN on several filesystems, so the type comes from stat. */
-        path_length = xx_rt_strlen(path);
-        name_length = xx_rt_strlen(item->d_name);
-        full = (char *)xx_rt_malloc(path_length + name_length + 2U);
-        if (!full) {
-            result = false;
-            break;
-        }
-        xx_rt_memcpy(full, path, path_length);
-        if (path_length > 0U && full[path_length - 1U] != '/') {
-            full[path_length++] = '/';
-        }
-        xx_rt_memcpy(full + path_length, item->d_name, name_length);
-        full[path_length + name_length] = '\0';
 
-        is_dir = xx_fs_platform_stat(full) == XX_FS_PLATFORM_DIR;
-        xx_rt_free(full);
+        /* d_type is an optional extension. Only trust the unambiguous file
+         * and directory cases; stat still follows links and handles unknown
+         * types, special files and platforms without the extension. */
+#if defined(DT_REG) && defined(DT_DIR) && \
+    (defined(_DIRENT_HAVE_D_TYPE) || defined(__APPLE__) || defined(__FreeBSD__) || \
+     defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__) || defined(__CYGWIN__))
+        if (item->d_type == DT_REG || item->d_type == DT_DIR) {
+            is_dir = item->d_type == DT_DIR;
+            known_type = true;
+        }
+#endif
+        if (!known_type) {
+            size_t path_length = xx_rt_strlen(path);
+            size_t name_length = xx_rt_strlen(item->d_name);
+            char *full = (char *)xx_rt_malloc(path_length + name_length + 2U);
+
+            if (!full) {
+                result = false;
+                break;
+            }
+            xx_rt_memcpy(full, path, path_length);
+            if (path_length > 0U && full[path_length - 1U] != '/') {
+                full[path_length++] = '/';
+            }
+            xx_rt_memcpy(full + path_length, item->d_name, name_length);
+            full[path_length + name_length] = '\0';
+
+            is_dir = xx_fs_platform_stat(full) == XX_FS_PLATFORM_DIR;
+            xx_rt_free(full);
+        }
 
         if (!callback(context, item->d_name, is_dir)) {
             result = false;

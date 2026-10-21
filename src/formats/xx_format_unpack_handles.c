@@ -202,7 +202,10 @@ static unsigned xx_handle_priority(xx_handle_type_t handle)
         case XX_FILE_TYPE_TAR_GZ: case XX_FILE_TYPE_TAR_BZ2: case XX_FILE_TYPE_TAR_XZ:
         case XX_FILE_TYPE_TAR_LZ4: case XX_FILE_TYPE_TAR_ZSTD: case XX_FILE_TYPE_TAR_COMPRESS:
         case XX_FILE_TYPE_TAR_LZIP: case XX_FILE_TYPE_TAR_LZMA: case XX_FILE_TYPE_TAR_LZOP: return 2U;
-        case XX_FILE_TYPE_NPM: return 3U;
+          /* A validated PFX chain exposes decoded members inside the Atari
+           * executable, while GEMDOS_LHA exposes its compressed LHA payload. */
+          case XX_FILE_TYPE_LARC_PFX: return 2U;
+          case XX_FILE_TYPE_NPM: return 3U;
         default: return 1U;
     }
 }

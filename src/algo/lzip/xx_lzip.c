@@ -293,3 +293,103 @@ cleanup:
     }
     return result;
 }
+
+/* Do not mistake a truncated header, or a header with at most two flipped
+ * magic bits, for an unrelated text tail. This mirrors Lzip's conservative
+ * distinction between trailing data and damage to a concatenated member. */
+static bool xx_lzip_header_like(const uint8_t *data, size_t size)
+{
+    static const uint8_t magic[4] = {'L', 'Z', 'I', 'P'};
+    unsigned different_bits = 0U;
+    size_t i;
+    if (size < sizeof(magic)) return size && !memcmp(data, magic, size);
+    for (i = 0U; i < sizeof(magic); ++i) {
+        unsigned bits = data[i] ^ magic[i];
+        while (bits) { different_bits += bits & 1U; bits >>= 1U; }
+    }
+    return different_bits <= 2U;
+}
+
+bool xx_lzip_decode_prefix_device(xx_io_device *source, int64_t source_offset, int64_t source_size, xx_io_device *destination,
+                                   int64_t *output_size, size_t *member_count, int64_t *consumed_size, xx_pd_struct *pd)
+{
+    const size_t io_capacity = xx_get_file_buffer_size();
+    int64_t source_total, end, cursor;
+    uint64_t written = 0U;
+    size_t count = 0U;
+    if (output_size) *output_size = -1;
+    if (member_count) *member_count = 0U;
+    if (consumed_size) *consumed_size = 0;
+    if (!source || !destination || source_offset < 0 || source_size < (int64_t)XX_LZIP_V0_MIN_MEMBER_SIZE ||
+        source_size > INT64_MAX - source_offset || (pd && xx_pd_is_stopped(pd))) return false;
+    source_total = xx_io_total_size(source);
+    if (source_total < source_offset || source_size > source_total - source_offset) return false;
+    end = source_offset + source_size;
+    cursor = source_offset;
+    while (cursor < end) {
+        uint8_t header[XX_LZIP_HEADER_SIZE], trailer[XX_LZIP_TRAILER_SIZE], properties[XX_LZMA_PROPS_SIZE];
+        size_t available_header = (uint64_t)(end - cursor) < sizeof(header) ? (size_t)(end - cursor) : sizeof(header);
+        size_t trailer_size;
+        uint32_t dictionary;
+        int64_t compressed_offset, available, consumed, footer, member_end;
+        uint64_t advertised_output;
+        lzma_props props;
+        lzma_range_dec decoder;
+        xx_lzip_counter counter;
+        xx_io_device sink;
+        bool decoded;
+        if ((pd && xx_pd_is_stopped(pd)) ||
+            !xx_lzip_read_exact_at(source, cursor, header, available_header, io_capacity)) return false;
+        if (!xx_lzip_has_header(header, available_header)) {
+            if (!count || xx_lzip_header_like(header, available_header)) return false;
+            break;
+        }
+        /* Version zero has no member-size link and is a single-member format. */
+        if (count >= XX_LZIP_MAX_MEMBERS || (count && header[4] == 0U) ||
+            !xx_lzip_dictionary_size(header[5], &dictionary)) return false;
+        compressed_offset = cursor + (int64_t)sizeof(header);
+        available = end - compressed_offset;
+        if (available < 5) return false;
+        xx_rt_memset(properties, 0, sizeof(properties));
+        properties[0] = UINT8_C(0x5d);
+        properties[1] = (uint8_t)dictionary;
+        properties[2] = (uint8_t)(dictionary >> 8U);
+        properties[3] = (uint8_t)(dictionary >> 16U);
+        properties[4] = (uint8_t)(dictionary >> 24U);
+        xx_rt_memset(&counter, 0, sizeof(counter));
+        counter.destination = destination;
+        counter.io_capacity = io_capacity;
+        counter.expected_size = (uint64_t)INT64_MAX - written;
+        xx_rt_memset(&sink, 0, sizeof(sink));
+        sink.write = xx_lzip_counter_write;
+        sink.priv = &counter;
+        if (!lzma_parse_props(properties, sizeof(properties), &props) ||
+            xx_io_seek64(source, compressed_offset, SEEK_SET) != 0 ||
+            !lzma_rd_init(&decoder, source, NULL, 0, available)) return false;
+        decoded = xx_lzma_decompress_stream(&decoder, &props, -1, &sink, NULL, 0U, NULL, pd);
+        consumed = available - decoder.remaining - (int64_t)(decoder.ibuf_len - decoder.ibuf_pos);
+        lzma_rd_free(&decoder);
+        if (!decoded || counter.failed || consumed < 5 || consumed > available) return false;
+        footer = compressed_offset + consumed;
+        trailer_size = header[4] == 0U ? 12U : XX_LZIP_TRAILER_SIZE;
+        if ((uint64_t)(end - footer) < trailer_size ||
+            !xx_lzip_read_exact_at(source, footer, trailer, trailer_size, io_capacity)) return false;
+        member_end = footer + (int64_t)trailer_size;
+        advertised_output = xx_data_get_u64(trailer + 4U, 8, 0, false);
+        if (advertised_output != counter.written || xx_data_get_u32(trailer, 4, 0, false) != counter.crc32 ||
+            (header[4] == 1U && xx_data_get_u64(trailer + 12U, 8, 0, false) != (uint64_t)(member_end - cursor))) return false;
+        written += counter.written;
+        cursor = member_end;
+        ++count;
+        if (header[4] == 0U && cursor < end) {
+            size_t n = (uint64_t)(end - cursor) < sizeof(header) ? (size_t)(end - cursor) : sizeof(header);
+            if (!xx_lzip_read_exact_at(source, cursor, header, n, io_capacity) || xx_lzip_header_like(header, n)) return false;
+            break;
+        }
+    }
+    if (!count) return false;
+    if (output_size) *output_size = (int64_t)written;
+    if (member_count) *member_count = count;
+    if (consumed_size) *consumed_size = cursor - source_offset;
+    return true;
+}

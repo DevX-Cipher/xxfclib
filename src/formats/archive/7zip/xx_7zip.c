@@ -170,6 +170,8 @@ typedef struct xx_7zip_folder_decode_s {
      * `written_total` they write. */
     int level;
     uint64_t written, written_total;
+    uint32_t final_crc;
+    bool has_final_crc;
 } xx_7zip_folder_decode;
 
 /* A coder's output: the bytes written to it count towards the level. */
@@ -1200,11 +1202,17 @@ static ssize_t xx_7zip_progress_write(xx_io_device *device, const void *buffer, 
     xx_7zip_progress_sink *sink = (xx_7zip_progress_sink *)device->priv;
     xx_7zip_folder_decode *context = sink->context;
     ssize_t count = xx_io_write(sink->target, buffer, size);
-    if (count > 0 && context->level >= 0) {
-        long double done;
-        context->written += (uint64_t)count;
-        done = (long double)context->written * (long double)context->folder->unpack_size / (long double)context->written_total;
-        xx_pd_set_current(context->pd, context->level, done < (long double)context->folder->unpack_size ? (uint64_t)done : context->folder->unpack_size);
+    if (count > 0) {
+        if (sink->target == context->destination) {
+            context->final_crc = xx_crc32_calc(context->final_crc, buffer, (size_t)count);
+            context->has_final_crc = true;
+        }
+        if (context->level >= 0) {
+            long double done;
+            context->written += (uint64_t)count;
+            done = (long double)context->written * (long double)context->folder->unpack_size / (long double)context->written_total;
+            xx_pd_set_current(context->pd, context->level, done < (long double)context->folder->unpack_size ? (uint64_t)done : context->folder->unpack_size);
+        }
     }
     return count;
 }
@@ -1372,7 +1380,8 @@ static int64_t xx_7zip_verify_size(xx_io_device *device)
     return sink && sink->position <= (uint64_t)INT64_MAX ? (int64_t)sink->position : -1;
 }
 
-static bool xx_7zip_decode_folder(Abstractformat *self, const xx_7zip_streams *streams, uint64_t folder_index, xx_io_device *destination, xx_pd_struct *pd);
+static bool xx_7zip_decode_folder(Abstractformat *self, const xx_7zip_streams *streams, uint64_t folder_index, xx_io_device *destination, xx_pd_struct *pd,
+                                  uint32_t *out_final_crc, bool *out_has_crc);
 
 /* The verdicts on the files of `folder_index`, in cache->verdicts: false
  * when the folder cannot be checked this way (its files' substreams are not
@@ -1404,7 +1413,7 @@ static bool xx_7zip_verify_folder(Abstractformat *self, xx_7zip_private *priv, x
     sink.device.priv = &sink;
     sink.device.write = xx_7zip_verify_write;
     sink.device.total_size = xx_7zip_verify_size;
-    decoded = xx_7zip_decode_folder(self, &priv->streams, folder_index, &sink.device, pd);
+    decoded = xx_7zip_decode_folder(self, &priv->streams, folder_index, &sink.device, pd, NULL, NULL);
     for (i = 0U; i < sink.member_count; ++i) {
         uint8_t *verdict = &cache->verdicts[sink.members[i]];
         /* A file of no bytes at the end is reached by no write. */
@@ -1416,7 +1425,8 @@ static bool xx_7zip_verify_folder(Abstractformat *self, xx_7zip_private *priv, x
     return true;
 }
 
-static bool xx_7zip_decode_folder(Abstractformat *self, const xx_7zip_streams *streams, uint64_t folder_index, xx_io_device *destination, xx_pd_struct *pd)
+static bool xx_7zip_decode_folder(Abstractformat *self, const xx_7zip_streams *streams, uint64_t folder_index, xx_io_device *destination, xx_pd_struct *pd,
+                                  uint32_t *out_final_crc, bool *out_has_crc)
 {
     const xx_7zip_folder *folder;
     xx_7zip_folder_decode context;
@@ -1458,9 +1468,14 @@ static bool xx_7zip_decode_folder(Abstractformat *self, const xx_7zip_streams *s
         if (!context.output_data[i]) goto cleanup;
     if (folder->crc_defined &&
         (destination->write == xx_7zip_verify_write ? ((const xx_7zip_verify_sink *)destination->priv)->folder_crc != folder->crc
-                                                    : !xx_crc_verify_device(destination, 0, (int64_t)folder->unpack_size, XX_CRC_TYPE_CRC32, folder->crc, pd)))
+                                                    : context.has_final_crc ? context.final_crc != folder->crc
+                                                                            : !xx_crc_verify_device(destination, 0, (int64_t)folder->unpack_size, XX_CRC_TYPE_CRC32, folder->crc, pd)))
         goto cleanup;
     result = !(pd && xx_pd_is_stopped(pd));
+    if (result) {
+        if (out_final_crc) *out_final_crc = context.final_crc;
+        if (out_has_crc) *out_has_crc = context.has_final_crc;
+    }
 cleanup:
     xx_7zip_folder_decode_cleanup(&context);
     if (level >= 0) xx_pd_leave_level(pd, level);
@@ -1503,7 +1518,7 @@ static bool xx_7zip_decode_encoded_header(Abstractformat *self, const uint8_t *d
     buffer = (uint8_t *)xx_mem_alloc((size_t)streams.folders[0].unpack_size);
     if (!buffer) goto cleanup;
     xx_7zip_buffer_device_init(&destination, buffer, (size_t)streams.folders[0].unpack_size);
-    if (!xx_7zip_decode_folder(self, &streams, 0, &destination.device, NULL)) goto cleanup;
+    if (!xx_7zip_decode_folder(self, &streams, 0, &destination.device, NULL, NULL, NULL)) goto cleanup;
     if (streams.sub_crc_defined[0] && xx_crc32(XX_CRC_TYPE_CRC32, buffer, (size_t)streams.sub_sizes[0]) != streams.sub_crcs[0]) goto cleanup;
     *decoded = buffer;
     *decoded_size = (size_t)streams.folders[0].unpack_size;
@@ -2100,11 +2115,26 @@ static bool xx_7zip_extract_file_to_device(Abstractformat *self, const xx_7zip_f
             return cache->verdicts[index] == 1U && !(pd && xx_pd_is_stopped(pd));
     }
     keep = folder->num_substreams > 1U;
+    if (!keep && output && file->offset_in_folder == 0 && file->size == folder->unpack_size) {
+        /* Fast path: decode directly into destination without temporary file */
+        uint32_t final_crc = 0;
+        bool has_crc = false;
+        xx_7zip_extract_cache_clear(cache);
+        if (!xx_7zip_decode_folder(self, &priv->streams, (uint64_t)file->folder_index, output, pd, &final_crc, &has_crc)) return false;
+        if (file->crc_defined && !folder->crc_defined) {
+            if (has_crc) {
+                if (final_crc != file->crc) return false;
+            } else {
+                if (!xx_crc_verify_device(output, 0, (int64_t)file->size, XX_CRC_TYPE_CRC32, file->crc, pd)) return false;
+            }
+        }
+        return !(pd && xx_pd_is_stopped(pd));
+    }
     if (cache->device && cache->folder_index == (uint64_t)file->folder_index) decoded = cache->device;
     else {
         xx_7zip_extract_cache_clear(cache);
         decoded = xx_io_temp_open();
-        if (!decoded || !xx_7zip_decode_folder(self, &priv->streams, (uint64_t)file->folder_index, decoded, pd)) goto cleanup;
+        if (!decoded || !xx_7zip_decode_folder(self, &priv->streams, (uint64_t)file->folder_index, decoded, pd, NULL, NULL)) goto cleanup;
         if (keep) {
             cache->device = decoded;
             cache->size = folder->unpack_size;

@@ -39,6 +39,12 @@ static xx_io_sub_state *xx_io_sub_state_of(const xx_io_device *self)
     return (xx_io_sub_state *)self->priv;
 }
 
+int xx_io_sub_read_write_at_capability(xx_io_device *device)
+{
+    xx_io_sub_state *state = xx_io_sub_state_of(device);
+    return state ? !state->read_only && xx_io_can_read_write_at(state->parent) : -1;
+}
+
 static ssize_t xx_io_sub_transfer(xx_io_device *self, void *read_buf, const void *write_buf, size_t n, bool writing)
 {
     xx_io_sub_state *st = xx_io_sub_state_of(self);

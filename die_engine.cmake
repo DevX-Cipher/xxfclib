@@ -24,6 +24,8 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/scan/xx_scan_db.c
     ${CMAKE_CURRENT_LIST_DIR}/src/scan/xx_scan_engine.c
     ${CMAKE_CURRENT_LIST_DIR}/src/scan/xx_scan_overlay.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/scan/xx_scan_resources.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/scan/xx_scan_archives.c
     ${CMAKE_CURRENT_LIST_DIR}/src/scan/xx_scan_result.c
     ${CMAKE_CURRENT_LIST_DIR}/src/scan/xx_scan_color.c
     ${CMAKE_CURRENT_LIST_DIR}/src/sort/xx_sort_scan.c
@@ -55,6 +57,9 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/elf/xx_elf_resources.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/elf/xx_elf_data.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/gz/xx_gz.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/bz2/xx_bz2.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/lha/xx_lha.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/machofat/xx_machofat.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/installer/ipa/xx_ipa.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/filesystem/iso9660/xx_iso9660.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/filesystem/iso9660/xx_iso_zisofs_native.c
@@ -101,6 +106,7 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_data_signature.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_memory_map.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format_base.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format_handle_types.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format_names.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format_streams.c
 
@@ -151,6 +157,8 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/implode/xx_implode.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/kpa/xx_kpa.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/lzma/xx_lzma.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/lzh/xx_lzh.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/lzh/xx_lzh5.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/lzma/xx_lzma_dec.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/lzma/xx_lzma_enc.c
     ${CMAKE_CURRENT_LIST_DIR}/src/algo/lzma/xx_lzma_stream.c

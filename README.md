@@ -52,6 +52,56 @@ xxfclib/
         └── build_portable_windows.cmd  # Packaging script for Windows
 ```
 
+## Process memory
+
+`<xxfclib/io/xx_io.h>` exposes process address spaces through `xx_io_device`.
+Use `xx_io_process_open_ro(pid)` for inspection or
+`xx_io_process_open_ex(pid, XX_IO_PROCESS_READ_WRITE)` for explicit read/write
+access. `XX_IO_PROCESS_WRITE` supports write-only access, and PID zero means
+the current process. The legacy `xx_io_process_open` and `io_process_open`
+remain available with their read/write attempt and read-only fallback.
+
+`xx_io_process_read_at` and `xx_io_process_write_at` transfer bytes at a
+`uint64_t` virtual address and return the actual byte count or `-1`. Their
+`read_exact_at` and `write_exact_at` variants return `bool` and retry short
+transfers. All four preserve the device cursor. The generic stream API also
+works: its seek position is an absolute address limited to `INT64_MAX`, and
+the device reports an unknown total size. `xx_io_is_process` identifies these
+devices. Close them with `xx_io_process_close` or the generic `xx_io_close`.
+
+```c
+xx_io_device *memory = xx_io_process_open_ro(pid);
+if (memory) {
+    bool complete = xx_io_process_read_exact_at(memory, address, bytes, size);
+    /* Use bytes only when complete is true; failed reads can be partial. */
+    (void)complete;
+    xx_io_process_close(memory);
+}
+```
+
+`xx_io_process_open_handle_ex(native, access)` borrows an existing object:
+a Windows `HANDLE`, a Linux `/proc/<pid>/mem` descriptor cast through
+`intptr_t` (including descriptor zero), or a macOS Mach task port cast through
+`uintptr_t`. Closing the device leaves a borrowed object open. PID constructors
+own their native handles. Keep the device and any borrowed handle alive during
+concurrent reads; synchronize stream operations and closing.
+
+The native implementation uses Windows process-memory APIs, Linux `pread` /
+`pwrite`, and macOS `mach_vm_read_overwrite` / `mach_vm_write`. Explicit access
+modes are enforced by the device and OS permissions still apply. Errors use
+`errno` on POSIX and `GetLastError` on Windows. Failed transfers can update
+part of the buffer or process memory; they do not roll back, suspend the target
+or change page protections. Invalid modes, address overflow and writes through
+a read-only device fail before transferring bytes.
+
+For a small standalone consumer, include `xxprocessio.cmake`, compile
+`XXPROCESSIO_SOURCES`, add `XXPROCESSIO_INCLUDE_DIR`, define `XXFC_STATIC` for
+a static target, and link `XXPROCESSIO_LIBRARIES`. This subset supplies the
+process-specific APIs without the format engines or filesystem device module;
+generic I/O wrappers require the complete I/O module. Its portable source is
+`src/io/xx_io_process.c`, with native implementations under
+`src/io/platforms/xx_io_process_windows.inc` and `xx_io_process_posix.inc`.
+
 ## PE streams
 
 PE32/PE64 readers provide incremental import, export, resource, metadata and symbol
@@ -464,3 +514,154 @@ undefined-shift fix and the full redistribution notice are under
 [LICENSE](src/algo/lzfse/reference/LICENSE). Retain that notice with binary
 redistributions containing the encoder. Main CMake and the formats-only source
 profile both include the encoder; macOS Compression is linked only by tests.
+
+## Standalone generic I/O subset
+
+`xxio.cmake` supplies `XXIO_SOURCES`, `XXIO_INCLUDE_DIR`,
+`XXIO_COMPILE_DEFINITIONS` and `XXIO_LIBRARIES` for file, buffer, memory,
+subdevice, multivolume and process I/O. Add these sources to a C11 static
+target, define `XXFC_STATIC` publicly, apply the feature definitions privately,
+and link the listed native libraries. This includes the small native runtime
+needed by generic I/O without the executable format parsers.
+`xxprocessio.cmake` remains available when only process I/O is needed.
+
+`xx_io_device` has an optional `resize(device, int64_t new_size)` callback.
+Use `xx_io_resize` or `io_resize`: they reject negative sizes, return `0` on
+success or `-1` on unsupported input/failure, preserve the cursor even beyond
+the new EOF, and invalidate attached read caches after success. Writable
+whole regular files and disk temporary streams expose it; read-only files,
+memory devices and fixed-size views leave it null. Existing bytes before
+the new EOF are retained; extension contents follow the native backend.
+Memory-only scopes also prohibit resizing a disk file opened beforehand.
+`xx_io_can_read_write_at` checks random-access read/write capability. Built-in
+files require update mode (`+`) without append, so callers shifting file bytes
+can reject append streams even when their resize callback is present. Read-only
+memory and subdevices are respected; unknown-size devices are unavailable, and every nonempty
+multivolume child must allow writing. Custom
+devices must honor seek/read/write semantics; operations can still fail.
+Zero-initialize custom devices and rebuild consumers together with the
+library after this public structure change. The focused regression can be
+built independently from [tests/io_resize](tests/io_resize/README.md).
+
+## Reusable undo/redo history
+
+`<xxfclib/history/xx_history.h>` provides a command history independent of UI,
+I/O and threads. The algorithm and integration notes are in
+[src/history](src/history/README.md); `xxhistory.cmake` supplies its sources for
+standalone consumers. Full, formats and bytecode/emulation profiles include it.
+
+Each command supplies undo/redo callbacks, an owned payload, an optional disposer
+and a copied label. A linked list holds the commands and a cursor identifies the
+last applied command. Undo/redo move that cursor only after a successful replay.
+New commits discard the redo branch; an optional entry limit evicts old commands.
+Cleanup occurs exactly once for aborted, evicted, cleared or destroyed commands.
+
+Call `xx_history_prepare` before changing external data to reserve the command's
+storage. If the change succeeds, `xx_history_commit` publishes it without an
+allocation; otherwise roll back the change and call `xx_history_abort`. A failed
+preparation or aborted change preserves redo. `xx_history_push_applied` is also
+available for changes already applied by their caller. Replay receives a caller
+context for progress or detailed errors, and failed callbacks leave history at
+the same position. Callbacks own rollback of their external state.
+
+The caller serializes access; callbacks cannot reenter mutation of the same
+history. Payload storage is application-defined. HexView uses temporary byte
+streams, while another tool can retain object/property changes instead.
+Focused tests, including deterministic allocation failure and reentrancy, are
+in [tests/history](tests/history/README.md).
+
+## Process structure snapshots
+
+`<xxfclib/process/xx_process_structs.h>` provides read-only native process
+structure discovery and decoded field snapshots. `xx_process_structs_read`
+accepts a PID, optional recorded start identity and bounded discovery limits.
+`xx_process_structs_free` releases the result. Field descriptions reuse
+`xx_data_struct_field_desc`; unsigned target addresses have explicit validity
+flags and unreadable fields remain unavailable. Query results have no target
+address. Windows readers provide full named PEB32/64 and TEB32/64 symbol
+profiles for builds 19045 and 26100 on I386/AMD64, including WOW64, with
+ImageBaseAddress, ProcessHeap, ClientId, LastErrorValue, nested members and
+decoded flag bits. Unlisted builds/architectures use labeled SDK fallback
+views; stable named core aliases require an established x86/AMD64 ABI.
+ARM64 and x64 emulation on ARM64 do not reuse AMD64 private profiles. Layout
+sources and exact extents are documented beside the descriptor tables in
+src/process/platforms/xx_process_peb_layouts.h and xx_process_teb_layouts.h.
+Windows also covers NT_TIB/TLS slots, loader/list entries, native CLIENT_ID
+records, I/O/memory counters and FILETIME queries. Additional Windows records
+include full versioned loader/process-parameter views, current-directory and
+drive-slot records, direct loader DDAG/balanced-node/service-tag records,
+critical sections/debug records, activation stacks/active frames, GDI batches
+and remote ClientId views. Full loader profiles cover 19045 I386/AMD64 and
+26100 AMD64; 26100 WOW64 retains SDK loader views and uses a labeled phnt32
+process-parameter prefix. Parameter reads respect the declared block length
+and follow only normalized text pointers. VirtualQueryEx adds common
+MEMORY_BASIC_INFORMATION query fields for the PEB, process heap and image.
+Heap discovery follows PEB.ProcessHeap and the initial ProcessHeaps array,
+deduplicating addresses without a fixed heap-count cap. Signature-checked
+HEAP32/64 and SEGMENT_HEAP32/64 header schemas cover native I386 build 19045
+and AMD64 builds 19045/26100. Full WOW64 guest schemas cover NTDLL components
+19041.2965 and 26100.1591 on those respective OS builds, using verified
+Microsoft `wntdll.pdb` type records. Loaded guest PE32 CodeView GUID/age must
+match the profile. `HEAP32` is `0x258` bytes; `SEGMENT_HEAP32` is `0x580` or
+`0x740` bytes respectively. Unknown module identities and inaccessible
+metadata keep explicitly labeled short classification prefixes. Unknown or
+unreadable signatures appear as HEAP_HEADER32/64 probe records. Signatures
+and heap-array metadata are rechecked; changed heap field snapshots are
+discarded. Full layouts live in xx_process_heap_layouts.h and
+xx_process_segment_heap_layouts.h; xx_process_heap_discovery.h supplies the
+shared GUI/TUI/console collection. Full guest schemas and identity selection
+live in the `xx_process_wow64_*` heap headers. Existing structure limits apply
+to heaps.
+Standalone HEAP_ENTRY32/64 and HEAP_SEGMENT32/64 child records expose the
+legacy heap's encoding storage, validated segment headers and their embedded
+and first stored entries. Segment heap child records expose
+HEAP_VS_CONTEXT32/64 and HEAP_LFH_CONTEXT32/64 with their own addresses and
+rebased field metadata. Child views inherit the parent's native/WOW64 ABI
+selection, bounds and signature checks; prefix-only fallbacks do not infer
+private children. Legacy segment lists use backlink, owner, cycle and range
+checks without a fixed segment-count cap. Entries retain encoded raw storage;
+no allocation chain is derived from their size fields. Segment and parent
+identities are rechecked after child reads. `xx_process_heap_legacy_children.h`
+and `xx_process_heap_context_children.h` supply this shared collection.
+The suballocator schemas add HEAP_VS_SUBSEGMENT32/64, HEAP_LFH_SUBSEGMENT32/64
+and HEAP_LFH_BUCKET32/64 for the same selected native and exact WOW64 profiles.
+The shared collector follows the VS subsegment list, initialized untagged LFH
+buckets and their ordinary owner lists, including 19045 affinity slots. It
+checks target spans, bucket/owner metadata, backlinks, cycles and changed
+snapshots. Low-bit on-demand bucket counters, encoded active-subsegment
+references and 26100 private-slot references are not dereferenced. Only the
+declared fixed subsegment header is shown, including the first bitmap element;
+allocation blocks and variable bitmaps are not walked. These schemas and the
+collector live in `xx_process_heap_suballocator_layouts.h`,
+`xx_process_wow64_heap_suballocator_layouts.h` and
+`xx_process_heap_suballocator_discovery.h`.
+HEAP_VS_CHUNK_HEADER32/64 and HEAP_VS_CHUNK_FREE_HEADER32/64 provide separate
+stored views of members reached through an unencoded VS FreeChunkTree.
+The fixed schemas preserve header-size unions, the overlapping free-header
+Node, tagged parent storage and named encoded aliases without byte-unit or
+followable-pointer properties. Native and exact WOW64 profile selection is
+inherited from the parent. The collector checks target spans, node container
+offsets and parent links, detects cycles, honors structure limits and
+rechecks captured headers/tree state. Encoded trees and first/busy chunks
+remain unexpanded with explicit warnings; encoded sizes are never used to
+step through allocations. Metadata and collection live in
+`xx_process_heap_vs_chunk_layouts.h`,
+`xx_process_wow64_heap_vs_chunk_layouts.h` and
+`xx_process_heap_vs_chunk_discovery.h`.
+AMD64 and WOW64 chunk-size bit positions are PDB-derived. Native I386's four
+unverified size-bit aliases retain their physical four-byte storage with
+explicit position-unverified labels, rather than guessed extraction.
+Direct child discovery does not recursively traverse dependency, tree,
+activation-frame or heap-allocation graphs. Other platforms cover
+macOS process/thread/dyld information;
+Linux proc/AUXV, mapped ELF headers/program headers/dynamic entries and loader
+records; and FreeBSD kinfo_proc/kinfo_vmentry, AUXV and ps_strings records.
+FreeBSD sysctl query metadata does not require procfs; remote process-memory
+reads use native procfs when mounted and permitted. Inspection does not suspend
+the process and reports partial results through warnings. Collection is
+unlimited by default; positive options impose explicit caps. FreeBSD VM-map
+records use the structure cap, while the loader module cap is inapplicable.
+
+The full library registers these sources. Standalone hosted C11 consumers can
+include `xxprocessstructs.cmake` with `xxio.cmake`. CXNTSV uses this subset for
+its GUI, TUI and console tools without building the full format library.

@@ -245,6 +245,153 @@ int64_t xx_io_platform_file_size(void *handle)
     return sz;
 }
 
+int64_t xx_io_platform_file_size_read_only(void *handle)
+{
+    struct stat info;
+    int descriptor;
+
+    if (!handle) {
+        return -1;
+    }
+    descriptor = fileno((FILE *)handle);
+    if (descriptor >= 0 && fstat(descriptor, &info) == 0 && S_ISREG(info.st_mode) &&
+        info.st_size >= 0 && (uintmax_t)info.st_size <= INT64_MAX) {
+        return (int64_t)info.st_size;
+    }
+    /* Preserve the existing handling of nonregular streams and failures.
+     * Writable streams always use that path to flush pending output. */
+    return xx_io_platform_file_size(handle);
+}
+
+intptr_t xx_io_platform_read_directory_open(const char *path)
+{
+#if defined(AT_FDCWD) && defined(O_DIRECTORY) && defined(O_NONBLOCK) && defined(O_NOCTTY)
+    int descriptor;
+    int flags = O_RDONLY | O_DIRECTORY | O_NONBLOCK | O_NOCTTY;
+
+    if (!path || !xx_io_policy_file_open_allowed("rb")) return -1;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    do {
+        descriptor = open(path, flags);
+    } while (descriptor < 0 && errno == EINTR);
+    return (intptr_t)descriptor;
+#else
+    (void)path;
+    return -1;
+#endif
+}
+
+intptr_t xx_io_platform_read_regular_at(intptr_t directory, const char *name, int64_t *size)
+{
+#if defined(AT_FDCWD) && defined(O_DIRECTORY) && defined(O_NONBLOCK) && defined(O_NOCTTY)
+    struct stat info;
+    int descriptor;
+    int flags = O_RDONLY | O_NONBLOCK | O_NOCTTY;
+
+    if (size) *size = 0;
+    if (directory < 0 || directory > INT_MAX || !name || !size ||
+        !xx_io_policy_file_open_allowed("rb")) return -1;
+    /* Preserve the loader's pre-open regular-file check: do not knowingly
+     * open a device or other special entry. Flags 0 follow symlinks. */
+    if (fstatat((int)directory, name, &info, 0) != 0 || !S_ISREG(info.st_mode)) return -1;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    /* Do not use O_NOFOLLOW: signature symlinks are supported. Nonblocking
+     * open and O_NOCTTY prevent waiting on a FIFO or acquiring a terminal
+     * before fstat can reject nonregular files, including a raced entry. */
+    do {
+        descriptor = openat((int)directory, name, flags);
+    } while (descriptor < 0 && errno == EINTR);
+    if (descriptor < 0) return -1;
+    if (fstat(descriptor, &info) != 0 || !S_ISREG(info.st_mode) ||
+        info.st_size < 0 || (uintmax_t)info.st_size > INT64_MAX) {
+        (void)close(descriptor);
+        return -1;
+    }
+    *size = (int64_t)info.st_size;
+    return (intptr_t)descriptor;
+#else
+    (void)directory;
+    (void)name;
+    if (size) *size = 0;
+    return -1;
+#endif
+}
+
+ssize_t xx_io_platform_read_descriptor(intptr_t handle, void *buf, size_t n)
+{
+    size_t done = 0;
+
+    if (handle < 0 || handle > INT_MAX || !buf) return -1;
+    if (n > (size_t)PTRDIFF_MAX) n = (size_t)PTRDIFF_MAX;
+    while (done < n) {
+        ssize_t amount = read((int)handle, (char *)buf + done, n - done);
+        if (amount > 0) {
+            done += (size_t)amount;
+        } else if (amount == 0) {
+            break;
+        } else if (errno != EINTR) {
+            /* Like fread, retain a prefix obtained before a later error. */
+            return done ? (ssize_t)done : -1;
+        }
+    }
+    return (ssize_t)done;
+}
+
+int xx_io_platform_close_descriptor(intptr_t handle)
+{
+    int result;
+
+    if (handle < 0 || handle > INT_MAX) return -1;
+    /* Do not retry close: a descriptor can already be released on EINTR. */
+    result = close((int)handle);
+    if (result != 0) xx_io_extract_fail(errno);
+    return result;
+}
+
+bool xx_io_platform_file_can_resize(void *handle, const char *mode)
+{
+    struct stat info;
+    int descriptor, flags;
+    if (!handle || !mode || (mode[0] != 'w' && mode[0] != 'a' && !strchr(mode, '+'))) return false;
+    descriptor = fileno((FILE *)handle);
+    if (descriptor < 0) return false;
+    flags = fcntl(descriptor, F_GETFL);
+    return flags >= 0 && (flags & O_ACCMODE) != O_RDONLY && fstat(descriptor, &info) == 0 && S_ISREG(info.st_mode);
+}
+
+int xx_io_platform_file_resize(void *handle, int64_t new_size)
+{
+    FILE *file;
+    off_t position;
+    int descriptor;
+    if (!handle || new_size < 0 || (int64_t)(off_t)new_size != new_size) {
+        errno = !handle ? EBADF : (new_size < 0 ? EINVAL : EOVERFLOW);
+        xx_io_extract_fail(errno);
+        return -1;
+    }
+    if (!xx_io_policy_mutation_allowed()) return -1;
+    file = (FILE *)handle;
+    descriptor = fileno(file);
+    position = ftello(file);
+    if (descriptor < 0 || position < 0) {
+        xx_io_extract_fail(errno);
+        return -1;
+    }
+    /* fflush also discards unread input on POSIX. Reposition before changing
+     * EOF so a failed seek cannot leave a successfully resized file behind;
+     * it clears a prior EOF indication and keeps the logical stdio position.
+     * ftruncate itself never changes the descriptor's position. */
+    if (fflush(file) != 0 || fseeko(file, position, SEEK_SET) != 0 || ftruncate(descriptor, (off_t)new_size) != 0) {
+        xx_io_extract_fail(errno);
+        return -1;
+    }
+    return 0;
+}
+
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -587,88 +734,6 @@ bool xx_io_platform_secure_random(uint8_t *output, size_t size)
 wchar_t xx_io_platform_wseparator(void)
 {
     return L'/';
-}
-
-/* ---------------------------------------------------------- process memory */
-
-#include <fcntl.h>
-
-/* fd is stored as (void*)(intptr_t)(fd + 1) so a valid fd of 0 is not NULL. */
-void *xx_io_platform_process_open(uint64_t pid)
-{
-    char path[64];
-    int fd;
-
-    if (pid == 0) {
-        pid = (uint64_t)getpid();
-    }
-    xx_rt_snprintf(path, sizeof(path), "/proc/%llu/mem", (unsigned long long)pid);
-    fd = open(path, O_RDWR | O_CLOEXEC);
-    if (fd < 0) {
-        fd = open(path, O_RDONLY | O_CLOEXEC);
-    }
-    if (fd < 0) {
-        return NULL;
-    }
-    return (void *)(intptr_t)(fd + 1);
-}
-
-ssize_t xx_io_platform_process_read(void *handle, uint64_t addr, void *buf, size_t n)
-{
-    int fd = (int)((intptr_t)handle - 1);
-    ssize_t total = 0;
-    if (!handle || !buf) {
-        return -1;
-    }
-    while ((size_t)total < n) {
-        ssize_t got = pread(fd, (unsigned char *)buf + total, n - (size_t)total, (off_t)(addr + (uint64_t)total));
-        if (got < 0) {
-            return total > 0 ? total : -1;
-        }
-        if (got == 0) {
-            break;
-        }
-        total += got;
-    }
-    return total;
-}
-
-ssize_t xx_io_platform_process_write(void *handle, uint64_t addr, const void *buf, size_t n)
-{
-    int fd = (int)((intptr_t)handle - 1);
-    ssize_t total = 0;
-    if (!handle || !buf) {
-        return -1;
-    }
-    while ((size_t)total < n) {
-        ssize_t put = pwrite(fd, (const unsigned char *)buf + total, n - (size_t)total, (off_t)(addr + (uint64_t)total));
-        if (put < 0) {
-            return total > 0 ? total : -1;
-        }
-        if (put == 0) {
-            break;
-        }
-        total += put;
-    }
-    return total;
-}
-
-int xx_io_platform_process_close(void *handle)
-{
-    if (!handle) {
-        return -1;
-    }
-    return close((int)((intptr_t)handle - 1));
-}
-
-void *xx_io_platform_process_adopt(void *native)
-{
-    int fd = (int)(intptr_t)native;
-    if (fd < 0) {
-        return NULL;
-    }
-    /* Same fd+1 encoding the open path uses, so a valid fd 0 is not NULL. */
-    return (void *)(intptr_t)(fd + 1);
 }
 
 #endif /* !_WIN32 */

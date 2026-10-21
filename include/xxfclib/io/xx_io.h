@@ -69,6 +69,9 @@ struct xx_io_device {
     int64_t (*tell)(xx_io_device *self);
     xx_io_buffer_state *buffer_state; /* Opaque state managed by xx_io_buffer_*. */
     bool buffer_enabled; /* Use xx_io_set_buffer_enabled to change buffering. */
+    /* Optional whole-device resizing: 0 on success, -1 on failure.
+     * NULL means unsupported. Use xx_io_resize for cache-aware dispatch. */
+    int (*resize)(xx_io_device *self, int64_t new_size);
 };
 
 /* Compatibility member aliases matching camelCase / user naming */
@@ -94,6 +97,27 @@ XXFC_API int xx_io_seek64(xx_io_device *d, int64_t off, int whence);
 XXFC_API int64_t xx_io_tell(xx_io_device *d);
 
 XXFC_API int xx_io_close(xx_io_device *d);
+
+/** Resize a supported device to a nonnegative byte size. Returns 0 on success,
+ * -1 for unsupported devices, invalid sizes or backend failure. The cursor is
+ * preserved, even if it lies beyond the new EOF. Existing bytes before the new
+ * EOF are retained; the contents of an extension follow the native backend.
+ * Built-in callbacks are provided for writable whole regular files and disk
+ * temporary files whose native access permits resizing. Read-only files,
+ * fixed memory, subdevices, multivolumes, processes and read-only buffer
+ * wrappers do not resize their storage. Successful resizing invalidates any
+ * borrowed buffer views; attached caches keep their logical cursor. */
+XXFC_API int xx_io_resize(xx_io_device *device, int64_t new_size);
+
+/** Whether a known-size device's seek/read/write callbacks support modification at an absolute
+ * position. Built-in files require a read/write update mode without append;
+ * append writes ignore seeking and therefore cannot shift file contents.
+ * Read-only memory and subdevices are respected; unknown-size devices
+ * (including process memory) are unavailable through this bounded query.
+ * multivolumes require every nonempty child range to permit modification.
+ * Custom devices must implement ordinary random-access callback semantics.
+ * This checks capabilities only; individual operations may still fail. */
+XXFC_API bool xx_io_can_read_write_at(xx_io_device *device);
 
 static inline int64_t xx_io_total_size(xx_io_device *d)
 {
@@ -160,6 +184,10 @@ static inline int64_t io_tell(xx_io_device *d)
 static inline int io_close(xx_io_device *d)
 {
     return xx_io_close(d);
+}
+static inline int io_resize(xx_io_device *d, int64_t new_size)
+{
+    return xx_io_resize(d, new_size);
 }
 static inline int64_t io_total_size(xx_io_device *d)
 {
@@ -326,7 +354,10 @@ XXFC_API bool xx_io_is_memory(const xx_io_device *device);
  * whole-file promotion is disabled. Wrapper source sizes remain fixed until
  * close. Required failures remain sticky.
  * Changing modes invalidates all borrowed views. The source must remain
- * unchanged while buffering is enabled. No concurrent access is supported.
+ * unchanged while buffering is enabled, except through xx_io_resize on this
+ * attached device. Successful resizing keeps buffering enabled, invalidates
+ * borrowed views/cached bytes, and clears transient cache read failures.
+ * No concurrent access is supported.
  * Returns false on NULL, unsupported input, allocation failure, or a failed
  * cursor restore; failure leaves the buffering mode unchanged. Repeating the
  * current mode succeeds without I/O. Do not change buffer_enabled directly. */
@@ -377,7 +408,8 @@ XXFC_API xx_io_device *xx_io_buffer_source(const xx_io_device *device);
  * memory limit. A failed
  * optional allocation/read leaves window streaming usable and is not sticky;
  * promotion is not retried. This does not move the wrapper cursor. Returned
- * whole-file bytes stay valid until close or a buffering mode change. The previous window allocation is
+ * whole-file bytes stay valid until close, a buffering mode change, or successful
+ * resizing of an attached device. The previous window allocation is
  * retained on promotion so pointers into that window remain readable. */
 XXFC_API const unsigned char *xx_io_buffer_whole(xx_io_device *device, uint64_t upcoming);
 
@@ -386,7 +418,8 @@ XXFC_API const unsigned char *xx_io_buffer_whole(xx_io_device *device, uint64_t 
  * the available byte count, zero on failure. The view ends at a cache boundary
  * or EOF, and may use a retained eight-byte tail of the previous window.
  * Window/tail pointers may be overwritten by a later cache miss; resident and
- * promoted pointers remain valid until close or a buffering mode change. Successful promotion retains the
+ * promoted pointers remain valid until close, a buffering mode change, or
+ * successful resizing of an attached device. Successful promotion retains the
  * old window allocation, but does not preserve prior tail contents. */
 XXFC_API const unsigned char *xx_io_buffer_view(xx_io_device *device, int64_t offset, size_t *count);
 
@@ -418,33 +451,78 @@ static inline bool io_sub_get_range(const xx_io_device *d, xx_io_device **p, int
     return xx_io_sub_get_range(d, p, offset, size);
 }
 
-/**
- * @brief Open a process's address space as an abstract I/O device.
+/** Process-memory access declared by a device. Explicit constructors enforce
+ * this mode before calling the OS; the native object must also grant access. */
+typedef enum xx_io_process_access_t {
+    XX_IO_PROCESS_READ = 1,
+    XX_IO_PROCESS_WRITE = 2,
+    XX_IO_PROCESS_READ_WRITE = 3
+} xx_io_process_access_t;
+
+/** Open a process's memory with exactly the requested access (no fallback).
+ * pid == 0 means the current process. Linux uses /proc/<pid>/mem, macOS a
+ * Mach task port, and Windows OpenProcess/ReadProcessMemory/WriteProcessMemory.
+ * OS permissions and address-width restrictions apply; inaccessible memory is
+ * not manufactured as zeroes. The returned device owns the native handle.
  *
- * The device reads and writes the target process's memory: the stream offset
- * is an absolute memory address (use xx_io_seek64 / xx_io_tell), and there is
- * no total size. @p pid is the target process id, or 0 for the current
- * process. On POSIX this uses /proc/<pid>/mem; on Windows,
- * ReadProcessMemory / WriteProcessMemory on an OpenProcess() handle.
+ * Process devices have no total size (size returns -1). The stream cursor is
+ * an absolute virtual address in [0,INT64_MAX]; use seek64/tell for that cursor.
+ * Direct process_*_at calls below accept the full uint64_t address range and
+ * do not move it. They bypass generic device buffering. Synchronize concurrent
+ * stream operations and keep the device open until all direct I/O completes.
  *
- * @return Allocated xx_io_device pointer, or NULL on error.
- */
+ * Only READ, WRITE, and READ_WRITE modes are valid. Failures return NULL or -1
+ * (false for exact helpers), with errno on POSIX or GetLastError on Windows.
+ * Invalid arguments/modes, denied device access and address arithmetic
+ * overflow are reported before any transfer. */
+XXFC_API xx_io_device *xx_io_process_open_ex(uint64_t pid, xx_io_process_access_t access);
+XXFC_API xx_io_device *xx_io_process_open_ro(uint64_t pid);
+
+/** Compatibility constructor: request read/write and fall back to read-only
+ * when the OS denies writable access. The compatibility device permits write
+ * attempts, which may still fail at the OS. Use open_ex/open_ro when the
+ * declared device access must be enforced. pid == 0 selects this process. */
 XXFC_API xx_io_device *xx_io_process_open(uint64_t pid);
 XXFC_API xx_io_device *io_process_open(uint64_t pid);
 
-/**
- * @brief Wrap an already-open process handle as a process-memory device.
- *
- * Like xx_io_process_open, but adopts a handle the caller already holds
- * instead of opening one: a Windows process HANDLE, or on POSIX a memory file
- * descriptor (such as /proc/<pid>/mem) passed as (void*)(intptr_t)fd. The
- * device borrows the handle and does NOT close it - the caller keeps
- * ownership - so a debugger can share the handle it already has.
- *
- * @return Allocated xx_io_device pointer, or NULL on error.
- */
+/** Borrow an already-open native object with declared device access.
+ * Windows: process HANDLE. Linux: raw /proc/<pid>/mem file descriptor cast as
+ * (void *)(intptr_t)fd, including fd == 0. macOS: Mach task port cast as
+ * (void *)(uintptr_t)task. The OS object must grant the requested operations;
+ * this call cannot add native rights. The device never closes/deallocates a
+ * borrowed object, including when device allocation fails. The caller must
+ * keep it alive until after closing the device. */
+XXFC_API xx_io_device *xx_io_process_open_handle_ex(void *native_handle, xx_io_process_access_t access);
+/** Borrowed-handle compatibility form; declares read/write access. */
 XXFC_API xx_io_device *xx_io_process_open_handle(void *native_handle);
 XXFC_API xx_io_device *io_process_open_handle(void *native_handle);
+
+/** Transfer memory at an absolute virtual address without changing the stream
+ * cursor. NULL buffer is valid only when n == 0. A zero-length call still
+ * validates the device and its access mode. The complete addressed range must
+ * fit uint64_t; individual transfers are capped at PTRDIFF_MAX bytes so their
+ * count fits ssize_t. A nonnegative return is the actual byte count, possibly
+ * short (including zero); -1 means no reported progress. A short transfer may
+ * end at an inaccessible page. OS address-width limits can reject ranges that
+ * the uint64_t API itself can represent. These functions accept process
+ * devices only; use xx_io_is_process to check a device's kind. */
+XXFC_API ssize_t xx_io_process_read_at(xx_io_device *device, uint64_t address, void *buffer, size_t n);
+XXFC_API ssize_t xx_io_process_write_at(xx_io_device *device, uint64_t address, const void *buffer, size_t n);
+
+/** Retry positive short transfers until all bytes have been transferred.
+ * Zero progress before completion fails. The cursor is unchanged, including
+ * on failure. Neither operation is transactional: a failed read can leave its
+ * destination buffer partially updated, and a failed write can have already
+ * changed target memory. No rollback or target suspension is performed. */
+XXFC_API bool xx_io_process_read_exact_at(xx_io_device *device, uint64_t address, void *buffer, size_t n);
+XXFC_API bool xx_io_process_write_exact_at(xx_io_device *device, uint64_t address, const void *buffer, size_t n);
+
+/** True only for a directly opened/wrapped process device, not a subdevice or
+ * an unrelated custom device. NULL returns false. Does not perform native I/O. */
+XXFC_API bool xx_io_is_process(const xx_io_device *device);
+/** Close a process device and its owned native object, preserving borrowed
+ * objects. xx_io_close(device) remains valid. Rejects other device kinds. */
+XXFC_API int xx_io_process_close(xx_io_device *device);
 
 /** One fixed byte range in a multi-volume stream (zero-length ranges allowed). */
 typedef struct xx_io_volume {

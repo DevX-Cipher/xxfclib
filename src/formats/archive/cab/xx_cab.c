@@ -9,6 +9,7 @@
 #include "xxfclib/algo/store/xx_store.h"
 #include "xxfclib/io/xx_io.h"
 #include "xxfclib/memory/xx_memory.h"
+#include "../../xx_archive_output_name.h"
 #include "xxfclib/strings/xx_string.h"
 #include <limits.h>
 #include <stdio.h>
@@ -480,11 +481,13 @@ bool xx_cab_unpack_current_archive_record(Abstractformat *f, xx_archive_record_s
     uint8_t *folder = NULL;
     size_t folder_size = 0;
     const char *base = NULL;
-    char *owned = NULL, *path = NULL;
+    char *owned = NULL, *path = NULL, *relative = NULL;
     bool ok = false, created = false;
     if (!f || !s || s->format != f || !s->has_record || !(c = (cab_context *)s->internal_state) || c->index >= c->file_count || (p && xx_pd_is_stopped(p))) return false;
     x = &c->files[c->index];
-    if (!cab_safe(x->name)) goto done;
+    relative = xx_archive_output_name(x->name, 0, XX_ARCHIVE_NAME_ROOTED);
+    XX_ARCHIVE_OUTPUT_RESOLVE(relative, c->files, c->file_count, c->index, name, 0, XX_ARCHIVE_NAME_ROOTED);
+    if (!relative || !cab_safe(relative)) goto done;
     if (c->decoded_folder && c->decoded_index != x->folder) {
         xx_mem_free(c->decoded_folder);
         c->decoded_folder = NULL;
@@ -508,7 +511,7 @@ bool xx_cab_unpack_current_archive_record(Abstractformat *f, xx_archive_record_s
         base = owned;
     }
     if (!base) goto done;
-    path = (base[0] && base[xx_str_len(base) - 1] != '/' && base[xx_str_len(base) - 1] != '\\') ? xx_str_concat3(base, "/", x->name) : xx_str_concat(base, x->name);
+    path = (base[0] && base[xx_str_len(base) - 1] != '/' && base[xx_str_len(base) - 1] != '\\') ? xx_str_concat3(base, "/", relative) : xx_str_concat(base, relative);
     if (!path || !xx_store_create_dirs_a(path, false)) goto done;
     {
         xx_io_device *d = xx_io_file_open(path, "wb");
@@ -529,6 +532,7 @@ bool xx_cab_unpack_current_archive_record(Abstractformat *f, xx_archive_record_s
 done:
     if (!ok && created) xx_rt_remove(path);
     if (path) xx_str_free(path);
+    if (relative) xx_mem_free(relative);
     if (owned) xx_str_free(owned);
     return ok;
 }

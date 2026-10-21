@@ -30,6 +30,7 @@
 #include "xxfclib/algo/claylz/xx_claylz.h"
 #include "xxfclib/algo/store/xx_store.h"
 #include "xxfclib/memory/xx_memory.h"
+#include "../../xx_archive_output_name.h"
 #include "xxfclib/strings/xx_string.h"
 
 #include <stdio.h>
@@ -576,10 +577,16 @@ bool xx_claylz_unpack_current_archive_record(Abstractformat *self, xx_archive_re
         xx_str_free(converted_path);
         return false;
     }
-    if (base_path[0] != '\0' && base_path[xx_str_len(base_path) - 1U] != '/' && base_path[xx_str_len(base_path) - 1U] != '\\') {
-        target_path = xx_str_concat3(base_path, "/", member->name);
-    } else {
-        target_path = xx_str_concat(base_path, member->name);
+    {
+        char *relative = xx_archive_output_name(member->name, 437, 0);
+        XX_ARCHIVE_OUTPUT_RESOLVE(relative, stream->items, stream->count, stream->index, name, 437, 0);
+        if (!relative) { xx_str_free(converted_path); return false; }
+        if (base_path[0] != '\0' && base_path[xx_str_len(base_path) - 1U] != '/' && base_path[xx_str_len(base_path) - 1U] != '\\') {
+            target_path = xx_str_concat3(base_path, "/", relative);
+        } else {
+            target_path = xx_str_concat(base_path, relative);
+        }
+        xx_mem_free(relative);
     }
     xx_str_free(converted_path);
     if (!target_path) return false;

@@ -52,24 +52,59 @@ int js_is_bytecode(const void *pData, size_t nSize)
 
 /* ----------------------------------------------------------- serialization  */
 
+/* Reserve a complete fixed-size node prefix once instead of appending each
+ * scalar separately. Keep the buffer's sticky failure and trailing-zero
+ * contracts, including when the requested size cannot be represented. */
+static uint8_t *serialize_append_space(xx_buf_t *pBuf, size_t nSize)
+{
+    size_t nNewSize;
+    uint8_t *pResult;
+
+    if (pBuf->failed) {
+        return NULL;
+    }
+    if (nSize > (size_t)-1 - pBuf->size) {
+        pBuf->failed = true;
+        return NULL;
+    }
+    nNewSize = pBuf->size + nSize;
+    if (nNewSize >= pBuf->capacity && !xx_buf_reserve(pBuf, nNewSize)) {
+        return NULL;
+    }
+
+    pResult = (uint8_t *)pBuf->data + pBuf->size;
+    pBuf->size = nNewSize;
+    pBuf->data[nNewSize] = '\0';
+    return pResult;
+}
+
+/* The format stores scalar object representations in native byte order.
+ * Byte access avoids alignment requirements and structure padding, while the
+ * fixed sizes at the call sites let the compiler fold these small copies. */
+static void serialize_scalar(uint8_t *pDest, const void *pValue, size_t nSize)
+{
+    const uint8_t *pBytes = (const uint8_t *)pValue;
+    size_t i;
+    for (i = 0; i < nSize; i++) {
+        pDest[i] = pBytes[i];
+    }
+}
+
 static void serialize_node(xx_buf_t *pBuf, const JSNode *pNode)
 {
     uint8_t type = 0;
     uint8_t op = 0;
     int32_t line = 0;
     uint16_t flags = 0;
+    uint8_t *pPrefix;
 
-    if (!pNode) {
+    if (!pNode || pBuf->failed) {
         return;
     }
 
     type = (uint8_t)pNode->type;
     op = (uint8_t)pNode->op;
     line = (int32_t)pNode->nLine;
-
-    xx_buf_append(pBuf, &type, 1);
-    xx_buf_append(pBuf, &op, 1);
-    xx_buf_append(pBuf, &line, sizeof(line));
 
     if (pNode->pStr) flags |= BC_FLAG_STR;
     if (pNode->pStr2) flags |= BC_FLAG_STR2;
@@ -81,10 +116,16 @@ static void serialize_node(xx_buf_t *pBuf, const JSNode *pNode)
     if (pNode->nVarNames > 0 && pNode->ppVarNames) flags |= BC_FLAG_VARNAMES;
     if (pNode->type == N_NUM || pNode->nNum != 0.0) flags |= BC_FLAG_NUM;
 
-    xx_buf_append(pBuf, &flags, sizeof(flags));
-
+    pPrefix = serialize_append_space(pBuf, 8U + ((flags & BC_FLAG_NUM) ? sizeof(double) : 0U));
+    if (!pPrefix) {
+        return;
+    }
+    pPrefix[0] = type;
+    pPrefix[1] = op;
+    serialize_scalar(pPrefix + 2, &line, sizeof(line));
+    serialize_scalar(pPrefix + 6, &flags, sizeof(flags));
     if (flags & BC_FLAG_NUM) {
-        xx_buf_append(pBuf, &pNode->nNum, sizeof(double));
+        serialize_scalar(pPrefix + 8, &pNode->nNum, sizeof(double));
     }
 
     if (flags & BC_FLAG_STR) {
@@ -106,6 +147,9 @@ static void serialize_node(xx_buf_t *pBuf, const JSNode *pNode)
     if (flags & BC_FLAG_NODE_B) serialize_node(pBuf, pNode->b);
     if (flags & BC_FLAG_NODE_C) serialize_node(pBuf, pNode->c);
     if (flags & BC_FLAG_NODE_D) serialize_node(pBuf, pNode->d);
+    if (pBuf->failed) {
+        return;
+    }
 
     if (flags & BC_FLAG_LIST) {
         uint32_t count = (uint32_t)pNode->nList;
@@ -113,12 +157,13 @@ static void serialize_node(xx_buf_t *pBuf, const JSNode *pNode)
         xx_buf_append(pBuf, &count, sizeof(count));
         for (i = 0; i < pNode->nList; i++) {
             if (pNode->ppList[i] == NULL) {
-                uint8_t marker = 0;
-                xx_buf_append(pBuf, &marker, 1);
+                xx_buf_append_char(pBuf, 0);
             } else {
-                uint8_t marker = 1;
-                xx_buf_append(pBuf, &marker, 1);
+                xx_buf_append_char(pBuf, 1);
                 serialize_node(pBuf, pNode->ppList[i]);
+            }
+            if (pBuf->failed) {
+                return;
             }
         }
     }
@@ -130,6 +175,9 @@ static void serialize_node(xx_buf_t *pBuf, const JSNode *pNode)
             uint32_t len = (uint32_t)xx_rt_strlen(pNode->ppVarNames[i]);
             xx_buf_append(pBuf, &len, sizeof(len));
             xx_buf_append(pBuf, pNode->ppVarNames[i], len);
+            if (pBuf->failed) {
+                return;
+            }
         }
     }
 }

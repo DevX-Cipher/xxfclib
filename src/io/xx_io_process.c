@@ -1,193 +1,290 @@
 /* Copyright (c) 2026 hors<horsicq@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+ * SPDX-License-Identifier: MIT
  */
 
-/**
- * @file xx_io_process.c
- * @brief Process-memory backed I/O device.
- *
- * A thin xx_io_device over another process's address space. The stream offset
- * is an absolute memory address, so seek positions the address, and read /
- * write transfer memory at it and advance. There is no total size. The
- * platform layer (xx_io_platform_process_*) does the actual reads and writes.
- */
+/* Native implementation is included below in this translation unit. These
+ * feature profiles must precede even the public header's system includes. */
+#if !defined(_WIN32)
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE
+#endif
+#endif
 
 #include "xxfclib/io/xx_io.h"
-#include "xxfclib/memory/xx_memory.h"
-
 #include "platforms/xx_io_platform.h"
 
-typedef struct {
-    void *handle; /* platform process handle */
-    uint64_t pos; /* current absolute address */
-    int owns;     /* close the handle when the device closes */
+#include <errno.h> /* Error constants only; native code stores the error. */
+#include <stdint.h>
+
+typedef struct xx_io_process_state {
+    void *handle;
+    uint64_t pos;
+    unsigned int access;
+    int owns;
 } xx_io_process_state_t;
 
-static ssize_t xx_io_process_read_cb(xx_io_device *self, void *buf, size_t n)
-{
-    xx_io_process_state_t *st;
-    ssize_t got;
+static ssize_t xx_io_process_read_cb(xx_io_device *, void *, size_t);
+static ssize_t xx_io_process_write_cb(xx_io_device *, const void *, size_t);
+static int xx_io_process_seek64_cb(xx_io_device *, int64_t, int);
+static int xx_io_process_close_cb(xx_io_device *);
 
-    if (!self || !self->priv || !buf) {
-        return -1;
+static int xx_io_process_access_valid(xx_io_process_access_t access)
+{
+    return access == XX_IO_PROCESS_READ || access == XX_IO_PROCESS_WRITE || access == XX_IO_PROCESS_READ_WRITE;
+}
+
+bool xx_io_is_process(const xx_io_device *device)
+{
+    return device && device->priv && device->read == xx_io_process_read_cb &&
+           device->write == xx_io_process_write_cb && device->seek64 == xx_io_process_seek64_cb &&
+           device->close == xx_io_process_close_cb;
+}
+
+static xx_io_process_state_t *xx_io_process_state_of(const xx_io_device *device)
+{
+    if (!xx_io_is_process(device)) {
+        xx_io_platform_process_set_error(EINVAL);
+        return NULL;
     }
-    if (n == 0) {
+    return (xx_io_process_state_t *)device->priv;
+}
+
+/* Use the last addressed byte rather than an exclusive end, so one byte at
+ * UINT64_MAX remains representable by the direct-address API. */
+static int xx_io_process_range_valid(uint64_t address, size_t n)
+{
+    if (n && (uint64_t)(n - 1) > UINT64_MAX - address) {
+        xx_io_platform_process_set_error(EOVERFLOW);
         return 0;
     }
-    if (n > (size_t)PTRDIFF_MAX) {
-        n = (size_t)PTRDIFF_MAX;
+    return 1;
+}
+
+static xx_io_process_state_t *xx_io_process_transfer_state(xx_io_device *device, uint64_t address,
+    const void *buffer, size_t n, unsigned int access)
+{
+    xx_io_process_state_t *state = xx_io_process_state_of(device);
+    if (!state) return NULL;
+    if (!xx_io_process_access_valid((xx_io_process_access_t)state->access)) {
+        xx_io_platform_process_set_error(EINVAL);
+        return NULL;
     }
-    st = (xx_io_process_state_t *)self->priv;
-    got = xx_io_platform_process_read(st->handle, st->pos, buf, n);
-    if (got > 0) {
-        st->pos += (uint64_t)got;
+    if (!(state->access & access)) {
+        xx_io_platform_process_set_error(EACCES);
+        return NULL;
     }
+    if ((!buffer && n) || !xx_io_process_range_valid(address, n)) {
+        if (!buffer && n) xx_io_platform_process_set_error(EINVAL);
+        return NULL;
+    }
+    return state;
+}
+
+ssize_t xx_io_process_read_at(xx_io_device *device, uint64_t address, void *buffer, size_t n)
+{
+    xx_io_process_state_t *state = xx_io_process_transfer_state(device, address, buffer, n, XX_IO_PROCESS_READ);
+    ssize_t result;
+    if (!state) return -1;
+    if (!n) return 0;
+    if (n > (size_t)PTRDIFF_MAX) n = (size_t)PTRDIFF_MAX;
+    result = xx_io_platform_process_read(state->handle, address, buffer, n);
+    if (result > 0 && (size_t)result > n) {
+        xx_io_platform_process_set_error(EIO);
+        return -1;
+    }
+    return result;
+}
+
+ssize_t xx_io_process_write_at(xx_io_device *device, uint64_t address, const void *buffer, size_t n)
+{
+    xx_io_process_state_t *state = xx_io_process_transfer_state(device, address, buffer, n, XX_IO_PROCESS_WRITE);
+    ssize_t result;
+    if (!state) return -1;
+    if (!n) return 0;
+    if (n > (size_t)PTRDIFF_MAX) n = (size_t)PTRDIFF_MAX;
+    result = xx_io_platform_process_write(state->handle, address, buffer, n);
+    if (result > 0 && (size_t)result > n) {
+        xx_io_platform_process_set_error(EIO);
+        return -1;
+    }
+    return result;
+}
+
+bool xx_io_process_read_exact_at(xx_io_device *device, uint64_t address, void *buffer, size_t n)
+{
+    size_t offset = 0;
+    if (!xx_io_process_transfer_state(device, address, buffer, n, XX_IO_PROCESS_READ)) return false;
+    while (offset < n) {
+        ssize_t got = xx_io_process_read_at(device, address + (uint64_t)offset, (unsigned char *)buffer + offset, n - offset);
+        if (got < 0) return false;
+        if (!got) { xx_io_platform_process_set_error(EIO); return false; }
+        offset += (size_t)got;
+    }
+    return true;
+}
+
+bool xx_io_process_write_exact_at(xx_io_device *device, uint64_t address, const void *buffer, size_t n)
+{
+    size_t offset = 0;
+    if (!xx_io_process_transfer_state(device, address, buffer, n, XX_IO_PROCESS_WRITE)) return false;
+    while (offset < n) {
+        ssize_t put = xx_io_process_write_at(device, address + (uint64_t)offset, (const unsigned char *)buffer + offset, n - offset);
+        if (put < 0) return false;
+        if (!put) { xx_io_platform_process_set_error(EIO); return false; }
+        offset += (size_t)put;
+    }
+    return true;
+}
+
+static int xx_io_process_stream_range(xx_io_process_state_t *state, size_t n)
+{
+    /* The cursor itself must remain representable by xx_io_tell's int64_t. */
+    if (state->pos > INT64_MAX || (uint64_t)n > (uint64_t)INT64_MAX - state->pos) {
+        xx_io_platform_process_set_error(EOVERFLOW);
+        return 0;
+    }
+    return 1;
+}
+
+static ssize_t xx_io_process_read_cb(xx_io_device *self, void *buffer, size_t n)
+{
+    xx_io_process_state_t *state = xx_io_process_state_of(self);
+    ssize_t got;
+    if (!state || !xx_io_process_stream_range(state, n)) return -1;
+    got = xx_io_process_read_at(self, state->pos, buffer, n);
+    if (got > 0) state->pos += (uint64_t)got;
     return got;
 }
 
-static ssize_t xx_io_process_write_cb(xx_io_device *self, const void *buf, size_t n)
+static ssize_t xx_io_process_write_cb(xx_io_device *self, const void *buffer, size_t n)
 {
-    xx_io_process_state_t *st;
+    xx_io_process_state_t *state = xx_io_process_state_of(self);
     ssize_t put;
-
-    if (!self || !self->priv || !buf) {
-        return -1;
-    }
-    if (n == 0) {
-        return 0;
-    }
-    if (n > (size_t)PTRDIFF_MAX) {
-        n = (size_t)PTRDIFF_MAX;
-    }
-    st = (xx_io_process_state_t *)self->priv;
-    put = xx_io_platform_process_write(st->handle, st->pos, buf, n);
-    if (put > 0) {
-        st->pos += (uint64_t)put;
-    }
+    if (!state || !xx_io_process_stream_range(state, n)) return -1;
+    put = xx_io_process_write_at(self, state->pos, buffer, n);
+    if (put > 0) state->pos += (uint64_t)put;
     return put;
 }
 
-static int xx_io_process_seek64_cb(xx_io_device *self, int64_t off, int whence)
+static int xx_io_process_seek64_cb(xx_io_device *self, int64_t offset, int origin)
 {
-    xx_io_process_state_t *st;
+    xx_io_process_state_t *state = xx_io_process_state_of(self);
     int64_t base;
-
-    if (!self || !self->priv) {
-        return -1;
-    }
-    st = (xx_io_process_state_t *)self->priv;
-    switch (whence) {
-        case SEEK_SET: base = 0; break;
-        case SEEK_CUR: base = (int64_t)st->pos; break;
-        default:
-            /* No size, so SEEK_END is meaningless for a process address. */
-            return -1;
-    }
-    if (off < -base) {
-        return -1; /* would place the address before 0 */
-    }
-    st->pos = (uint64_t)(base + off);
+    if (!state) return -1;
+    if (state->pos > INT64_MAX) { xx_io_platform_process_set_error(EOVERFLOW); return -1; }
+    if (origin == SEEK_SET) base = 0;
+    else if (origin == SEEK_CUR) base = (int64_t)state->pos;
+    else { xx_io_platform_process_set_error(origin == SEEK_END ? ESPIPE : EINVAL); return -1; }
+    if (offset < -base) { xx_io_platform_process_set_error(EINVAL); return -1; }
+    if (offset > INT64_MAX - base) { xx_io_platform_process_set_error(EOVERFLOW); return -1; }
+    state->pos = (uint64_t)(base + offset);
     return 0;
 }
 
-static int xx_io_process_seek_cb(xx_io_device *self, long off, int whence)
+static int xx_io_process_seek_cb(xx_io_device *self, long offset, int origin)
 {
-    return xx_io_process_seek64_cb(self, (int64_t)off, whence);
+    return xx_io_process_seek64_cb(self, (int64_t)offset, origin);
 }
 
 static int64_t xx_io_process_tell_cb(xx_io_device *self)
 {
-    if (!self || !self->priv) {
-        return -1;
-    }
-    return (int64_t)((xx_io_process_state_t *)self->priv)->pos;
+    xx_io_process_state_t *state = xx_io_process_state_of(self);
+    if (!state) return -1;
+    if (state->pos > INT64_MAX) { xx_io_platform_process_set_error(EOVERFLOW); return -1; }
+    return (int64_t)state->pos;
 }
 
 static int64_t xx_io_process_total_size_cb(xx_io_device *self)
 {
     (void)self;
-    return -1; /* an address space has no fixed size */
+    return -1; /* A process address space has no fixed stream size. */
 }
 
 static int xx_io_process_close_cb(xx_io_device *self)
 {
-    xx_io_process_state_t *st;
-    int rc = 0;
-
-    if (!self) {
-        return -1;
-    }
-    st = (xx_io_process_state_t *)self->priv;
-    if (st) {
-        if (st->handle && st->owns) {
-            rc = xx_io_platform_process_close(st->handle);
-        }
-        xx_mem_free(st);
-        self->priv = NULL;
-    }
-    xx_mem_free(self);
-    return rc;
+    xx_io_process_state_t *state = xx_io_process_state_of(self);
+    int result = 0;
+    if (!state) return -1;
+    if (state->owns) result = xx_io_platform_process_close(state->handle);
+    self->priv = NULL;
+    xx_io_platform_process_free(state);
+    xx_io_platform_process_free(self);
+    return result;
 }
 
-/* Wrap a platform process handle in a device. When owns is set the handle is
- * closed with the device; otherwise it is borrowed and left open. On failure
- * an owned handle is closed and a borrowed one is left untouched. */
-static xx_io_device *xx_io_process_wrap(void *handle, int owns)
+int xx_io_process_close(xx_io_device *device)
 {
-    xx_io_process_state_t *st;
-    xx_io_device *dev;
+    if (!xx_io_is_process(device)) { xx_io_platform_process_set_error(EINVAL); return -1; }
+    return xx_io_process_close_cb(device);
+}
 
-    if (!handle) {
+/* Platform allocation returns zeroed storage. No xx_mem/xx_rt implementation
+ * is required when a small consumer compiles this file by itself. */
+static xx_io_device *xx_io_process_wrap(void *handle, int owns, xx_io_process_access_t access)
+{
+    xx_io_process_state_t *state;
+    xx_io_device *device;
+    if (!handle) return NULL; /* Preserve the platform open/adopt error. */
+    state = (xx_io_process_state_t *)xx_io_platform_process_alloc(sizeof(*state));
+    if (!state) {
+        if (owns) (void)xx_io_platform_process_close(handle);
+        xx_io_platform_process_set_error(ENOMEM);
         return NULL;
     }
-    st = (xx_io_process_state_t *)xx_mem_calloc(1, sizeof(*st));
-    if (!st) {
-        if (owns) xx_io_platform_process_close(handle);
+    device = (xx_io_device *)xx_io_platform_process_alloc(sizeof(*device));
+    if (!device) {
+        if (owns) (void)xx_io_platform_process_close(handle);
+        xx_io_platform_process_free(state);
+        xx_io_platform_process_set_error(ENOMEM);
         return NULL;
     }
-    st->handle = handle;
-    st->pos = 0;
-    st->owns = owns;
+    state->handle = handle;
+    state->access = (unsigned int)access;
+    state->owns = owns;
+    device->read = xx_io_process_read_cb;
+    device->write = xx_io_process_write_cb;
+    device->seek = xx_io_process_seek_cb;
+    device->seek64 = xx_io_process_seek64_cb;
+    device->tell = xx_io_process_tell_cb;
+    device->close = xx_io_process_close_cb;
+    device->total_size = xx_io_process_total_size_cb;
+    device->get_total_size = xx_io_process_total_size_cb;
+    device->size = xx_io_process_total_size_cb;
+    device->priv = state;
+    return device;
+}
 
-    dev = (xx_io_device *)xx_mem_calloc(1, sizeof(*dev));
-    if (!dev) {
-        if (owns) xx_io_platform_process_close(handle);
-        xx_mem_free(st);
-        return NULL;
-    }
-    dev->read = xx_io_process_read_cb;
-    dev->write = xx_io_process_write_cb;
-    dev->seek = xx_io_process_seek_cb;
-    dev->close = xx_io_process_close_cb;
-    dev->total_size = xx_io_process_total_size_cb;
-    dev->get_total_size = xx_io_process_total_size_cb;
-    dev->size = xx_io_process_total_size_cb;
-    dev->priv = st;
-    dev->seek64 = xx_io_process_seek64_cb;
-    dev->tell = xx_io_process_tell_cb;
-    return dev;
+xx_io_device *xx_io_process_open_ex(uint64_t pid, xx_io_process_access_t access)
+{
+    if (!xx_io_process_access_valid(access)) { xx_io_platform_process_set_error(EINVAL); return NULL; }
+    return xx_io_process_wrap(xx_io_platform_process_open_ex(pid, (unsigned int)access), 1, access);
+}
+
+xx_io_device *xx_io_process_open_ro(uint64_t pid)
+{
+    return xx_io_process_open_ex(pid, XX_IO_PROCESS_READ);
 }
 
 xx_io_device *xx_io_process_open(uint64_t pid)
 {
-    return xx_io_process_wrap(xx_io_platform_process_open(pid), 1);
+    return xx_io_process_wrap(xx_io_platform_process_open(pid), 1, XX_IO_PROCESS_READ_WRITE);
+}
+
+xx_io_device *xx_io_process_open_handle_ex(void *native_handle, xx_io_process_access_t access)
+{
+    if (!xx_io_process_access_valid(access)) { xx_io_platform_process_set_error(EINVAL); return NULL; }
+    return xx_io_process_wrap(xx_io_platform_process_adopt(native_handle), 0, access);
 }
 
 xx_io_device *xx_io_process_open_handle(void *native_handle)
 {
-    /* Borrow the caller's handle: the device never closes it. */
-    return xx_io_process_wrap(xx_io_platform_process_adopt(native_handle), 0);
+    return xx_io_process_open_handle_ex(native_handle, XX_IO_PROCESS_READ_WRITE);
 }
 
 xx_io_device *io_process_open_handle(void *native_handle)
@@ -199,3 +296,11 @@ xx_io_device *io_process_open(uint64_t pid)
 {
     return xx_io_process_open(pid);
 }
+
+/* Keep this long-standing source file self-contained for consumers with fixed
+ * source lists; native process functions no longer live in the file backend. */
+#ifdef _WIN32
+#include "platforms/xx_io_process_windows.inc"
+#else
+#include "platforms/xx_io_process_posix.inc"
+#endif

@@ -19,6 +19,7 @@ extern "C" {
 typedef struct xx_spis {
     Abstractformat format;
     uint64_t number_of_records;
+    bool is_complete; /**< False when a trailing member is physically short. */
 } xx_spis;
 
 typedef xx_spis xx_spis_t;
