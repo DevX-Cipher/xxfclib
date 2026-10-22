@@ -1355,11 +1355,11 @@
     },
     {
       "path": "src/formats/xx_format_reader_only_decls.inc",
-      "sha256": "304c8040798a4bc46fb571d6727ea7e0f0a92970d61d906fa67d494b35c01bb7"
+      "sha256": "e863183dfdb948385c6df593b0352fe7792c749745442eaed2fce2b8ecce2a9e"
     },
     {
       "path": "src/formats/xx_format_reader_only_rows.inc",
-      "sha256": "7a565a8806886b312a4e564e723a594f607d273dfb3d0391ef3244383a88fcb5"
+      "sha256": "01b65e76a3c2c3f7b39c48a3da974b1e9e4e202d9f1be041bebdd78989f0d940"
     }
   ]
 }

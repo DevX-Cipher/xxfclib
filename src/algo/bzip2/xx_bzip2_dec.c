@@ -83,6 +83,7 @@ bool bz2_br_init(bz2_bit_reader *br, xx_io_device *dev, const uint8_t *mem, size
     br->mem_size = mem_size;
     br->remaining = remaining;
     br->ibuf_capacity = xx_get_file_buffer_size();
+    if (br->ibuf_capacity < (256 * 1024)) br->ibuf_capacity = (256 * 1024);
     if (br->ibuf_capacity > (SIZE_MAX >> 1)) br->ibuf_capacity = SIZE_MAX >> 1;
     br->ibuf = (uint8_t *)xx_mem_alloc(br->ibuf_capacity);
     br->error = br->ibuf == NULL;
@@ -97,22 +98,42 @@ void bz2_br_free(bz2_bit_reader *br)
     }
 }
 
-static uint32_t bz2_read_bits(bz2_bit_reader *br, int n)
+static inline void bz2_ensure_bits(bz2_bit_reader *br, int n)
 {
     while (br->n_bits < n) {
-        if (!bz2_br_refill(br)) {
+        if (br->ibuf_pos >= br->ibuf_len) {
+            if (!bz2_br_refill(br)) return;
+        }
+        if (br->ibuf_len - br->ibuf_pos >= 4 && br->n_bits <= 32) {
+            uint32_t w = ((uint32_t)br->ibuf[br->ibuf_pos] << 24) |
+                         ((uint32_t)br->ibuf[br->ibuf_pos + 1] << 16) |
+                         ((uint32_t)br->ibuf[br->ibuf_pos + 2] << 8) |
+                         ((uint32_t)br->ibuf[br->ibuf_pos + 3]);
+            br->bits = (br->bits << 32) | (uint64_t)w;
+            br->ibuf_pos += 4;
+            br->n_bits += 32;
+        } else {
+            br->bits = (br->bits << 8) | (uint64_t)br->ibuf[br->ibuf_pos++];
+            br->n_bits += 8;
+        }
+    }
+}
+
+static inline uint32_t bz2_read_bits(bz2_bit_reader *br, int n)
+{
+    if (br->n_bits < n) {
+        bz2_ensure_bits(br, n);
+        if (br->n_bits < n) {
             br->error = true;
             return 0;
         }
-        br->bits = (br->bits << 8) | (uint64_t)br->ibuf[br->ibuf_pos++];
-        br->n_bits += 8;
     }
     br->n_bits -= n;
     uint32_t mask = (n == 32) ? 0xFFFFFFFFu : (uint32_t)((1u << n) - 1u);
     return (uint32_t)(br->bits >> br->n_bits) & mask;
 }
 
-static uint32_t bz2_read_bit(bz2_bit_reader *br)
+static inline uint32_t bz2_read_bit(bz2_bit_reader *br)
 {
     return bz2_read_bits(br, 1);
 }

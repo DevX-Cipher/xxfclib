@@ -78,10 +78,21 @@ bool xx_store_unpack_device(xx_io_device *src_dev, int64_t src_offset, int64_t s
     }
 
     size_t buf_size = _XX_STORE_BUFFER_SIZE;
-    if (buf_size == 0) {
-        buf_size = XX_DEFAULT_FILE_BUFFER_SIZE;
+    if (buf_size < (256 * 1024)) {
+        buf_size = (256 * 1024);
+    }
+    if (size >= (64 * 1024 * 1024)) {
+        buf_size = (8 * 1024 * 1024);
+    } else if (size >= (16 * 1024 * 1024)) {
+        buf_size = (4 * 1024 * 1024);
+    } else if (size >= (1024 * 1024) && buf_size < (1024 * 1024)) {
+        buf_size = (1024 * 1024);
     }
     uint8_t *buffer = (uint8_t *)xx_mem_alloc(buf_size);
+    while (!buffer && buf_size > (256 * 1024)) {
+        buf_size /= 2;
+        buffer = (uint8_t *)xx_mem_alloc(buf_size);
+    }
     if (!buffer) {
         if (pd && pd_level >= 0) {
             xx_pd_leave_level(pd, pd_level);

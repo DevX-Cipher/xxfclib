@@ -964,6 +964,7 @@
 #include "xxfclib/formats/video/idtech_roq/xx_idtech_roq.h"
 #include "xxfclib/formats/video/rad_bink/xx_rad_bink.h"
 #include "xxfclib/formats/video/rad_smacker/xx_rad_smacker.h"
+#include "xxfclib/formats/video/scummvm_dxa/xx_scummvm_dxa.h"
 #include "xxfclib/formats/video/interplay_mve/xx_interplay_mve.h"
 #include "xxfclib/formats/video/westwood_vqa/xx_westwood_vqa.h"
 #include "xxfclib/formats/video/autodesk_flic/xx_autodesk_flic.h"

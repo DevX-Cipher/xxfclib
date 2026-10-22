@@ -2815,7 +2815,7 @@ bool xx_zip_unpack_current_archive_record(Abstractformat *self, xx_archive_recor
             }
             if (stage_path) {
                 /* A successful replace has already moved the stage file. */
-                if (xx_io_file_exists_a(stage_path)) {
+                if (!success && xx_io_file_exists_a(stage_path)) {
                     (void)xx_io_file_remove_a(stage_path);
                 }
                 xx_str_free(stage_path);

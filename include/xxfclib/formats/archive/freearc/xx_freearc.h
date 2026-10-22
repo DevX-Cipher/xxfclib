@@ -19,12 +19,14 @@ extern "C" {
  * signature that follows it. Listing walks the footer block found near the
  * end of the archive and every directory block it names. Members are
  * extracted when their solid block's method chain consists only of the
- * methods this reader decodes: storing, lzma, rep, exe, delta and bounded
+ * methods this reader decodes: storing, lzma, rep, exe, delta, AES-256/CTR
+ * (using the password set with xx_format_set_password), and bounded
  * FreeArc lzp. The lzp stage accepts original b/l/h/d/s and compression-
  * threshold options with a 256 MiB block cap, at most 20 hash bits and a
  * 64-million-entry total hash-table initialization work budget per chain.
  * Blocks using any other FreeArc method (tor, ppmd, grzip, dict,
- * encryption, ...) are listed but their members cannot be unpacked.
+ * ...) are listed but their members cannot be unpacked. Encrypted directory
+ * and footer blocks require a correct password before listing is possible.
  */
 typedef struct xx_freearc {
     Abstractformat format;
@@ -33,6 +35,9 @@ typedef struct xx_freearc {
     int64_t archive_size; /**< End of the footer descriptor, or -1. */
     void *index;          /**< Parsed directory (private), NULL until read. */
     bool index_tried;     /**< The directory has been parsed (or failed). */
+    uint8_t password_fingerprint[32]; /**< Private cache identity; never password bytes. */
+    bool password_fingerprint_set;
+    bool password_present;
 } xx_freearc;
 
 typedef xx_freearc xx_freearc_t;
@@ -63,6 +68,11 @@ XXFC_API void xx_freearc_free_archive_records_reading(Abstractformat *self, xx_a
  * @p in itself) that the caller frees; @p in is always consumed.
  */
 XXFC_API bool xx_freearc_decode_chain(const char *method, uint8_t *in, size_t in_size, int64_t expected, uint8_t **out, size_t *out_size, xx_pd_struct *pd);
+/** Decode a chain using UTF-8 password bytes. NULL means no password; an
+ * empty string is an explicitly supplied empty password. Ownership and size
+ * bounds are the same as xx_freearc_decode_chain. */
+XXFC_API bool xx_freearc_decode_chain_password(const char *method, uint8_t *in, size_t in_size, int64_t expected, const char *password_utf8,
+                                               uint8_t **out, size_t *out_size, xx_pd_struct *pd);
 /** @brief True when every stage of @p method is one this reader decodes. */
 XXFC_API bool xx_freearc_method_supported(const char *method);
 

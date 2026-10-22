@@ -901,6 +901,8 @@ XX_FORMAT_READER_PROBE(rad_bink, XX_FILE_TYPE_RAD_BINK,
     (total_size >= 48 && header_size >= 3U && ((header[0] == 0x42U && header[1] == 0x49U && header[2] == 0x4bU))))
 XX_FORMAT_READER_PROBE(rad_smacker, XX_FILE_TYPE_RAD_SMACKER,
     (total_size >= 109 && header_size >= 4U && ((header[0] == 0x53U && header[1] == 0x4dU && header[2] == 0x4bU && header[3] == 0x32U) || (header[0] == 0x53U && header[1] == 0x4dU && header[2] == 0x4bU && header[3] == 0x34U))))
+XX_FORMAT_READER_PROBE(scummvm_dxa, XX_FILE_TYPE_SCUMMVM_DXA,
+    (total_size >= 19 && header_size >= 4U && !xx_rt_memcmp(header, "DEXA", 4)))
 XX_FORMAT_READER_PROBE(interplay_mve, XX_FILE_TYPE_INTERPLAY_MVE,
     (total_size >= 30 && header_size >= 19U && ((header[0] == 0x49U && header[1] == 0x6eU && header[2] == 0x74U && header[3] == 0x65U && header[4] == 0x72U && header[5] == 0x70U && header[6] == 0x6cU && header[7] == 0x61U && header[8] == 0x79U && header[9] == 0x20U && header[10] == 0x4dU && header[11] == 0x56U && header[12] == 0x45U && header[13] == 0x20U && header[14] == 0x46U && header[15] == 0x69U && header[16] == 0x6cU && header[17] == 0x65U && header[18] == 0x1aU))))
 XX_FORMAT_READER_PROBE(westwood_vqa, XX_FILE_TYPE_WESTWOOD_VQA,

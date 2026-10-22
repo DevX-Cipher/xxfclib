@@ -26,6 +26,7 @@
 #include "asm/xx_lzma_asm.h"
 #include <string.h>
 #include "LzmaDec.c"
+#include "Lzma2Dec.c"
 
 /* Memory allocator adapter for 7-Zip CLzmaDec */
 static void *xx_sz_alloc(ISzAllocPtr p, size_t size) { (void)p; return xx_mem_alloc(size); }
@@ -228,35 +229,6 @@ static bool lzma_dict_flush(lzma_decoder *dec, lzma_out *o)
     return true;
 }
 
-static void lzma_dec_reset_dictionary(lzma_decoder *dec)
-{
-    LzmaDec_InitDicAndState(&dec->dec, True, True);
-    dec->dict_flush_pos = 0;
-    dec->dict_filled = 0;
-}
-
-static void lzma_dec_reset_model(lzma_decoder *dec)
-{
-    LzmaDec_InitDicAndState(&dec->dec, False, True);
-}
-
-static bool lzma_dec_set_lclppb(lzma_decoder *dec, int lc, int lp, int pb)
-{
-    if (lc < 0 || lp < 0 || pb < 0 || lc > 8 || lp > 4 || pb > 4 || lc + lp > 4) return false;
-    dec->dec.prop.lc = (Byte)lc;
-    dec->dec.prop.lp = (Byte)lp;
-    dec->dec.prop.pb = (Byte)pb;
-    dec->props.lc = lc;
-    dec->props.lp = lp;
-    dec->props.pb = pb;
-    return true;
-}
-
-static uint32_t lzma_dict_index(const lzma_decoder *dec, uint64_t position)
-{
-    if ((dec->dict_limit & (dec->dict_limit - 1u)) == 0) return (uint32_t)position & (dec->dict_limit - 1u);
-    return (uint32_t)(position % dec->dict_limit);
-}
 
 lzma_decoder *lzma_dec_create(const lzma_props *props)
 {
@@ -399,157 +371,81 @@ bool xx_lzma_decompress_stream(lzma_range_dec *rd, const lzma_props *props, int6
 
 bool xx_lzma2_decompress_stream(lzma_range_dec *rd, uint8_t props2_byte, xx_io_device *dst_dev, uint8_t *mem_dst, size_t mem_cap, size_t *out_written, xx_pd_struct *pd)
 {
-    const xx_lzma_platform *platform = xx_lzma_platform_select();
-    uint32_t logical_dict;
-    uint32_t allocation_size = 4096;
-    uint8_t *packed = NULL;
-    lzma_decoder *dec = NULL;
-    bool dictionary_initialized = false;
-    bool state_initialized = false;
-    bool properties_initialized = false;
-    bool saw_end = false;
-    bool ok = false;
-    lzma_out out;
-    lzma_props props;
-
     if (out_written) *out_written = 0;
-    if (!rd || (!dst_dev && !mem_dst && mem_cap != 0) || !xx_lzma2_parse_property(props2_byte, &logical_dict) || rd_bytes_left(rd) == 0) return false;
+    if (!rd || (!dst_dev && !mem_dst && mem_cap != 0)) return false;
+    if (rd->remaining == 0 && rd->ibuf_pos >= rd->ibuf_len) return false;
+
+    CLzma2Dec dec;
+    Lzma2Dec_Construct(&dec);
+
+    SRes res = Lzma2Dec_Allocate(&dec, props2_byte, &g_xx_sz_alloc);
+    if (res != SZ_OK) return false;
+
+    Lzma2Dec_Init(&dec);
+
+    lzma_out out;
     xx_rt_memset(&out, 0, sizeof(out));
-    if (!rd->ibuf_capacity) rd->ibuf_capacity = xx_get_file_buffer_size();
-
-    while ((uint64_t)allocation_size < logical_dict) allocation_size <<= 1;
-
-    xx_rt_memset(&props, 0, sizeof(props));
-    props.lc = 3;
-    props.lp = 0;
-    props.pb = 2;
-    props.dict_size = allocation_size;
-    dec = lzma_dec_create(&props);
-    if (!dec) return false;
-    dec->dict_limit = (uint32_t)logical_dict;
-
-    packed = (uint8_t *)xx_mem_alloc(65536u);
-    if (!packed) goto cleanup;
-
     out.dev = dst_dev;
     out.mem = mem_dst;
     out.mem_cap = mem_cap;
     out.pd = pd;
 
-    while (!saw_end) {
-        uint8_t ctrl;
-        if (pd && xx_pd_is_stopped(pd)) goto cleanup;
-        ctrl = rd_byte(rd);
-        if (rd->error) goto cleanup;
+    bool ok = false;
+    size_t dict_flush_pos = 0;
 
-        if (ctrl == LZMA2_CONTROL_EOF) {
-            if (rd_bytes_left(rd) != 0) goto cleanup;
-            saw_end = true;
+    while (!ok) {
+        if (rd->error || out.error || (pd && xx_pd_is_stopped(pd))) goto cleanup;
+
+        if (dec.decoder.dicPos == dec.decoder.dicBufSize) {
+            if (dec.decoder.dicPos > dict_flush_pos) {
+                if (!flush_direct(&out, dec.decoder.dic + dict_flush_pos, dec.decoder.dicPos - dict_flush_pos)) goto cleanup;
+            }
+            dec.decoder.dicPos = 0;
+            dict_flush_pos = 0;
+        }
+        SizeT dicPos = dec.decoder.dicPos;
+        SizeT dicLimit = dec.decoder.dicBufSize;
+
+        if (rd->ibuf_pos >= rd->ibuf_len) {
+            if (!rd_refill(rd)) {
+                break;
+            }
+        }
+
+        SizeT inCur = rd->ibuf_len - rd->ibuf_pos;
+        ELzmaStatus status = LZMA_STATUS_NOT_SPECIFIED;
+        res = Lzma2Dec_DecodeToDic(&dec, dicLimit, rd->ibuf + rd->ibuf_pos, &inCur, LZMA_FINISH_ANY, &status);
+        rd->ibuf_pos += inCur;
+
+        size_t produced = dec.decoder.dicPos - dicPos;
+
+        /* Direct Dictionary flush: threshold 1MB */
+        if (dec.decoder.dicPos - dict_flush_pos >= 1048576) {
+            if (!flush_direct(&out, dec.decoder.dic + dict_flush_pos, dec.decoder.dicPos - dict_flush_pos)) goto cleanup;
+            dict_flush_pos = dec.decoder.dicPos;
+        }
+
+        if (res != SZ_OK) goto cleanup;
+
+        if (status == LZMA_STATUS_FINISHED_WITH_MARK) {
+            ok = true;
             break;
         }
 
-        if (ctrl == LZMA2_CONTROL_COPY_NO_DICT || ctrl == LZMA2_CONTROL_COPY_DICT) {
-            uint8_t size_bytes[2];
-            uint32_t chunk_size;
-            if (!rd_read_exact(rd, size_bytes, sizeof(size_bytes), pd, platform)) goto cleanup;
-            chunk_size = (((uint32_t)size_bytes[0] << 8) | size_bytes[1]) + 1u;
-            if (ctrl == LZMA2_CONTROL_COPY_NO_DICT) {
-                if (!lzma_dict_flush(dec, &out)) goto cleanup;
-                lzma_dec_reset_dictionary(dec);
-                dictionary_initialized = true;
-                state_initialized = false;
-                properties_initialized = false;
-            } else if (!dictionary_initialized) {
-                goto cleanup;
+        if (inCur == 0 && produced == 0) {
+            if (rd->ibuf_pos >= rd->ibuf_len && rd->eof) {
+                break;
             }
-            if (!rd_read_exact(rd, packed, chunk_size, pd, platform)) goto cleanup;
-            for (size_t at = 0; at < chunk_size;) {
-                if (dec->dec.dicPos == dec->dec.dicBufSize) {
-                    if (!lzma_dict_flush(dec, &out)) goto cleanup;
-                    dec->dec.dicPos = 0;
-                    dec->dict_flush_pos = 0;
-                }
-                size_t amount = dec->dec.dicBufSize - dec->dec.dicPos;
-                if (amount > chunk_size - at) amount = chunk_size - at;
-                xx_rt_memcpy(dec->dec.dic + dec->dec.dicPos, packed + at, amount);
-                dec->dec.dicPos += amount;
-                at += amount;
-            }
-            if (chunk_size >= dec->dict_limit - dec->dict_filled) dec->dict_filled = dec->dict_limit;
-            else dec->dict_filled += chunk_size;
-            if (!lzma_dict_flush(dec, &out)) goto cleanup;
-            continue;
-        }
-
-        if (ctrl < 0x80) goto cleanup;
-        {
-            uint8_t header[4];
-            uint8_t mode = (uint8_t)((ctrl >> 5) & 3u);
-            uint32_t unpack_size;
-            uint32_t packed_size;
-            lzma_range_dec chunk_rd;
-
-            if (!rd_read_exact(rd, header, sizeof(header), pd, platform)) goto cleanup;
-            unpack_size = (((uint32_t)ctrl & 0x1Fu) << 16) | ((uint32_t)header[0] << 8) | header[1];
-            packed_size = ((uint32_t)header[2] << 8) | header[3];
-            unpack_size++;
-            packed_size++;
-
-            if (mode == 3) {
-                if (!lzma_dict_flush(dec, &out)) goto cleanup;
-                lzma_dec_reset_dictionary(dec);
-                dictionary_initialized = true;
-            } else if (!dictionary_initialized) {
-                goto cleanup;
-            }
-
-            if (mode >= 2) {
-                uint8_t property = rd_byte(rd);
-                int lc, lp, pb;
-                if (rd->error || property >= 9 * 5 * 5) goto cleanup;
-                lc = property % 9;
-                property = (uint8_t)(property / 9);
-                lp = property % 5;
-                pb = property / 5;
-                if (!lzma_dec_set_lclppb(dec, lc, lp, pb)) goto cleanup;
-                properties_initialized = true;
-            } else if (!properties_initialized) {
-                goto cleanup;
-            }
-
-            if (mode >= 1) {
-                lzma_dec_reset_model(dec);
-                state_initialized = true;
-            } else if (!state_initialized) {
-                goto cleanup;
-            } else {
-                LzmaDec_InitDicAndState(&dec->dec, False, False);
-            }
-
-            if (packed_size < RC_INIT_BYTES || !rd_read_exact(rd, packed, packed_size, pd, platform) ||
-                !lzma_rd_init_sized(&chunk_rd, NULL, packed, packed_size, (int64_t)packed_size, rd->ibuf_capacity))
-                goto cleanup;
-            {
-                bool chunk_ok = lzma_decode_block(&chunk_rd, dec, (int64_t)unpack_size, &out, pd);
-                bool ran_out = !chunk_ok && chunk_rd.eof;
-                chunk_ok = chunk_ok && !chunk_rd.error;
-                lzma_rd_free(&chunk_rd);
-                if (!chunk_ok) {
-                    if (ran_out && !out.error && !(pd && xx_pd_is_stopped(pd))) (void)lzma_dict_flush(dec, &out);
-                    goto cleanup;
-                }
-            }
-            state_initialized = true;
         }
     }
 
-    if (!saw_end) goto cleanup;
-    if (!lzma_dict_flush(dec, &out)) goto cleanup;
-    ok = true;
+    if (dec.decoder.dicPos > dict_flush_pos) {
+        if (!flush_direct(&out, dec.decoder.dic + dict_flush_pos, dec.decoder.dicPos - dict_flush_pos)) goto cleanup;
+        dict_flush_pos = dec.decoder.dicPos;
+    }
 
 cleanup:
     if (out_written) *out_written = ok ? (size_t)out.total_written : 0;
-    xx_mem_free(packed);
-    lzma_dec_free(dec);
-    return ok;
+    Lzma2Dec_Free(&dec, &g_xx_sz_alloc);
+    return ok && !out.error;
 }

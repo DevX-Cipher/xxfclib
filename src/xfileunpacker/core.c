@@ -370,6 +370,26 @@ static const char *record_name(const xx_archive_record *record, char **owned) {
     return "<unnamed>";
 }
 
+static void encryption_detected(const xfu_request *request, bool *reported,
+                                 const char *member_name) {
+    if (*reported) return;
+    *reported = true;
+    if (request->callbacks.encryption)
+        request->callbacks.encryption(request->callbacks.user,
+            XFU_ENCRYPTION_DETECTED, member_name);
+}
+
+static void encryption_blocked(const xfu_request *request, bool *reported,
+                                bool *blocked, const char *member_name) {
+    encryption_detected(request, reported, member_name);
+    if (*blocked) return;
+    *blocked = true;
+    if (request->callbacks.encryption)
+        request->callbacks.encryption(request->callbacks.user, request->password
+            ? XFU_ENCRYPTION_PASSWORD_REJECTED : XFU_ENCRYPTION_PASSWORD_REQUIRED,
+            member_name);
+}
+
 /* A member name that extraction can write below the output folder: relative,
  * without a ".." component or a control character. ':' is an ordinary
  * character on POSIX systems ("9:00-notes.txt"); on Windows it names a drive
@@ -717,7 +737,8 @@ static const char *change_failure(int error) {
 static const char *failure_reason(const xfu_request *request, xx_file_type_t type,
                                   const char *name, bool encrypted,
                                   const char *destination, const path_stamp *before,
-                                  bool over_memory) {
+                                  bool over_memory, bool *password_failure) {
+    *password_failure = false;
     if (request->command == XFU_COMMAND_TEST) {
         if (name_refused_in_test(type, name)) return "unsafe member path";
         if (over_memory) return "too large to test in memory";
@@ -729,44 +750,23 @@ static const char *failure_reason(const xfu_request *request, xx_file_type_t typ
         if ((error == EACCES || error == EPERM) && before->is_directory)
             return change_failure(EISDIR);
         if (error) return change_failure(error);
-        if (destination && before->present && !xx_io_extract_files()) {
+        /* Encrypted readers can reject a password or ciphertext before
+         * opening the destination. An unchanged existing file alone is not
+         * evidence of an overwrite refusal in that case. Actual filesystem
+         * errors above still take precedence over encryption notifications. */
+        if (!encrypted && destination && before->present && !xx_io_extract_files()) {
             path_stamp after;
             stamp_path(destination, &after);
             if (after.present && !memcmp(before->id, after.id, sizeof(after.id)))
                 return "already exists; not replaced";
         }
     }
-    if (encrypted)
-        return request->password && request->password[0] ? "wrong password, or damaged data" :
+    if (encrypted) {
+        *password_failure = true;
+        return request->password ? "wrong password, or damaged encrypted data" :
             "encrypted; a password is needed";
-    return NULL;
-}
-
-/* Whether device holds a 7z archive whose headers are encrypted: its next
- * header is an encoded one whose coder is 7zAES (06 F1 07 01). Read only
- * when the reader could not parse the archive, to say why. */
-static bool sevenzip_encrypted_headers(xx_io_device *device) {
-    static const unsigned char signature[6] = { '7', 'z', 0xBC, 0xAF, 0x27, 0x1C };
-    static const unsigned char aes[4] = { 0x06, 0xF1, 0x07, 0x01 };
-    unsigned char start[32], header[4096];
-    uint64_t offset = 0, size = 0;
-    int64_t total = xx_io_total_size(device);
-    size_t i, length;
-    if (total < 32 || !xx_io_read_at(device, 0, start, sizeof(start)) ||
-        memcmp(start, signature, sizeof(signature)))
-        return false;
-    for (i = 0; i < 8; ++i) {
-        offset |= (uint64_t)start[12 + i] << (8 * i);
-        size |= (uint64_t)start[20 + i] << (8 * i);
     }
-    if (!size || offset > (uint64_t)total - 32U || size > (uint64_t)total - 32U - offset)
-        return false;
-    length = size < sizeof(header) ? (size_t)size : sizeof(header);
-    if (!xx_io_read_at(device, (int64_t)(32U + offset), header, length) || header[0] != 0x17)
-        return false;
-    for (i = 1; i + sizeof(aes) <= length; ++i)
-        if (!memcmp(header + i, aes, sizeof(aes))) return true;
-    return false;
+    return NULL;
 }
 
 /* The type a damaged compressed stream of type is named as: the compressed
@@ -993,6 +993,7 @@ static int walk_device(const xfu_request *request, const char *unpack_to,
     bool type_matches = false;
     bool extension_opened = false;
     bool engine_attempted = false;
+    bool reported_encryption = false, reported_password_failure = false;
     bool testing = request->command == XFU_COMMAND_TEST;
     bool reached_end = false;
     bool cpio_cp437 = false;
@@ -1493,6 +1494,7 @@ reader_opened:
     if (!extension_opened && !xx_format_is_valid(opened.format, pd)) {
         uint64_t limit = 0;
         uint32_t ratio = 0;
+        bool encrypted_format = opened.format && opened.format->is_crypted;
         if (!engine_attempted && !request->reader_name &&
             request->file_type == XX_FILE_TYPE_UNKNOWN &&
             !xxfc_reader_uses_helper(&opened) && !xx_pd_is_stopped(pd)) {
@@ -1502,6 +1504,12 @@ reader_opened:
             }
         }
         if (xx_pd_is_stopped(pd)) emit(request, true, "operation cancelled");
+        else if (encrypted_format) {
+            encryption_blocked(request, &reported_encryption, &reported_password_failure, NULL);
+            emit(request, true, request->password
+                ? "%s: archive is encrypted; the password may be incorrect or the encrypted data may be damaged"
+                : "%s: archive is encrypted; a password is needed", archive_path);
+        }
         /* A compressed TAR is decoded once, in RAM and beyond a threshold in
          * a temporary file, which Test (memory only) cannot write. */
         else if (xx_tar_compressed_too_large(opened.format, &limit))
@@ -1526,6 +1534,8 @@ reader_opened:
         goto done;
     }
     if (!extension_opened && !xx_format_handle_base_info(opened.format, pd)) {
+        bool encrypted_format = opened.format && opened.format->is_crypted;
+        xx_file_type_t failed_type = opened.type;
         if (!engine_attempted && !request->reader_name &&
             request->file_type == XX_FILE_TYPE_UNKNOWN &&
             !xxfc_reader_uses_helper(&opened) && !xx_pd_is_stopped(pd)) {
@@ -1535,12 +1545,16 @@ reader_opened:
             }
         }
         if (xx_pd_is_stopped(pd)) emit(request, true, "operation cancelled");
-        /* Without the right password, encrypted 7z headers cannot be read:
-         * no damage, and the archive says so itself. */
-        else if (sevenzip_encrypted_headers(device))
-            emit(request, true, request->password && request->password[0]
-                 ? "%s: the password is wrong, or the encrypted 7z headers are damaged"
-                 : "%s: the 7z headers are encrypted; a password is needed", archive_path);
+        else if (encrypted_format) {
+            encryption_blocked(request, &reported_encryption, &reported_password_failure, NULL);
+            if (failed_type == XX_FILE_TYPE_7ZIP)
+                emit(request, true, request->password
+                     ? "%s: the password may be incorrect, or the encrypted 7z headers are damaged"
+                     : "%s: the 7z headers are encrypted; a password is needed", archive_path);
+            else emit(request, true, request->password
+                     ? "%s: archive is encrypted; the password may be incorrect or the encrypted metadata may be damaged"
+                     : "%s: archive metadata is encrypted; a password is needed", archive_path);
+        }
         else emit(request, true, "%s: %s could not be parsed", archive_path,
                   opened.reader_name);
         status = xx_pd_is_stopped(pd) ? 1 : 2;
@@ -1548,6 +1562,8 @@ reader_opened:
     }
     xxfc_attach_source_files(&opened, archive_path);
     xxfc_refresh_sevenzip_type(&opened);
+    if (opened.format->is_crypted)
+        encryption_detected(request, &reported_encryption, NULL);
     if (opened.reader_name && !strncmp(opened.reader_name, "sevenzip", 8) &&
         (request->callbacks.file_types || request->callbacks.unpack_handle_types)) {
         type_count = xx_format_get_file_type_chain(opened.type, types, XX_FILE_TYPE_CHAIN_MAX);
@@ -1632,6 +1648,8 @@ reader_opened:
     state = xx_format_create_archive_records_reading(
         opened.format, (const xx_list_s *)&options, pd);
     if (!state) {
+        bool encrypted_format = opened.format && opened.format->is_crypted;
+        xx_file_type_t failed_type = opened.type;
         if (!engine_attempted && !request->reader_name &&
             request->file_type == XX_FILE_TYPE_UNKNOWN &&
             !xxfc_reader_uses_helper(&opened) && !xx_pd_is_stopped(pd)) {
@@ -1641,11 +1659,23 @@ reader_opened:
             }
         }
         if (xx_pd_is_stopped(pd)) emit(request, true, "operation cancelled");
+        else if (encrypted_format) {
+            encryption_blocked(request, &reported_encryption, &reported_password_failure, NULL);
+            if (failed_type == XX_FILE_TYPE_FREEARC)
+                emit(request, true, request->password
+                     ? "%s: the FreeArc password may be incorrect, or the encrypted directory is damaged"
+                     : "%s: the FreeArc directory is encrypted; a password is needed", archive_path);
+            else emit(request, true, request->password
+                     ? "%s: archive is encrypted; the password may be incorrect or the encrypted metadata may be damaged"
+                     : "%s: archive metadata is encrypted; a password is needed", archive_path);
+        }
         else emit(request, true, "%s: members could not be read", archive_path);
         xx_list_cleanup(&options);
         status = xx_pd_is_stopped(pd) ? 1 : 2;
         goto done;
     }
+    if (opened.format->is_crypted)
+        encryption_detected(request, &reported_encryption, NULL);
     if (state->total_records > 0) known_total = (uint64_t)state->total_records;
     if (request->extract_selected) known_total = (uint64_t)request->selected_record_count;
     if (testing && known_total > RECORD_LIMIT) {
@@ -1717,6 +1747,10 @@ reader_opened:
             record, XX_META_ID_UNCOMPRESSED_SIZE, -1);
         entry.is_directory = xx_archive_record_get_meta_bool(
             record, XX_META_ID_IS_FOLDER, false);
+        entry.is_encrypted = xx_archive_record_get_meta_bool(
+            record, XX_META_ID_IS_ENCRYPTED, false);
+        if (entry.is_encrypted)
+            encryption_detected(request, &reported_encryption, entry.name);
         entry.embedded_password = xx_archive_record_get_meta_str(
             record, XX_META_ID_PASSWORD);
         /* The 7z reader's time, like 7-Zip's (and xfu's 7z writers'), is a
@@ -1724,8 +1758,9 @@ reader_opened:
         member_metadata(record, &entry, xxfc_reader_uses_helper(&opened) ||
                         (opened.reader_name && !strcmp(opened.reader_name, "7zip")));
         if (!unpack_to && !testing)
-            emit(request, false, "  %12lld  %s",
-                 (long long)entry.packed_size, entry.name);
+            emit(request, false, "  %12lld  %s%s",
+                 (long long)entry.packed_size, entry.name,
+                 entry.is_encrypted ? " [encrypted]" : "");
         if (request->callbacks.entry) {
             if (!xfu_record_properties(record, opened.type == XX_FILE_TYPE_ZIP || opened.type == XX_FILE_TYPE_ZIP64,
                                        &properties, &entry.property_count)) {
@@ -1741,9 +1776,8 @@ reader_opened:
         progress(request, total, known_total, entry.name);
         ++total;
         if (unpack_to || testing) {
-            bool success, cut, unsafe, itself;
-            bool encrypted = xx_archive_record_get_meta_bool(record, XX_META_ID_IS_ENCRYPTED,
-                                                             false);
+            bool success, cut, unsafe, itself, password_failure = false;
+            bool encrypted = entry.is_encrypted;
             char *destination = NULL;
             char *output_name = unpack_to ? mapped_extract_name(opened.type, entry.name) : NULL;
             path_stamp before = {0};
@@ -1808,7 +1842,9 @@ reader_opened:
                     itself ? "it would replace the archive" :
                     file_named_as_folder(opened.type, &entry) ? "the name ends in a separator" :
                     failure_reason(request, opened.type, entry.name, encrypted, destination,
-                                   &before, xx_io_memory_only_refusals() != refusals);
+                                   &before, xx_io_memory_only_refusals() != refusals, &password_failure);
+            if (password_failure)
+                encryption_blocked(request, &reported_encryption, &reported_password_failure, entry.name);
             if (success && unverified_note && xx_tar_compressed_last_unverified(opened.format))
                 unverified = true;
             /* In a cut compressed TAR, the member the cut runs through, or a

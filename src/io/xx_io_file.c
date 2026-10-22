@@ -327,7 +327,7 @@ xx_io_device *xx_io_stage_open(const char *destination, const char *candidate, b
     *retry = destination && candidate;
     if (!*retry || xx_io_stage_same_leaf(destination, candidate) || xx_io_platform_file_exists_a(candidate)) return NULL;
     present = xx_io_platform_file_exists_a(destination);
-    device = xx_io_file_open(candidate, "w+bx");
+    device = xx_io_file_open(candidate, "wbx");
     if (!device) {
         /* Taken meanwhile, which is no failure; else the folder refuses it. */
         if (xx_io_platform_file_exists_a(candidate)) xx_io_extract_restore(kept);

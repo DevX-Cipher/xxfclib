@@ -1202,6 +1202,7 @@ set(XXFCLIB_PUBLIC_HEADERS
     include/xxfclib/formats/video/idtech_roq/xx_idtech_roq.h
     include/xxfclib/formats/video/rad_bink/xx_rad_bink.h
     include/xxfclib/formats/video/rad_smacker/xx_rad_smacker.h
+    include/xxfclib/formats/video/scummvm_dxa/xx_scummvm_dxa.h
     include/xxfclib/formats/video/interplay_mve/xx_interplay_mve.h
     include/xxfclib/formats/video/westwood_vqa/xx_westwood_vqa.h
     include/xxfclib/formats/video/autodesk_flic/xx_autodesk_flic.h
@@ -3944,6 +3945,8 @@ set(XXFCLIB_SOURCES
     src/formats/video/rad_bink/xx_rad_bink_extractor.c
     src/formats/video/rad_smacker/xx_rad_smacker.c
     src/formats/video/rad_smacker/xx_rad_smacker_extractor.c
+    src/formats/video/scummvm_dxa/xx_scummvm_dxa.c
+    src/formats/video/scummvm_dxa/xx_scummvm_dxa_reader_adapters.c
     src/formats/video/interplay_mve/xx_interplay_mve.c
     src/formats/video/interplay_mve/xx_interplay_mve_extractor.c
     src/formats/video/westwood_vqa/xx_westwood_vqa.c
@@ -6465,6 +6468,13 @@ include(CPack)
 if(XXFC_BUILD_FORMAT_EXPANSION_TESTS)
     enable_testing()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_executable(test_scummvm_dxa_native tests/test_scummvm_dxa_native.c)
+    target_link_libraries(test_scummvm_dxa_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME test_scummvm_dxa_native COMMAND test_scummvm_dxa_native)
+    add_executable(test_freearc_encrypted_native tests/test_freearc_encrypted_native.c)
+    target_link_libraries(test_freearc_encrypted_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME test_freearc_encrypted_native COMMAND test_freearc_encrypted_native
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/freearc_encrypted")
     add_executable(test_die_audio_bundle tests/test_die_audio_bundle.c)
     target_link_libraries(test_die_audio_bundle PRIVATE xxfclib::xxfclib)
     add_test(NAME test_die_audio_bundle COMMAND test_die_audio_bundle)

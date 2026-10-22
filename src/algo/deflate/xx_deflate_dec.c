@@ -38,10 +38,14 @@ bool xx_br_init(xx_bit_reader *br, xx_io_device *dev, const uint8_t *mem_src, si
 
     if (dev) {
         br->buffer_cap = xx_get_file_buffer_size();
-        if (br->buffer_cap == 0) {
-            br->buffer_cap = XX_DEFAULT_FILE_BUFFER_SIZE;
+        if (br->buffer_cap < (1024 * 1024)) {
+            br->buffer_cap = (1024 * 1024);
         }
         br->buffer = (uint8_t *)xx_mem_alloc(br->buffer_cap);
+        if (!br->buffer && br->buffer_cap > (256 * 1024)) {
+            br->buffer_cap = (256 * 1024);
+            br->buffer = (uint8_t *)xx_mem_alloc(br->buffer_cap);
+        }
         if (!br->buffer) {
             return false;
         }
@@ -616,10 +620,14 @@ static bool xx_out_init(xx_out_acc *out, xx_io_device *dev, uint8_t *mem_dst, si
 
     if (dev) {
         out->buf_cap = xx_get_file_buffer_size();
-        if (out->buf_cap == 0) {
-            out->buf_cap = XX_DEFAULT_FILE_BUFFER_SIZE;
+        if (out->buf_cap < (1024 * 1024)) {
+            out->buf_cap = (1024 * 1024);
         }
         out->buf = (uint8_t *)xx_mem_alloc(out->buf_cap);
+        if (!out->buf && out->buf_cap > (256 * 1024)) {
+            out->buf_cap = (256 * 1024);
+            out->buf = (uint8_t *)xx_mem_alloc(out->buf_cap);
+        }
         if (!out->buf) {
             return false;
         }

@@ -1654,6 +1654,7 @@ typedef enum xx_file_type_e {
     XX_FILE_TYPE_XCOFF = 2990,
     /* Explicit/deep interpretation; physical identity remains PE/NE/MSDOS. */
     XX_FILE_TYPE_EXECUTABLE_OVERLAY = 2991,
+    XX_FILE_TYPE_SCUMMVM_DXA = 2992,
 } xx_file_type_t;
 
 #define FILE_TYPE_PEF XX_FILE_TYPE_PEF
@@ -1677,6 +1678,7 @@ typedef enum xx_file_type_e {
 #define FILE_TYPE_NINTENDO_REL XX_FILE_TYPE_NINTENDO_REL
 #define FILE_TYPE_XCOFF XX_FILE_TYPE_XCOFF
 #define FILE_TYPE_EXECUTABLE_OVERLAY XX_FILE_TYPE_EXECUTABLE_OVERLAY
+#define FILE_TYPE_SCUMMVM_DXA XX_FILE_TYPE_SCUMMVM_DXA
 
 #define FILE_TYPE_DOTNET XX_FILE_TYPE_DOTNET
 

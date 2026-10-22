@@ -132,6 +132,8 @@ typedef struct xx_7zip_extract_cache_s {
      * (xx_7zip_verify_folder), and a verdict per file: 1 sound, 2 not. */
     uint64_t verified_folder;
     uint8_t *verdicts;
+    uint64_t extracted_folder;
+    uint8_t *extracted_verdicts;
 } xx_7zip_extract_cache;
 
 static void xx_7zip_extract_cache_clear(xx_7zip_extract_cache *cache)
@@ -141,6 +143,7 @@ static void xx_7zip_extract_cache_clear(xx_7zip_extract_cache *cache)
     cache->device = NULL;
     cache->size = 0U;
     cache->folder_index = UINT64_MAX;
+    cache->extracted_folder = UINT64_MAX;
 }
 
 static void xx_7zip_extract_cache_free(void *ptr)
@@ -149,6 +152,7 @@ static void xx_7zip_extract_cache_free(void *ptr)
     if (!cache) return;
     xx_7zip_extract_cache_clear(cache);
     xx_mem_free(cache->verdicts);
+    xx_mem_free(cache->extracted_verdicts);
     xx_mem_free(cache);
 }
 
@@ -1173,7 +1177,7 @@ static bool xx_7zip_pack_offset(const Abstractformat *self, const xx_7zip_stream
  * and BCJ2 branch graphs. Signed 64-bit device offsets remain the IO boundary. */
 static bool xx_7zip_copy_range(xx_io_device *source, uint64_t offset, uint64_t size, xx_io_device *destination, xx_pd_struct *pd)
 {
-    uint8_t buffer[65536];
+    uint8_t buffer[131072];
     bool result = false;
     if (!source || !destination || offset > INT64_MAX || size > INT64_MAX || offset > (uint64_t)INT64_MAX - size || xx_io_seek64(source, (int64_t)offset, SEEK_SET) != 0)
         goto cleanup;
@@ -1189,6 +1193,33 @@ static bool xx_7zip_copy_range(xx_io_device *source, uint64_t offset, uint64_t s
         if (xx_io_write(destination, buffer, count) != (ssize_t)count) goto cleanup;
         size -= count;
     }
+    result = !(pd && xx_pd_is_stopped(pd));
+cleanup:
+    xx_mem_zero(buffer, sizeof(buffer));
+    return result;
+}
+
+static bool xx_7zip_copy_range_crc(xx_io_device *source, uint64_t offset, uint64_t size, xx_io_device *destination, uint32_t *crc_out, xx_pd_struct *pd)
+{
+    uint8_t buffer[131072];
+    uint32_t crc = 0;
+    bool result = false;
+    if (!source || offset > INT64_MAX || size > INT64_MAX || offset > (uint64_t)INT64_MAX - size || xx_io_seek64(source, (int64_t)offset, SEEK_SET) != 0)
+        goto cleanup;
+    while (size) {
+        size_t count = size > sizeof(buffer) ? sizeof(buffer) : (size_t)size;
+        size_t at = 0U;
+        if (pd && xx_pd_is_stopped(pd)) goto cleanup;
+        while (at < count) {
+            ssize_t read = xx_io_read(source, buffer + at, count - at);
+            if (read <= 0 || (size_t)read > count - at) goto cleanup;
+            at += (size_t)read;
+        }
+        crc = xx_crc32_calc(crc, buffer, count);
+        if (destination && xx_io_write(destination, buffer, count) != (ssize_t)count) goto cleanup;
+        size -= count;
+    }
+    if (crc_out) *crc_out = crc;
     result = !(pd && xx_pd_is_stopped(pd));
 cleanup:
     xx_mem_zero(buffer, sizeof(buffer));
@@ -1380,6 +1411,8 @@ static int64_t xx_7zip_verify_size(xx_io_device *device)
     return sink && sink->position <= (uint64_t)INT64_MAX ? (int64_t)sink->position : -1;
 }
 
+static ssize_t xx_7zip_extract_sink_write(xx_io_device *device, const void *buffer, size_t size);
+
 static bool xx_7zip_decode_folder(Abstractformat *self, const xx_7zip_streams *streams, uint64_t folder_index, xx_io_device *destination, xx_pd_struct *pd,
                                   uint32_t *out_final_crc, bool *out_has_crc);
 
@@ -1466,10 +1499,14 @@ static bool xx_7zip_decode_folder(Abstractformat *self, const xx_7zip_streams *s
      * cycles must not disappear just because the final stream is reachable. */
     for (i = 0U; i < folder->total_out; ++i)
         if (!context.output_data[i]) goto cleanup;
+    if (folder->unpack_size == 0) {
+        context.has_final_crc = true;
+        context.final_crc = 0;
+    }
     if (folder->crc_defined &&
         (destination->write == xx_7zip_verify_write ? ((const xx_7zip_verify_sink *)destination->priv)->folder_crc != folder->crc
-                                                    : context.has_final_crc ? context.final_crc != folder->crc
-                                                                            : !xx_crc_verify_device(destination, 0, (int64_t)folder->unpack_size, XX_CRC_TYPE_CRC32, folder->crc, pd)))
+         : context.has_final_crc ? context.final_crc != folder->crc
+         : !xx_crc_verify_device(destination, 0, (int64_t)folder->unpack_size, XX_CRC_TYPE_CRC32, folder->crc, pd)))
         goto cleanup;
     result = !(pd && xx_pd_is_stopped(pd));
     if (result) {
@@ -2018,6 +2055,7 @@ xx_archive_record_state *xx_7zip_create_archive_records_reading(Abstractformat *
     }
     cache->folder_index = UINT64_MAX;
     cache->verified_folder = UINT64_MAX;
+    cache->extracted_folder = UINT64_MAX;
     state->internal_state = cache;
     state->free_internal = xx_7zip_extract_cache_free;
     if (!xx_7zip_copy_options(state, options)) {
@@ -2096,6 +2134,41 @@ static wchar_t *xx_7zip_normalized_name(const wchar_t *name)
     return copy;
 }
 
+typedef struct xx_7zip_slice_sink_s {
+    xx_io_device device;
+    xx_io_device *target;
+    uint64_t limit;
+    uint64_t written;
+    uint32_t crc;
+    bool error;
+} xx_7zip_slice_sink;
+
+static ssize_t xx_7zip_slice_sink_write(xx_io_device *device, const void *buffer, size_t size)
+{
+    xx_7zip_slice_sink *sink = (xx_7zip_slice_sink *)device->priv;
+    if (!sink || sink->error) return -1;
+    if (sink->written < sink->limit) {
+        uint64_t remaining = sink->limit - sink->written;
+        size_t take = (uint64_t)size < remaining ? size : (size_t)remaining;
+        if (sink->target) {
+            ssize_t w = xx_io_write(sink->target, buffer, take);
+            if (w != (ssize_t)take) {
+                sink->error = true;
+                return -1;
+            }
+        }
+        sink->crc = xx_crc32_calc(sink->crc, buffer, take);
+        sink->written += take;
+    }
+    return (ssize_t)size;
+}
+
+static int64_t xx_7zip_slice_sink_size(xx_io_device *device)
+{
+    xx_7zip_slice_sink *sink = (xx_7zip_slice_sink *)device->priv;
+    return sink && sink->written <= (uint64_t)INT64_MAX ? (int64_t)sink->written : -1;
+}
+
 static bool xx_7zip_extract_file_to_device(Abstractformat *self, const xx_7zip_file *file, xx_7zip_extract_cache *cache, xx_io_device *output, xx_pd_struct *pd)
 {
     xx_7zip_private *priv = (xx_7zip_private *)((xx_7zip *)self)->internal;
@@ -2115,18 +2188,32 @@ static bool xx_7zip_extract_file_to_device(Abstractformat *self, const xx_7zip_f
             return cache->verdicts[index] == 1U && !(pd && xx_pd_is_stopped(pd));
     }
     keep = folder->num_substreams > 1U;
-    if (!keep && output && file->offset_in_folder == 0 && file->size == folder->unpack_size) {
+    if (!keep && output && file->offset_in_folder == 0 && file->size <= folder->unpack_size) {
         /* Fast path: decode directly into destination without temporary file */
         uint32_t final_crc = 0;
         bool has_crc = false;
         xx_7zip_extract_cache_clear(cache);
-        if (!xx_7zip_decode_folder(self, &priv->streams, (uint64_t)file->folder_index, output, pd, &final_crc, &has_crc)) return false;
-        if (file->crc_defined && !folder->crc_defined) {
-            if (has_crc) {
-                if (final_crc != file->crc) return false;
-            } else {
-                if (!xx_crc_verify_device(output, 0, (int64_t)file->size, XX_CRC_TYPE_CRC32, file->crc, pd)) return false;
+        if (file->size == folder->unpack_size) {
+            bool dec_ok = xx_7zip_decode_folder(self, &priv->streams, (uint64_t)file->folder_index, output, pd, &final_crc, &has_crc);
+            if (!dec_ok) return false;
+            if (file->crc_defined && !folder->crc_defined) {
+                if (has_crc) {
+                    if (final_crc != file->crc) return false;
+                } else {
+                    if (!xx_crc_verify_device(output, 0, (int64_t)file->size, XX_CRC_TYPE_CRC32, file->crc, pd)) return false;
+                }
             }
+        } else {
+            xx_7zip_slice_sink slice;
+            xx_mem_zero(&slice, sizeof(slice));
+            slice.target = output;
+            slice.limit = file->size;
+            slice.device.priv = &slice;
+            slice.device.write = xx_7zip_slice_sink_write;
+            slice.device.total_size = xx_7zip_slice_sink_size;
+            bool dec_ok = xx_7zip_decode_folder(self, &priv->streams, (uint64_t)file->folder_index, &slice.device, pd, NULL, NULL);
+            if (!dec_ok || slice.error || slice.written != file->size) return false;
+            if (file->crc_defined && slice.crc != file->crc) return false;
         }
         return !(pd && xx_pd_is_stopped(pd));
     }
@@ -2141,8 +2228,9 @@ static bool xx_7zip_extract_file_to_device(Abstractformat *self, const xx_7zip_f
             cache->folder_index = (uint64_t)file->folder_index;
         }
     }
-    if (file->crc_defined && !xx_crc_verify_device(decoded, (int64_t)file->offset_in_folder, (int64_t)file->size, XX_CRC_TYPE_CRC32, file->crc, pd)) goto cleanup;
-    result = !output || xx_7zip_copy_range(decoded, file->offset_in_folder, file->size, output, pd);
+    uint32_t file_crc = 0;
+    result = xx_7zip_copy_range_crc(decoded, file->offset_in_folder, file->size, output, file->crc_defined ? &file_crc : NULL, pd);
+    if (result && file->crc_defined && file_crc != file->crc) result = false;
     if (pd && xx_pd_is_stopped(pd)) result = false;
 cleanup:
     if (decoded && decoded != cache->device) xx_io_close(decoded);
@@ -2199,6 +2287,295 @@ static xx_io_device *xx_7zip_open_stage(const char *destination, char **path)
     return NULL;
 }
 
+typedef struct xx_7zip_extract_member_s {
+    uint64_t file_index;
+    uint64_t offset;
+    uint64_t size;
+    uint32_t expected_crc;
+    bool crc_defined;
+    char *utf8_path;
+} xx_7zip_extract_member;
+
+typedef struct xx_7zip_extract_sink_s {
+    xx_io_device device;
+    xx_7zip_extract_member *members;
+    uint64_t member_count;
+    uint64_t current;
+    uint64_t position;
+    uint32_t member_crc;
+    uint32_t folder_crc;
+    xx_io_device *cur_dev;
+    char *cur_stage_path;
+    bool overwrite;
+    bool error;
+    xx_pd_struct *pd;
+} xx_7zip_extract_sink;
+
+static ssize_t xx_7zip_extract_sink_write(xx_io_device *device, const void *buffer, size_t size)
+{
+    xx_7zip_extract_sink *sink = (xx_7zip_extract_sink *)device->priv;
+    const uint8_t *data = (const uint8_t *)buffer;
+    size_t left = size;
+
+    if (!sink || sink->error || (sink->pd && xx_pd_is_stopped(sink->pd))) return -1;
+    sink->folder_crc = xx_crc32_calc(sink->folder_crc, data, size);
+
+    while (sink->current < sink->member_count) {
+        xx_7zip_extract_member *m = &sink->members[sink->current];
+        uint64_t end = m->offset + m->size;
+
+        if (sink->position < m->offset) {
+            sink->error = true;
+            return -1;
+        }
+
+        if (m->size == 0 && sink->position == end) {
+            sink->cur_dev = xx_7zip_open_stage(m->utf8_path, &sink->cur_stage_path);
+            if (!sink->cur_dev) {
+                sink->error = true;
+                return -1;
+            }
+            xx_io_close(sink->cur_dev);
+            sink->cur_dev = NULL;
+            if (m->crc_defined && m->expected_crc != 0) {
+                if (sink->cur_stage_path) {
+                    (void)xx_io_file_remove_a(sink->cur_stage_path);
+                    xx_str_free(sink->cur_stage_path);
+                    sink->cur_stage_path = NULL;
+                }
+                sink->error = true;
+                return -1;
+            }
+            if (!xx_io_file_replace_a(sink->cur_stage_path, m->utf8_path, sink->overwrite)) {
+                if (sink->cur_stage_path) {
+                    (void)xx_io_file_remove_a(sink->cur_stage_path);
+                    xx_str_free(sink->cur_stage_path);
+                    sink->cur_stage_path = NULL;
+                }
+                sink->error = true;
+                return -1;
+            }
+            xx_str_free(sink->cur_stage_path);
+            sink->cur_stage_path = NULL;
+            sink->current++;
+            continue;
+        }
+
+        if (left == 0) break;
+
+        if (!sink->cur_dev) {
+            sink->cur_dev = xx_7zip_open_stage(m->utf8_path, &sink->cur_stage_path);
+            if (!sink->cur_dev) {
+                sink->error = true;
+                return -1;
+            }
+            sink->member_crc = 0U;
+        }
+
+        size_t take = (uint64_t)left < (end - sink->position) ? left : (size_t)(end - sink->position);
+        if (take > 0) {
+            ssize_t written = xx_io_write(sink->cur_dev, data, take);
+            if (written != (ssize_t)take) {
+                sink->error = true;
+                return -1;
+            }
+            sink->member_crc = xx_crc32_calc(sink->member_crc, data, take);
+            data += take;
+            left -= take;
+            sink->position += take;
+        }
+
+        if (sink->position >= end) {
+            int close_res = xx_io_close(sink->cur_dev);
+            sink->cur_dev = NULL;
+            if (close_res != 0) {
+                if (sink->cur_stage_path) {
+                    (void)xx_io_file_remove_a(sink->cur_stage_path);
+                    xx_str_free(sink->cur_stage_path);
+                    sink->cur_stage_path = NULL;
+                }
+                sink->error = true;
+                return -1;
+            }
+
+            if (m->crc_defined && sink->member_crc != m->expected_crc) {
+                if (sink->cur_stage_path) {
+                    (void)xx_io_file_remove_a(sink->cur_stage_path);
+                    xx_str_free(sink->cur_stage_path);
+                    sink->cur_stage_path = NULL;
+                }
+                sink->error = true;
+                return -1;
+            }
+
+            if (!xx_io_file_replace_a(sink->cur_stage_path, m->utf8_path, sink->overwrite)) {
+                if (sink->cur_stage_path) {
+                    (void)xx_io_file_remove_a(sink->cur_stage_path);
+                    xx_str_free(sink->cur_stage_path);
+                    sink->cur_stage_path = NULL;
+                }
+                sink->error = true;
+                return -1;
+            }
+
+            xx_str_free(sink->cur_stage_path);
+            sink->cur_stage_path = NULL;
+            sink->member_crc = 0U;
+            sink->current++;
+        }
+    }
+
+    if (left > 0) {
+        sink->position += left;
+    }
+
+    return (ssize_t)size;
+}
+
+static int64_t xx_7zip_extract_sink_size(xx_io_device *device)
+{
+    xx_7zip_extract_sink *sink = (xx_7zip_extract_sink *)device->priv;
+    return sink && sink->position <= (uint64_t)INT64_MAX ? (int64_t)sink->position : -1;
+}
+
+static bool xx_7zip_extract_folder_on_the_fly(Abstractformat *self, xx_7zip_private *priv, xx_7zip_extract_cache *cache, uint64_t folder_index,
+                                              const wchar_t *base_copy, bool overwrite, xx_pd_struct *pd)
+{
+    xx_7zip_extract_sink sink;
+    uint64_t i, count = 0U, next = 0U;
+    bool decoded = false;
+    const wchar_t separator_text[2] = {xx_io_platform_wseparator(), L'\0'};
+
+    if (!cache->extracted_verdicts && !(cache->extracted_verdicts = (uint8_t *)xx_mem_calloc(priv->num_files ? (size_t)priv->num_files : 1U, 1U))) return false;
+
+    for (i = 0U; i < priv->num_files; ++i) {
+        if (!priv->files[i].empty_stream && !priv->files[i].is_folder && priv->files[i].folder_index == (int64_t)folder_index) ++count;
+    }
+    if (count == 0) return true;
+
+    xx_mem_zero(&sink, sizeof(sink));
+    sink.members = (xx_7zip_extract_member *)xx_7zip_alloc_array(count, sizeof(xx_7zip_extract_member));
+    if (!sink.members) return false;
+
+    for (i = 0U; i < priv->num_files; ++i) {
+        const xx_7zip_file *file = &priv->files[i];
+        if (file->empty_stream || file->is_folder || file->folder_index != (int64_t)folder_index) continue;
+        if (file->offset_in_folder != next || !xx_7zip_u64_add(next, file->size, &next)) {
+            for (uint64_t k = 0; k < sink.member_count; ++k) xx_str_free(sink.members[k].utf8_path);
+            xx_mem_free(sink.members);
+            return false;
+        }
+
+        wchar_t *norm_name = xx_7zip_normalized_name(file->name ? file->name : L"");
+        if (!norm_name) {
+            for (uint64_t k = 0; k < sink.member_count; ++k) xx_str_free(sink.members[k].utf8_path);
+            xx_mem_free(sink.members);
+            return false;
+        }
+
+        size_t length = xx_str_wlen(base_copy);
+        bool slash = length && base_copy[length - 1U] != L'/' && base_copy[length - 1U] != L'\\';
+        wchar_t *full_path = slash ? xx_str_wconcat3(base_copy, separator_text, norm_name) : xx_str_wconcat(base_copy, norm_name);
+        xx_str_wfree(norm_name);
+
+        if (!full_path) {
+            for (uint64_t k = 0; k < sink.member_count; ++k) xx_str_free(sink.members[k].utf8_path);
+            xx_mem_free(sink.members);
+            return false;
+        }
+
+        if (!xx_store_create_dirs_w(full_path, false)) {
+            xx_str_wfree(full_path);
+            for (uint64_t k = 0; k < sink.member_count; ++k) xx_str_free(sink.members[k].utf8_path);
+            xx_mem_free(sink.members);
+            return false;
+        }
+
+        char *utf8_path = xx_str_unicode_to_utf8(full_path);
+        xx_str_wfree(full_path);
+        if (!utf8_path) {
+            for (uint64_t k = 0; k < sink.member_count; ++k) xx_str_free(sink.members[k].utf8_path);
+            xx_mem_free(sink.members);
+            return false;
+        }
+
+        xx_7zip_extract_member *m = &sink.members[sink.member_count++];
+        m->file_index = i;
+        m->offset = file->offset_in_folder;
+        m->size = file->size;
+        m->expected_crc = (uint32_t)file->crc;
+        m->crc_defined = file->crc_defined;
+        m->utf8_path = utf8_path;
+
+        cache->extracted_verdicts[i] = 0U;
+    }
+
+    sink.overwrite = overwrite;
+    sink.pd = pd;
+    sink.device.priv = &sink;
+    sink.device.write = xx_7zip_extract_sink_write;
+    sink.device.total_size = xx_7zip_extract_sink_size;
+
+    decoded = xx_7zip_decode_folder(self, &priv->streams, folder_index, &sink.device, pd, NULL, NULL);
+
+    while (!sink.error && sink.current < sink.member_count) {
+        xx_7zip_extract_member *m = &sink.members[sink.current];
+        if (m->size == 0 && sink.position == m->offset) {
+            sink.cur_dev = xx_7zip_open_stage(m->utf8_path, &sink.cur_stage_path);
+            if (!sink.cur_dev) {
+                sink.error = true;
+                break;
+            }
+            xx_io_close(sink.cur_dev);
+            sink.cur_dev = NULL;
+            if (m->crc_defined && m->expected_crc != 0) {
+                if (sink.cur_stage_path) {
+                    (void)xx_io_file_remove_a(sink.cur_stage_path);
+                    xx_str_free(sink.cur_stage_path);
+                    sink.cur_stage_path = NULL;
+                }
+                sink.error = true;
+                break;
+            }
+            if (!xx_io_file_replace_a(sink.cur_stage_path, m->utf8_path, sink.overwrite)) {
+                if (sink.cur_stage_path) {
+                    (void)xx_io_file_remove_a(sink.cur_stage_path);
+                    xx_str_free(sink.cur_stage_path);
+                    sink.cur_stage_path = NULL;
+                }
+                sink.error = true;
+                break;
+            }
+            xx_str_free(sink.cur_stage_path);
+            sink.cur_stage_path = NULL;
+            sink.current++;
+        } else {
+            break;
+        }
+    }
+
+    if (sink.cur_dev) {
+        xx_io_close(sink.cur_dev);
+        sink.cur_dev = NULL;
+    }
+    if (sink.cur_stage_path) {
+        (void)xx_io_file_remove_a(sink.cur_stage_path);
+        xx_str_free(sink.cur_stage_path);
+        sink.cur_stage_path = NULL;
+    }
+
+    bool success = decoded && !sink.error && (sink.current == sink.member_count);
+    for (i = 0U; i < sink.member_count; ++i) {
+        uint64_t fidx = sink.members[i].file_index;
+        cache->extracted_verdicts[fidx] = success ? 1U : 2U;
+        xx_str_free(sink.members[i].utf8_path);
+    }
+    xx_mem_free(sink.members);
+
+    cache->extracted_folder = folder_index;
+    return success;
+}
+
 bool xx_7zip_unpack_current_archive_record(Abstractformat *self, xx_archive_record_state *state, xx_pd_struct *pd)
 {
     xx_7zip_private *priv;
@@ -2242,13 +2619,29 @@ bool xx_7zip_unpack_current_archive_record(Abstractformat *self, xx_archive_reco
     if (file->is_folder) {
         result = xx_store_create_dirs_w(full_path, true);
     } else {
+        xx_7zip_extract_cache *cache = (xx_7zip_extract_cache *)state->internal_state;
+        if (file->folder_index >= 0 && (uint64_t)file->folder_index < priv->streams.num_folders) {
+            const xx_7zip_folder *folder = &priv->streams.folders[file->folder_index];
+            if (folder->num_substreams > 1U) {
+                if (cache->extracted_folder == (uint64_t)file->folder_index && cache->extracted_verdicts) {
+                    result = (cache->extracted_verdicts[state->current_index] == 1U) && !(pd && xx_pd_is_stopped(pd));
+                    goto cleanup;
+                }
+                const xx_var *overwrite = xx_format_resolve_extra_parameter(self, &state->options, XX_META_ID_OPT_OVERWRITE);
+                bool allow_ow = overwrite ? xx_var_get_bool(overwrite) : true;
+                if (xx_7zip_extract_folder_on_the_fly(self, priv, cache, (uint64_t)file->folder_index, base_copy, allow_ow, pd)) {
+                    result = (cache->extracted_verdicts && cache->extracted_verdicts[state->current_index] == 1U) && !(pd && xx_pd_is_stopped(pd));
+                    goto cleanup;
+                }
+            }
+        }
         xx_io_device *output;
         if (!xx_store_create_dirs_w(full_path, false)) goto cleanup;
         utf8_path = xx_str_unicode_to_utf8(full_path);
         if (!utf8_path) goto cleanup;
         output = xx_7zip_open_stage(utf8_path, &stage_path);
         if (!output) goto cleanup;
-        result = xx_7zip_extract_file_to_device(self, file, (xx_7zip_extract_cache *)state->internal_state, output, pd);
+        result = xx_7zip_extract_file_to_device(self, file, cache, output, pd);
         if (xx_io_close(output) != 0) result = false;
         if (result && pd && xx_pd_is_stopped(pd)) result = false;
         if (result) {

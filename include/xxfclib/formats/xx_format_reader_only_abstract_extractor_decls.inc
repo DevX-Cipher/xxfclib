@@ -1779,5 +1779,3 @@ XXFC_API xx_file_type_t xx_ziso_file_type(xx_io_device *device, int64_t base_add
 XXFC_API int64_t xx_ziso_size(xx_io_device *, int64_t, bool);
 XXFC_API Abstractextractor *xx_ziso_get_abstract_extractor(void);
 XXFC_API Abstractdetector *xx_ziso_get_abstract_detector(void);
-XXFC_API Abstractextractor *xx_executable_overlay_get_abstract_extractor(void);
-XXFC_API Abstractdetector *xx_executable_overlay_get_abstract_detector(void);

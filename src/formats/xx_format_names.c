@@ -1336,6 +1336,7 @@ const char *xx_format_file_type_to_string(xx_file_type_t type)
         case XX_FILE_TYPE_NINTENDO_REL: return "Nintendo Wii REL relocatable module";
         case XX_FILE_TYPE_XCOFF: return "AIX Extended COFF executable";
         case XX_FILE_TYPE_EXECUTABLE_OVERLAY: return "Executable overlay";
+        case XX_FILE_TYPE_SCUMMVM_DXA: return "ScummVM DXA video";
         case XX_FILE_TYPE_SFX_INFTOOL: return "sfx inftool";
         case XX_FILE_TYPE_AMIGA_EXT_ADF: return "amiga ext adf";
         case XX_FILE_TYPE_AMIGA_OLD_EXT_ADF: return "amiga old ext adf";

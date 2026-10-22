@@ -44,7 +44,7 @@
  * decompression of FreeArc archives." Only that decompression part is here
  * and it is used only to decompress FreeArc archives.
  *
- * Other methods (tor, ppmd, grzip, dict, mm, encryption...) are not
+ * Other methods (tor, ppmd, grzip, dict, mm, other encryption...) are not
  * implemented: such blocks are listed but their members do not unpack.
  */
 
@@ -55,6 +55,11 @@
 #include "xxfclib/algo/crc/xx_crc.h"
 #include "xxfclib/algo/lzma/xx_lzma.h"
 #include "xxfclib/algo/store/xx_store.h"
+#include "xxfclib/algo/sha/xx_sha.h"
+#include "../../../algo/aes/xx_aes_internal.h"
+/* SHA-512 already lives in this private interoperability module. Reuse its
+ * standard FIPS 180-4 digest rather than duplicate a cryptographic primitive. */
+#include "../dgca/dgca_cipher.h"
 #include "xxfclib/io/xx_io.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/strings/xx_string.h"
@@ -83,6 +88,8 @@
 #define FA_MAX_STAGES 16
 #define FA_MAX_METHOD 1024U
 #define FA_LZP_MAX_TABLE_INIT ((uint64_t)64 * 1024 * 1024)
+#define FA_MAX_KDF_ROUNDS 1000000U
+#define FA_MAX_PASSWORD 1048576U
 
 #define FA_BLOCK_HEADER 1U
 #define FA_BLOCK_DIR 3U
@@ -124,6 +131,19 @@ static uint32_t fa_crc32(const uint8_t *data, size_t size)
 static bool fa_stopped(xx_pd_struct *pd)
 {
     return pd && xx_pd_is_stopped(pd);
+}
+
+static void fa_secure_clear(void *data, size_t size)
+{
+    volatile uint8_t *p = (volatile uint8_t *)data;
+    while (size--) *p++ = 0U;
+}
+
+/* Keep no plaintext password in a reader cache. Presence distinguishes a
+ * deliberately empty password from a password that has not been supplied. */
+static void fa_password_identity(const char *password, uint8_t fingerprint[32])
+{
+    xx_sha256_memory(password, password ? xx_str_len(password) : 0U, fingerprint);
 }
 
 /* -------------------------------------------------------------- cursor */
@@ -208,7 +228,8 @@ typedef enum fa_kind {
     FA_REP,
     FA_EXE,
     FA_DELTA,
-    FA_LZP
+    FA_LZP,
+    FA_AES256_CTR
 } fa_kind;
 
 typedef struct fa_stage {
@@ -217,6 +238,10 @@ typedef struct fa_stage {
     uint64_t dictionary; /* 0 = not stated */
     uint32_t lzp_min_match, lzp_hash_bits, lzp_smallest;
     uint64_t lzp_barrier;
+    uint32_t iterations;
+    uint8_t salt[64], check[32], iv[16];
+    size_t salt_size, check_size;
+    bool fixed_hex;
 } fa_stage;
 
 static bool fa_is_digit(char c)
@@ -293,6 +318,72 @@ static bool fa_word_is(const char *s, size_t n, const char *word)
     return n == k && xx_rt_memcmp(s, word, k) == 0;
 }
 
+static int fa_hex_digit(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool fa_hex(const char *s, size_t n, uint8_t *out, size_t capacity, size_t *written)
+{
+    size_t i;
+    if ((n & 1U) || n / 2U > capacity) return false;
+    for (i = 0U; i < n; i += 2U) {
+        int a = fa_hex_digit(s[i]), b = fa_hex_digit(s[i + 1U]);
+        if (a < 0 || b < 0) return false;
+        out[i / 2U] = (uint8_t)((unsigned)a * 16U + (unsigned)b);
+    }
+    *written = n / 2U;
+    return true;
+}
+
+static bool fa_parse_aes(const char *s, size_t n, size_t colon, fa_stage *stage)
+{
+    unsigned seen = 0U;
+    stage->kind = FA_AES256_CTR;
+    stage->iterations = 1000U;
+    while (colon < n) {
+        size_t start = ++colon, len, bytes = 0U;
+        uint64_t value;
+        unsigned flag;
+        while (colon < n && s[colon] != ':') ++colon;
+        len = colon - start;
+        if (!len) return false;
+        switch (s[start]) {
+            case 'f': flag = 1U; if (len != 1U) return false; stage->fixed_hex = true; break;
+            case 'n':
+                flag = 2U;
+                if (!fa_decimal(s + start + 1U, len - 1U, &value) || !value || value > FA_MAX_KDF_ROUNDS) return false;
+                stage->iterations = (uint32_t)value;
+                break;
+            case 'r':
+                flag = 4U;
+                if (!fa_decimal(s + start + 1U, len - 1U, &value) || (value != 0U && value != 14U)) return false;
+                break;
+            case 's':
+                flag = 8U;
+                if (!fa_hex(s + start + 1U, len - 1U, stage->salt, sizeof(stage->salt), &stage->salt_size)) return false;
+                break;
+            case 'c':
+                flag = 16U;
+                if (!fa_hex(s + start + 1U, len - 1U, stage->check, sizeof(stage->check), &stage->check_size)) return false;
+                break;
+            case 'i':
+                flag = 32U;
+                if (!fa_hex(s + start + 1U, len - 1U, stage->iv, sizeof(stage->iv), &bytes) || bytes != sizeof(stage->iv)) return false;
+                break;
+            default: return false;
+        }
+        if (seen & flag) return false;
+        seen |= flag;
+    }
+    /* Require the archive's complete IV. Empty/missing salt or verifier
+     * retain upstream semantics; raw-key :k methods are unsupported. */
+    return (seen & 32U) != 0U;
+}
+
 static bool fa_parse_stage(const char *s, size_t n, fa_stage *stage)
 {
     size_t colon = 0U;
@@ -304,6 +395,7 @@ static bool fa_parse_stage(const char *s, size_t n, fa_stage *stage)
     stage->lc = 3U;
     stage->lp = 0U;
     stage->pb = 2U;
+    if (fa_word_is(name, name_len, "aes-256/ctr")) return fa_parse_aes(s, n, colon, stage);
     if (fa_word_is(name, name_len, "storing") || fa_word_is(name, name_len, "exe")) {
         stage->kind = name[0] == 's' ? FA_STORE : FA_EXE;
         return colon == n;
@@ -401,6 +493,7 @@ static bool fa_parse_stage(const char *s, size_t n, fa_stage *stage)
 static bool fa_parse_chain(const char *method, fa_stage *stages, size_t *count)
 {
     size_t n, start = 0U, i;
+    uint32_t kdf_rounds = 0U;
     if (!method) return false;
     n = xx_str_len(method);
     if (!n || n > FA_MAX_METHOD) return false;
@@ -408,11 +501,30 @@ static bool fa_parse_chain(const char *method, fa_stage *stages, size_t *count)
     for (i = 0U; i <= n; ++i) {
         if (i == n || method[i] == '+') {
             if (i == start || *count >= FA_MAX_STAGES || !fa_parse_stage(method + start, i - start, &stages[*count])) return false;
+            if (stages[*count].kind == FA_AES256_CTR) {
+                if (stages[*count].iterations > FA_MAX_KDF_ROUNDS - kdf_rounds) return false;
+                kdf_rounds += stages[*count].iterations;
+            }
             ++*count;
             start = i + 1U;
         }
     }
     return *count > 0U;
+}
+
+static bool fa_method_encrypted(const char *method)
+{
+    size_t at = 0U;
+    if (!method) return false;
+    do {
+        size_t start = at;
+        while (method[at] && method[at] != '+') ++at;
+        if (at - start >= 11U && xx_rt_memcmp(method + start, "aes-256/ctr", 11U) == 0 &&
+            (at - start == 11U || method[start + 11U] == ':')) return true;
+        if (!method[at]) break;
+        ++at;
+    } while (method[at]);
+    return false;
 }
 
 bool xx_freearc_method_supported(const char *method)
@@ -787,7 +899,140 @@ static void fa_exe(uint8_t *data, size_t size)
     }
 }
 
-bool xx_freearc_decode_chain(const char *method, uint8_t *in, size_t in_size, int64_t expected, uint8_t **out, size_t *out_size, xx_pd_struct *pd)
+/* FreeArc protocol reference, including its historical hex-decoding bug:
+ * https://github.com/mirror/freearc/tree/71f3ab36df26401fff4301b4c8600a31a90d8da9
+ * Encryption.hs (65..85,114..117), C_Encryption.cpp (125..160,221..227,
+ * 300..305), Common.h (787..790). PBKDF2 uses HMAC-SHA512; c contains the
+ * derived bytes immediately after the AES key, not a ciphertext MAC. */
+typedef struct fa_hmac512 {
+    uint8_t inner[128], outer[128];
+} fa_hmac512;
+
+static void fa_hmac512_init(fa_hmac512 *h, const uint8_t *password, size_t size)
+{
+    uint8_t key[128] = {0};
+    size_t i;
+    if (size > sizeof(key)) dg_sha512_digest(password, size, key);
+    else if (size) xx_rt_memcpy(key, password, size);
+    for (i = 0U; i < sizeof(key); ++i) {
+        h->inner[i] = (uint8_t)(key[i] ^ 0x36U);
+        h->outer[i] = (uint8_t)(key[i] ^ 0x5cU);
+    }
+    fa_secure_clear(key, sizeof(key));
+}
+
+static void fa_hmac512_digest(const fa_hmac512 *h, const uint8_t *data, size_t size, uint8_t out[64])
+{
+    uint8_t inner[196], outer[192];
+    /* Only salt || BE32(1) (at most 68 bytes), or a 64-byte digest. */
+    xx_rt_memcpy(inner, h->inner, 128U);
+    xx_rt_memcpy(inner + 128U, data, size);
+    xx_rt_memcpy(outer, h->outer, 128U);
+    dg_sha512_digest(inner, 128U + size, outer + 128U);
+    dg_sha512_digest(outer, sizeof(outer), out);
+    fa_secure_clear(inner, sizeof(inner));
+    fa_secure_clear(outer, sizeof(outer));
+}
+
+/* Foreign.C.String.withCStringLen in legacy FreeArc truncates each Haskell
+ * character to its low byte. :f first encodes UTF-8, and also fixes hex. */
+static bool fa_legacy_password(const char *utf8, uint8_t *out, size_t *size)
+{
+    const uint8_t *p = (const uint8_t *)utf8;
+    size_t i = 0U, n = 0U, length = *size;
+    while (i < length) {
+        uint32_t cp = p[i++];
+        unsigned more = 0U, j;
+        if (cp >= 0xc2U && cp <= 0xdfU) { cp &= 31U; more = 1U; }
+        else if (cp >= 0xe0U && cp <= 0xefU) { cp &= 15U; more = 2U; }
+        else if (cp >= 0xf0U && cp <= 0xf4U) { cp &= 7U; more = 3U; }
+        else if (cp >= 0x80U) return false;
+        if (more > length - i) return false;
+        for (j = 0U; j < more; ++j) {
+            if ((p[i] & 0xc0U) != 0x80U) return false;
+            cp = (cp << 6U) | (p[i++] & 63U);
+        }
+        if ((more == 1U && cp < 0x80U) || (more == 2U && cp < 0x800U) || (more == 3U && cp < 0x10000U) ||
+            cp > 0x10ffffU || (cp >= 0xd800U && cp <= 0xdfffU)) return false;
+        out[n++] = (uint8_t)cp;
+    }
+    *size = n;
+    return true;
+}
+
+static uint8_t fa_legacy_hex_byte(uint8_t b)
+{
+    unsigned hi = b >> 4U, lo = b & 15U;
+    return (uint8_t)(((hi < 10U ? hi : hi - 10U) << 4U) | (lo < 10U ? lo : lo - 10U));
+}
+
+static bool fa_aes_decrypt(const fa_stage *stage, uint8_t *data, size_t size, const char *password, xx_pd_struct *pd)
+{
+    uint8_t derived[64] = {0}, link[64], seed[68], counter[16], mask[16];
+    uint8_t *legacy = NULL;
+    const uint8_t *password_bytes = (const uint8_t *)password;
+    fa_hmac512 h;
+    xx_aes_context aes;
+    size_t password_size, i, at;
+    uint32_t round;
+    unsigned mismatch = 0U;
+    bool result = false;
+    if (!password) {
+        xx_pd_set_error(pd, XXFC_ERR_INVALID_ARG, "FreeArc archive requires a password");
+        return false;
+    }
+    password_size = xx_str_len(password);
+    if (password_size > FA_MAX_PASSWORD || size > FA_MAX_STAGE || fa_stopped(pd)) return false;
+    if (!stage->fixed_hex) {
+        legacy = (uint8_t *)fa_alloc(password_size);
+        if (!legacy || !fa_legacy_password(password, legacy, &password_size)) goto done;
+        password_bytes = legacy;
+    }
+    fa_hmac512_init(&h, password_bytes, password_size);
+    xx_rt_memcpy(seed, stage->salt, stage->salt_size);
+    seed[stage->salt_size] = seed[stage->salt_size + 1U] = seed[stage->salt_size + 2U] = 0U;
+    seed[stage->salt_size + 3U] = 1U;
+    fa_hmac512_digest(&h, seed, stage->salt_size + 4U, link);
+    xx_rt_memcpy(derived, link, sizeof(derived));
+    for (round = 1U; round < stage->iterations; ++round) {
+        if ((round & 63U) == 0U && fa_stopped(pd)) goto done;
+        fa_hmac512_digest(&h, link, sizeof(link), link);
+        for (i = 0U; i < sizeof(derived); ++i) derived[i] ^= link[i];
+    }
+    for (i = 0U; i < stage->check_size; ++i) mismatch |= (unsigned)(derived[32U + i] ^ stage->check[i]);
+    if (mismatch) {
+        xx_pd_set_error(pd, XXFC_ERR_INVALID_ARG, "FreeArc password is incorrect");
+        goto done;
+    }
+    xx_rt_memcpy(counter, stage->iv, sizeof(counter));
+    if (!stage->fixed_hex) {
+        for (i = 0U; i < 32U; ++i) derived[i] = fa_legacy_hex_byte(derived[i]);
+        for (i = 0U; i < sizeof(counter); ++i) counter[i] = fa_legacy_hex_byte(counter[i]);
+    }
+    if (!xx_aes_internal_set_key(&aes, derived, 32U)) goto done;
+    for (at = 0U; at < size;) {
+        size_t amount = size - at > sizeof(mask) ? sizeof(mask) : size - at;
+        if ((at & 0xffffU) == 0U && fa_stopped(pd)) goto done;
+        xx_aes_internal_encrypt_block(&aes, counter, mask);
+        for (i = 0U; i < amount; ++i) data[at + i] ^= mask[i];
+        at += amount;
+        for (i = 0U; i < sizeof(counter); ++i) if (++counter[i]) break;
+    }
+    result = !fa_stopped(pd);
+done:
+    if (legacy) { fa_secure_clear(legacy, xx_str_len(password)); xx_mem_free(legacy); }
+    fa_secure_clear(&h, sizeof(h));
+    fa_secure_clear(&aes, sizeof(aes));
+    fa_secure_clear(derived, sizeof(derived));
+    fa_secure_clear(link, sizeof(link));
+    fa_secure_clear(seed, sizeof(seed));
+    fa_secure_clear(counter, sizeof(counter));
+    fa_secure_clear(mask, sizeof(mask));
+    return result;
+}
+
+bool xx_freearc_decode_chain_password(const char *method, uint8_t *in, size_t in_size, int64_t expected, const char *password,
+                                      uint8_t **out, size_t *out_size, xx_pd_struct *pd)
 {
     fa_stage stages[FA_MAX_STAGES];
     size_t count = 0U, i, cur_size = in_size;
@@ -813,6 +1058,11 @@ bool xx_freearc_decode_chain(const char *method, uint8_t *in, size_t in_size, in
             return false;
         }
         switch (stages[i].kind) {
+            case FA_AES256_CTR:
+                next = cur;
+                next_size = cur_size;
+                ok = cur_size <= cap && fa_aes_decrypt(&stages[i], cur, cur_size, password, pd);
+                break;
             case FA_STORE:
                 next = cur;
                 next_size = cur_size;
@@ -845,6 +1095,11 @@ bool xx_freearc_decode_chain(const char *method, uint8_t *in, size_t in_size, in
     *out = cur;
     *out_size = cur_size;
     return true;
+}
+
+bool xx_freearc_decode_chain(const char *method, uint8_t *in, size_t in_size, int64_t expected, uint8_t **out, size_t *out_size, xx_pd_struct *pd)
+{
+    return xx_freearc_decode_chain_password(method, in, in_size, expected, NULL, out, out_size, pd);
 }
 
 /* ------------------------------------------------------ probe (header) */
@@ -954,7 +1209,8 @@ static bool fa_read_control(Abstractformat *self, const fa_desc *d, uint8_t **da
         xx_mem_free(packed);
         return false;
     }
-    if (!xx_freearc_decode_chain(d->method, packed, (size_t)d->packed, d->unpacked, data, size, pd)) return false;
+    if (fa_method_encrypted(d->method)) self->is_crypted = true;
+    if (!xx_freearc_decode_chain_password(d->method, packed, (size_t)d->packed, d->unpacked, xx_format_get_password(self), data, size, pd)) return false;
     if (fa_crc32(*data, *size) != d->crc) {
         xx_mem_free(*data);
         *data = NULL;
@@ -984,6 +1240,7 @@ typedef struct fa_entry {
 } fa_entry;
 
 typedef struct fa_index {
+    size_t references;
     fa_block *blocks;
     size_t block_count, block_cap;
     fa_entry *entries;
@@ -995,6 +1252,7 @@ static void fa_index_free(fa_index *ix)
 {
     size_t i;
     if (!ix) return;
+    if (--ix->references) return;
     for (i = 0U; i < ix->block_count; ++i) xx_mem_free(ix->blocks[i].method);
     for (i = 0U; i < ix->entry_count; ++i) xx_mem_free(ix->entries[i].name);
     xx_mem_free(ix->blocks);
@@ -1155,6 +1413,7 @@ static fa_index *fa_build_index(Abstractformat *self, xx_pd_struct *pd)
         xx_mem_free(data);
         return NULL;
     }
+    ix->references = 1U;
     c.p = data;
     c.size = size;
     c.pos = 0U;
@@ -1194,12 +1453,33 @@ fail:
 static fa_index *fa_index_get(Abstractformat *self, xx_pd_struct *pd)
 {
     xx_freearc *archive = (xx_freearc *)self;
+    const char *password;
+    uint8_t fingerprint[32];
     if (!self) return NULL;
+    password = xx_format_get_password(self);
+    fa_password_identity(password, fingerprint);
+    if (!archive->password_fingerprint_set || archive->password_present != (password != NULL) ||
+        xx_rt_memcmp(fingerprint, archive->password_fingerprint, sizeof(fingerprint)) != 0) {
+        fa_index_free((fa_index *)archive->index);
+        archive->index = NULL;
+        archive->index_tried = false;
+        xx_rt_memcpy(archive->password_fingerprint, fingerprint, sizeof(fingerprint));
+        archive->password_fingerprint_set = true;
+        archive->password_present = password != NULL;
+    }
+    fa_secure_clear(fingerprint, sizeof(fingerprint));
     if (!archive->index_tried) {
         if (!xx_freearc_probe(self, NULL)) return NULL;
         archive->index = fa_build_index(self, pd);
         /* A stopped parse is not a verdict on the archive. */
-        if (archive->index || !fa_stopped(pd)) archive->index_tried = true;
+        if (archive->index) archive->index_tried = true;
+    }
+    if (archive->index) {
+        const fa_index *ix = (const fa_index *)archive->index;
+        size_t i;
+        for (i = 0U; i < ix->block_count; ++i) {
+            if (fa_method_encrypted(ix->blocks[i].method)) { self->is_crypted = true; break; }
+        }
     }
     return (fa_index *)archive->index;
 }
@@ -1250,6 +1530,9 @@ void xx_freearc_destroy(xx_freearc *archive)
     archive->index_tried = false;
     archive->flags = 0U;
     archive->version = 0U;
+    fa_secure_clear(archive->password_fingerprint, sizeof(archive->password_fingerprint));
+    archive->password_fingerprint_set = false;
+    archive->password_present = false;
 }
 
 void xx_freearc_free(xx_freearc *archive)
@@ -1287,6 +1570,7 @@ bool xx_freearc_handle_base_info(Abstractformat *self, xx_pd_struct *pd)
     /* The footer descriptor closes the archive. Without one (a damaged or
      * truncated archive) it is taken to run to the end of the device. */
     if (fa_find_footer(self, &footer, &end) && end > XX_FREEARC_HEADER_SIZE) {
+        if (fa_method_encrypted(footer.method)) self->is_crypted = true;
         archive->archive_size = end;
         self->format_size = end;
     } else {
@@ -1321,6 +1605,9 @@ typedef struct fa_stream {
     size_t cache_size;
     uint64_t *seen; /* hashes of output names already used */
     size_t seen_cap;
+    uint8_t password_fingerprint[32];
+    bool password_fingerprint_set;
+    bool password_present;
 } fa_stream;
 
 static void fa_stream_free(void *opaque)
@@ -1329,6 +1616,8 @@ static void fa_stream_free(void *opaque)
     if (!s) return;
     if (s->cache) xx_mem_free(s->cache);
     if (s->seen) xx_mem_free(s->seen);
+    fa_index_free(s->ix);
+    fa_secure_clear(s->password_fingerprint, sizeof(s->password_fingerprint));
     xx_mem_free(s);
 }
 
@@ -1372,7 +1661,8 @@ static bool fa_set_record(xx_archive_record *record, const fa_index *ix, size_t 
     record->compressed_size = b->packed;
     return xx_archive_record_set_original_name(record, e->name) && xx_archive_record_set_meta_u64(record, XX_META_ID_UNCOMPRESSED_SIZE, (uint64_t)e->size) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_CRC32, e->crc) && xx_archive_record_set_meta_u64(record, XX_META_ID_TIMESTAMP, e->time) &&
-           xx_archive_record_set_meta_bool(record, XX_META_ID_IS_ENCRYPTED, false) && xx_archive_record_set_meta_bool(record, XX_META_ID_IS_FOLDER, e->folder);
+           xx_archive_record_set_meta_bool(record, XX_META_ID_IS_ENCRYPTED, fa_method_encrypted(b->method)) &&
+           xx_archive_record_set_meta_bool(record, XX_META_ID_IS_FOLDER, e->folder);
 }
 
 xx_archive_record_state *xx_freearc_create_archive_records_reading(Abstractformat *self, const xx_list_s *options, xx_pd_struct *pd)
@@ -1384,9 +1674,11 @@ xx_archive_record_state *xx_freearc_create_archive_records_reading(Abstractforma
     stream = (fa_stream *)xx_mem_calloc(1U, sizeof(*stream));
     if (!stream) return NULL;
     stream->ix = ix;
+    ++ix->references;
     stream->cached_block = (size_t)-1;
     state = (xx_archive_record_state *)xx_mem_alloc(sizeof(*state));
     if (!state) {
+        fa_index_free(ix);
         xx_mem_free(stream);
         return NULL;
     }
@@ -1438,6 +1730,17 @@ static bool fa_load_block(Abstractformat *self, fa_stream *s, size_t block, xx_p
     const fa_block *b = &s->ix->blocks[block];
     uint8_t *packed;
     int64_t total;
+    const char *password = xx_format_get_password(self);
+    uint8_t fingerprint[32];
+    fa_password_identity(password, fingerprint);
+    if (!s->password_fingerprint_set || s->password_present != (password != NULL) ||
+        xx_rt_memcmp(fingerprint, s->password_fingerprint, sizeof(fingerprint)) != 0) {
+        s->cached_block = (size_t)-1;
+        xx_rt_memcpy(s->password_fingerprint, fingerprint, sizeof(fingerprint));
+        s->password_fingerprint_set = true;
+        s->password_present = password != NULL;
+    }
+    fa_secure_clear(fingerprint, sizeof(fingerprint));
     if (s->cached_block == block) return s->cached_ok;
     if (s->cache) xx_mem_free(s->cache);
     s->cache = NULL;
@@ -1453,7 +1756,8 @@ static bool fa_load_block(Abstractformat *self, fa_stream *s, size_t block, xx_p
         xx_mem_free(packed);
         return false;
     }
-    if (!xx_freearc_decode_chain(b->method, packed, (size_t)b->packed, b->unpacked, &s->cache, &s->cache_size, pd)) {
+    if (fa_method_encrypted(b->method)) self->is_crypted = true;
+    if (!xx_freearc_decode_chain_password(b->method, packed, (size_t)b->packed, b->unpacked, password, &s->cache, &s->cache_size, pd)) {
         /* A stopped decode may be retried later. */
         if (fa_stopped(pd)) s->cached_block = (size_t)-1;
         return false;

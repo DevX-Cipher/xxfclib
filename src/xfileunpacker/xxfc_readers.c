@@ -22,6 +22,7 @@ static const xxfc_reader_alias aliases[] = {
     {"bzip2", XX_FILE_TYPE_BZ2}, {"compress", XX_FILE_TYPE_UNIX_COMPRESS},
     {"txt", XX_FILE_TYPE_TEXT},
     {"executable_overlay", XX_FILE_TYPE_EXECUTABLE_OVERLAY},
+    {"scummvm_dxa", XX_FILE_TYPE_SCUMMVM_DXA},
     {"Executable overlay", XX_FILE_TYPE_EXECUTABLE_OVERLAY},
     {"tar_lz", XX_FILE_TYPE_TAR_LZIP}, {"tar_zst", XX_FILE_TYPE_TAR_ZSTD},
 #include "xxfc_reader_aliases.inc"

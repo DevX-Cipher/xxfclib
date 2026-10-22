@@ -23,6 +23,14 @@ typedef struct xfu_property {
     const char *value;
 } xfu_property;
 
+typedef enum xfu_encryption_status {
+    XFU_ENCRYPTION_DETECTED = 1,
+    XFU_ENCRYPTION_PASSWORD_REQUIRED,
+    /* A supplied password did not unlock the data. This can also indicate
+     * damaged encrypted data; it is not proof that the password is wrong. */
+    XFU_ENCRYPTION_PASSWORD_REJECTED
+} xfu_encryption_status;
+
 /* Names and messages are UTF-8; callback arguments are borrowed for the call. */
 typedef struct xfu_entry {
     const char *name;
@@ -42,6 +50,7 @@ typedef struct xfu_entry {
      * exists; not replaced", "permission denied", "unsafe member path"), or
      * NULL when nothing tells (a defect of its data). Borrowed for the call. */
     const char *failure;
+    bool is_encrypted; /* This member's payload requires decryption. */
 } xfu_entry;
 
 typedef struct xfu_callbacks {
@@ -83,6 +92,14 @@ typedef struct xfu_callbacks {
      * inspection types are never offered. Borrowed for this call. */
     void (*unpack_handle_types)(void *user, const xx_handle_type_t *types,
                                 size_t count, xx_handle_type_t selected);
+    /* Reader-confirmed encryption, independent of localized log text.
+     * DETECTED does not imply failure: an encrypted archive can be listed.
+     * REQUIRED/REJECTED mean an attempted operation could not read encrypted
+     * metadata or a member. member_name is NULL for archive metadata.
+     * Notifications are bounded per archive layer; member flags remain on
+     * every entry. Arguments are borrowed, and callbacks run on the worker. */
+    void (*encryption)(void *user, xfu_encryption_status status,
+                       const char *member_name);
 } xfu_callbacks;
 
 typedef struct xfu_request {
