@@ -6,12 +6,13 @@
  * name. Never consult the host locale: each reader supplies its wire charset.
  * %HH escapes are reversible (literal '%' and the generated-name marker '~'
  * are escaped too). Root stripping is an explicit reader policy, never the
- * default; a traversal component is rejected before any conversion. */
+ * default; a traversal component is rejected before any conversion.
+ * CRT-free on every platform (xx_rt_* only): die_engine compiles it into the
+ * /NODEFAULTLIB cdie console, where strcmp/snprintf are unresolved. */
+#include "xxfclib/rt/xx_rt.h"
 #include "xxfclib/codepages/xx_codepage.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/strings/xx_string.h"
-#include <stdio.h>
-#include <string.h>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -29,10 +30,10 @@ static bool xx_archive_name_device(const char *s, size_t n)
     }
     while (i && (b[i - 1] == ' ' || b[i - 1] == '.')) --i;
     b[i] = 0;
-    return !strcmp(b, "CON") || !strcmp(b, "PRN") || !strcmp(b, "AUX") || !strcmp(b, "NUL") ||
-           !strcmp(b, "CLOCK$") || !strcmp(b, "CONIN$") || !strcmp(b, "CONOUT$") ||
-           (i == 4 && (!memcmp(b, "COM", 3) || !memcmp(b, "LPT", 3)) && b[3] >= '1' && b[3] <= '9') ||
-           (i == 5 && (!memcmp(b, "COM", 3) || !memcmp(b, "LPT", 3)) &&
+    return !xx_rt_strcmp(b, "CON") || !xx_rt_strcmp(b, "PRN") || !xx_rt_strcmp(b, "AUX") || !xx_rt_strcmp(b, "NUL") ||
+           !xx_rt_strcmp(b, "CLOCK$") || !xx_rt_strcmp(b, "CONIN$") || !xx_rt_strcmp(b, "CONOUT$") ||
+           (i == 4 && (!xx_rt_memcmp(b, "COM", 3) || !xx_rt_memcmp(b, "LPT", 3)) && b[3] >= '1' && b[3] <= '9') ||
+           (i == 5 && (!xx_rt_memcmp(b, "COM", 3) || !xx_rt_memcmp(b, "LPT", 3)) &&
                (unsigned char)b[3] == 0xc2 && ((unsigned char)b[4] == 0xb9 || (unsigned char)b[4] == 0xb2 || (unsigned char)b[4] == 0xb3));
 }
 
@@ -66,7 +67,7 @@ static char *xx_archive_output_name(const char *raw, unsigned codepage, unsigned
             start = p + 1;
         }
     }
-    length = strlen(s);
+    length = xx_rt_strlen(s);
     if (length > (SIZE_MAX - 4) / 12) return NULL;
     converted = (char *)xx_mem_alloc(length * 4 + 1);
     if (!converted) return NULL;
@@ -79,11 +80,11 @@ static char *xx_archive_output_name(const char *raw, unsigned codepage, unsigned
         converted[written] = 0;
     } else {
         /* Unknown/undefined historical bytes remain distinguishable. */
-        memcpy(converted, s, length + 1);
+        xx_rt_memcpy(converted, s, length + 1);
         converted_valid = false;
     }
     s = converted;
-    length = strlen(s);
+    length = xx_rt_strlen(s);
     out = (char *)xx_mem_alloc(length * 3 + 1);
     if (!out) { xx_mem_free(converted); return NULL; }
     for (start = p = s;; ++p) {
@@ -127,9 +128,9 @@ static inline bool xx_archive_output_equal_prefix(const char *name, const char *
     xx_str_wfree(a); xx_str_wfree(b);
     return same;
 #else
-    size_t n = strlen(name), m = strlen(other);
+    size_t n = xx_rt_strlen(name), m = xx_rt_strlen(other);
     if (n > m || (other[n] && other[n] != '/')) return false;
-    return !memcmp(name, other, n);
+    return !xx_rt_memcmp(name, other, n);
 #endif
 }
 
@@ -138,7 +139,7 @@ static inline bool xx_archive_output_equal_prefix(const char *name, const char *
 static inline bool xx_archive_output_suffix(char **name, size_t index)
 {
     char suffix[40], *next;
-    snprintf(suffix, sizeof(suffix), "~xx-%08llu", (unsigned long long)index);
+    xx_rt_snprintf(suffix, sizeof(suffix), "~xx-%08llu", (unsigned long long)index);
     next = xx_str_concat(*name, suffix);
     if (!next) return false;
     xx_mem_free(*name); *name = next; return true;
