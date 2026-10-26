@@ -41,8 +41,10 @@ static bool pm_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
               (uint64_t)event + 9 + size == b.n && blob_add(f, s, &b, "event-header", event, 9));
     for (i = 0; i < size / event_width; ++i) {
         uint64_t at = event + 9 + (uint64_t)i * event_width;
-        uint32_t pos = xx_data_get_u32(b.p + (size_t)at + 4, 4, 0, false);
-        BLOB_NEED(pos >= start && pos < event && (pos - start) % (channels * width) == 0 && b.p[(size_t)at + 2] <= 11);
+        uint64_t pos = xx_data_get_u32(b.p + (size_t)at + 4, 4, 0, false);
+        /* Type3 stores global sample-frame units measured from file origin. */
+        if (b.p[event] == 3) pos *= (uint64_t)channels * width;
+        BLOB_NEED(pos >= start && pos < event && (b.p[event] == 3 || (pos - start) % (channels * width) == 0) && b.p[(size_t)at + 2] <= 11);
         if (event_width == 19) BLOB_NEED(blob_floats(&b, at + 12, 4, 4, false));
         BLOB_NEED(blob_add(f, s, &b, "event", at, event_width));
     }

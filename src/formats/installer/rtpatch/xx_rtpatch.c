@@ -630,6 +630,8 @@ static xx_rtpatch_stream *xx_rtpatch_parse(Abstractformat *self, xx_pd_struct *p
     bool fixed;
     bool record_seen = false;
 
+    uint8_t hdr[XX_RTPATCH_HEADER_SIZE];
+
     if (!self || !self->device || self->base_address < 0) return NULL;
     total = xx_io_total_size(self->device);
     if (total < self->base_address) return NULL;
@@ -638,16 +640,14 @@ static xx_rtpatch_stream *xx_rtpatch_parse(Abstractformat *self, xx_pd_struct *p
         return NULL;
     }
 
-    data = (uint8_t *)xx_mem_alloc((size_t)span);
-    if (!data) return NULL;
-    if (!xx_rtpatch_read_at(self, self->base_address, data, (size_t)span)) {
-        goto fail;
+    if (!xx_rtpatch_read_at(self, self->base_address, hdr, sizeof(hdr))) {
+        return NULL;
     }
-    if (pd && xx_pd_is_stopped(pd)) goto fail;
+    if (pd && xx_pd_is_stopped(pd)) return NULL;
 
-    version = xx_data_get_u16(data + 2, 2, 0, false);
-    if (data[0] != 'K' || data[1] != '*' || !xx_rtpatch_version_supported(version)) {
-        goto fail;
+    version = xx_data_get_u16(hdr + 2, 2, 0, false);
+    if (hdr[0] != 'K' || hdr[1] != '*' || !xx_rtpatch_version_supported(version)) {
+        return NULL;
     }
     /* Two bytes of magic and a version word from a set of eight are thin on
      * their own - over a large corpus the version word alone selects dozens
@@ -657,16 +657,23 @@ static xx_rtpatch_stream *xx_rtpatch_parse(Abstractformat *self, xx_pd_struct *p
      * format open on a stray "K*". */
     if (version <= 211U) {
         for (offset = 0x10; offset < XX_RTPATCH_HEADER_SIZE; ++offset) {
-            if (data[offset] != 0U) goto fail;
+            if (hdr[offset] != 0U) return NULL;
         }
     } else if (version == 320U || version == 400U) {
         /* 3.20 and 4.00 carry package totals at 0x0c and 0x10 and the
          * builder's fixed 4 at 0x18, while the reserved u32 at 0x14 still
          * reads zero. */
-        if (xx_data_get_u32(data + 0x14, 4, 0, false) != 0U || xx_data_get_u16(data + 0x18, 2, 0, false) != 4U) {
-            goto fail;
+        if (xx_data_get_u32(hdr + 0x14, 4, 0, false) != 0U || xx_data_get_u16(hdr + 0x18, 2, 0, false) != 4U) {
+            return NULL;
         }
     }
+
+    data = (uint8_t *)xx_mem_alloc((size_t)span);
+    if (!data) return NULL;
+    if (!xx_rtpatch_read_at(self, self->base_address, data, (size_t)span)) {
+        goto fail;
+    }
+    if (pd && xx_pd_is_stopped(pd)) goto fail;
 
     stream = (xx_rtpatch_stream *)xx_mem_alloc(sizeof(*stream));
     if (!stream) goto fail;

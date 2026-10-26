@@ -121,7 +121,8 @@ static bool fdi_add_member(fdi_stream *stream, const fdi_member *member)
 
 #define FDI_HEADER_SIZE 14
 
-/* "FDI\0", then u16 cylinders, u16 heads, u16 text offset, u16 data offset and
+/* "FDI", then a write-protection byte (0 or 1), u16 cylinders, u16 heads,
+ * u16 text offset, u16 data offset and
  * u16 extra-header length.  Only the data offset is load bearing here: the
  * sector data itself is stored, so the member is the raw image that follows. */
 static bool fdi_parse(Abstractformat *format, fdi_stream **result)
@@ -136,7 +137,7 @@ static bool fdi_parse(Abstractformat *format, fdi_stream **result)
     if (total < format->base_address) return false;
     size = total - format->base_address;
     if (size <= (int64_t)FDI_HEADER_SIZE || !fdi_read_at(format->device, format->base_address, header, sizeof(header)) || header[0] != 'F' || header[1] != 'D' ||
-        header[2] != 'I' || header[3] != 0)
+        header[2] != 'I' || header[3] > 1)
         return false;
     cylinders = xx_data_get_u16(header + 4U, 2, 0, false);
     heads = xx_data_get_u16(header + 6U, 2, 0, false);

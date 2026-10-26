@@ -89,6 +89,7 @@ typedef enum {
     A_isZeroFilled,
     A_scanBufferForEncryptedPe,
     A_validateAmd64Unwind,
+    A_validateGuardCfFunctionTable,
     A_calculateMD5,
     A_calculateCRC32,
     A_crc16,
@@ -274,6 +275,7 @@ typedef enum {
     A_isExportFunctionPresent,
     A_getNumberOfExportFunctions,
     A_getExportFunctionName,
+    A_getNextNamedExportFunctionIndex,
     A_isExportPresent,
     A_isTLSPresent,
     A_isImportPresent,
@@ -434,6 +436,19 @@ static cd_i64 arg_i64(JSCtx *pCtx, int nArgc, JSVal *pArgv, int nIndex, cd_i64 n
     }
 
     return js_to_int64(pCtx, pArgv[nIndex]);
+}
+
+static int arg_exact_u32(int nArgc, JSVal *pArgv, int nIndex, cd_u32 *pValue)
+{
+    double dValue;
+    cd_u32 nValue;
+    if (!pValue || nIndex >= nArgc || pArgv[nIndex].tag != JT_NUM) return 0;
+    dValue = pArgv[nIndex].u.n;
+    if (!(dValue >= 0.0 && dValue <= 4294967295.0)) return 0;
+    nValue = (cd_u32)dValue;
+    if ((double)nValue != dValue) return 0;
+    *pValue = nValue;
+    return 1;
 }
 
 /* A JS number coerced to unsigned 64-bit the way the Qt engine hands a double
@@ -1815,6 +1830,32 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
             js_set(pCtx, result, "beginRva", js_num((double)validation.begin_rva));
             js_set(pCtx, result, "endRva", js_num((double)validation.end_rva));
             js_set(pCtx, result, "unwindRva", js_num((double)validation.unwind_rva));
+            return result;
+        }
+        case A_validateGuardCfFunctionTable: {
+            cd_u32 nTableRVA;
+            cd_u32 nEntryCount;
+            cd_u32 nEntrySize;
+            cd_i64 nStart;
+            xx_pe_guard_cf_result validation;
+            JSVal result;
+            int available;
+
+            if (!pEngine->bHasPE || !arg_exact_u32(nArgc, pArgv, 0, &nTableRVA) ||
+                !arg_exact_u32(nArgc, pArgv, 1, &nEntryCount) || !nEntryCount ||
+                !arg_exact_u32(nArgc, pArgv, 2, &nEntrySize) || nEntrySize < 4 || nEntrySize > 19) return js_null();
+            nStart = die_engine_profile_start(pEngine);
+            available = xx_pe_inspect_validate_guard_cf_function_table(
+                pPE, pFile, nTableRVA, nEntryCount, nEntrySize, &validation);
+            die_engine_profile_end(pEngine, nStart,
+                                   "validateGuardCfFunctionTable: %lld %lld %lld",
+                                   (long long)nTableRVA, (long long)nEntryCount,
+                                   (long long)nEntrySize);
+            if (!available) return js_null();
+            result = js_new_object(pCtx);
+            js_set(pCtx, result, "status", js_num((double)validation.status));
+            js_set(pCtx, result, "entryIndex", js_num((double)validation.entry_index));
+            js_set(pCtx, result, "functionRva", js_num((double)validation.function_rva));
             return result;
         }
         case A_calculateMD5: {
@@ -3206,9 +3247,9 @@ any_signature_cleanup:
             int i = 0;
             int bResult = 0;
 
-            if (pEngine->bHasPE) {
+            if (pEngine->bHasPE && pName && pName[0] && pPE->ppExportFunctions) {
                 for (i = 0; i < pPE->nExportCount; i++) {
-                    if (x_strcmp(pPE->ppExportFunctions[i], pName) == 0) {
+                    if (pPE->ppExportFunctions[i] && (x_strcmp(pPE->ppExportFunctions[i], pName) == 0)) {
                         bResult = 1;
                         break;
                     }
@@ -3229,7 +3270,26 @@ any_signature_cleanup:
                 return js_str(pCtx, "");
             }
 
-            return js_str(pCtx, pPE->ppExportFunctions[nNumber]);
+            return js_str(pCtx, (pPE->ppExportFunctions && pPE->ppExportFunctions[nNumber]) ? pPE->ppExportFunctions[nNumber] : "");
+        }
+
+        case A_getNextNamedExportFunctionIndex: {
+            int64_t nPrevious = arg_i64(pCtx, nArgc, pArgv, 0, -1);
+            int i = 0;
+
+            if ((!pEngine->bHasPE) || (!pPE->ppExportFunctions) || (nPrevious >= (int64_t)pPE->nExportCount - 1)) {
+                return js_num(-1);
+            }
+
+            if (nPrevious < -1) nPrevious = -1;
+
+            for (i = (int)(nPrevious + 1); i < pPE->nExportCount; i++) {
+                if (pPE->ppExportFunctions[i] && pPE->ppExportFunctions[i][0]) {
+                    return js_num((double)i);
+                }
+            }
+
+            return js_num(-1);
         }
 
         case A_isExportPresent: return js_bool(pEngine->bHasPE && (pPE->pDirRVA[XX_PE_INSPECT_DIR_EXPORT] != 0));
@@ -3658,6 +3718,7 @@ static const ApiEntry g_apiTable[] = {{"getSize", A_getSize, 0},
                                       {"isZeroFilled", A_isZeroFilled, 2},
                                       {"scanBufferForEncryptedPe", A_scanBufferForEncryptedPe, 2},
                                       {"validateAmd64Unwind", A_validateAmd64Unwind, 2},
+                                      {"validateGuardCfFunctionTable", A_validateGuardCfFunctionTable, 3},
                                       {"calculateMD5", A_calculateMD5, 2},
                                       {"calculateCRC32", A_calculateCRC32, 2},
                                       {"crc16", A_crc16, 3},
@@ -3856,6 +3917,7 @@ static const ApiEntry g_apiTable[] = {{"getSize", A_getSize, 0},
                                       {"getNumberOfExports", A_getNumberOfExportFunctions, 0},
                                       {"getExportFunctionName", A_getExportFunctionName, 1},
                                       {"getExportNameByNumber", A_getExportFunctionName, 1},
+                                      {"getNextNamedExportFunctionIndex", A_getNextNamedExportFunctionIndex, 1},
                                       {"isExportPresent", A_isExportPresent, 0},
                                       {"isTLSPresent", A_isTLSPresent, 0},
                                       {"isImportPresent", A_isImportPresent, 0},

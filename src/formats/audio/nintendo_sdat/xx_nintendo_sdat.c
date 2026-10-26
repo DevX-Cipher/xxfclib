@@ -100,7 +100,11 @@ static bool read_components(Abstractformat *f, pm_stream *s, retro_resource_blob
                 if (n > 1024 || n > (info + sizes[1] - q - 4) / 8) return false;
                 for (k = 0; k < n; ++k) {
                     uint32_t v = q + 4 + k * 8, t = p[v], id = xx_data_get_u32(p + v + 4, 4, 0, false);
-                    if (!retro_resource_work(b, 1) || t > 3 || p[v + 3] || id >= counts[t] || (xx_data_get_u16(p + v + 1, 2, 0, false) & ~7U)) return false;
+                    /* Group types order SSEQ/SBNK/SWAR/SSAR differs from INFO's
+                     * SSEQ/SSAR/SBNK/SWAR table order. Option bit 3 loads SSAR. */
+                    static const unsigned info_category[4] = {0, 2, 3, 1};
+                    if (!retro_resource_work(b, 1) || t > 3 || p[v + 3] || id >= counts[info_category[t]] ||
+                        (xx_data_get_u16(p + v + 1, 2, 0, false) & ~15U)) return false;
                 }
             }
             if (i == 6) {

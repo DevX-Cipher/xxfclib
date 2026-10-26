@@ -380,6 +380,11 @@ static void xx_aes_decrypt_block(const xx_aes_context *context, const uint8_t in
     xx_crypto_clear(state, sizeof(state));
 }
 
+void xx_aes_internal_decrypt_block(const xx_aes_context *context, const uint8_t input[XX_AES_BLOCK_SIZE], uint8_t output[XX_AES_BLOCK_SIZE])
+{
+    xx_aes_decrypt_block(context, input, output);
+}
+
 static bool xx_7zip_aes_derive_key(const uint8_t *password, size_t password_size, const uint8_t *salt, size_t salt_size, uint8_t cycles_power,
                                    uint8_t key[XX_SHA256_DIGEST_SIZE], xx_pd_struct *pd)
 {

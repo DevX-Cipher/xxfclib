@@ -346,9 +346,9 @@ static bool iz_skip_fields(iz_parser *parser, const char *types, size_t count)
     size_t index;
     for (index = 0U; index < count; ++index) {
         char code = types[index];
-        if (code == 'B' || code == 'C' || code == 'Z') {
+        if (code == 'B' || code == 'Z') {
             if (!iz_skip(parser->cursor, 1)) return false;
-        } else if (code == 'S') {
+        } else if (code == 'C' || code == 'S') {
             if (!iz_skip(parser->cursor, 2)) return false;
         } else if (code == 'F' || code == 'I') {
             if (!iz_skip(parser->cursor, 4)) return false;
@@ -372,13 +372,13 @@ static bool iz_read_content_body(iz_parser *parser)
     if (tag == IZ_TC_NULL) return true;
     if (tag == IZ_TC_STRING) return iz_skip_utf(parser) && iz_append_handle(parser, false);
     if (tag == IZ_TC_LONGSTRING) {
-        uint32_t length = iz_u32(parser->cursor);
-        if (parser->cursor->failed) return false;
+        int64_t length = iz_i64(parser->cursor);
+        if (parser->cursor->failed || length < 0) return false;
         if (length && !iz_skip(parser->cursor, (int64_t)length)) return false;
         return iz_append_handle(parser, false);
     }
     if (tag == IZ_TC_REFERENCE) {
-        int32_t handle = iz_i32(parser->cursor) - IZ_BASE_WIRE_HANDLE;
+        int64_t handle = (int64_t)iz_i32(parser->cursor) - IZ_BASE_WIRE_HANDLE;
         return !parser->cursor->failed && handle >= 0 && (size_t)handle < parser->handle_count;
     }
     if (tag == IZ_TC_CLASSDESC) return iz_class_desc(parser);
@@ -393,8 +393,9 @@ static bool iz_read_content_body(iz_parser *parser)
         int64_t descriptor;
         if (parser->cursor->failed) return false;
         if (inner == IZ_TC_CLASSDESC) {
+            /* The descriptor claims its handle before any field-type strings. */
+            descriptor = (int64_t)parser->handle_count;
             if (!iz_class_desc(parser)) return false;
-            descriptor = (int64_t)parser->handle_count - 1;
         } else if (inner == IZ_TC_REFERENCE) {
             descriptor = (int64_t)iz_i32(parser->cursor) - IZ_BASE_WIRE_HANDLE;
             if (parser->cursor->failed) return false;
@@ -432,10 +433,9 @@ static bool iz_read_string(iz_parser *parser, char **result)
     if (tag == IZ_TC_STRING) {
         length = (int64_t)iz_u16(parser->cursor);
     } else if (tag == IZ_TC_LONGSTRING) {
-        /* The reference reads a 32-bit length here; a real TC_LONGSTRING is
-         * 64-bit, but IzPack never emits one and matching the reference keeps
-         * the byte positions identical. */
-        length = (int64_t)iz_u32(parser->cursor);
+        /* TC_LONGSTRING carries an unsigned64-bit length; negative or overly
+         * large lengths are rejected below before allocation or cursor movement. */
+        length = iz_i64(parser->cursor);
     } else if (tag == IZ_TC_NULL) {
         return true; /* No handle is allocated for a null. */
     } else {

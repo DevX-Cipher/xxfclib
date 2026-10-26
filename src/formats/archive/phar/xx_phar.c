@@ -8,7 +8,7 @@
  * optional blanks, the optional "?>" and the optional line break that PHP
  * itself skips.
  *
- * Manifest (little endian)
+ * Manifest (little endian except the big-endian API version)
  *   u32  manifest length, counted from the next byte
  *   u32  file count
  *   u16  API version; must not exceed 0x1100
@@ -400,7 +400,8 @@ static bool phar_parse(Abstractformat *format, phar_stream **result)
 
     manifest_size = xx_data_get_u32(head, 4, 0, false);
     count = xx_data_get_u32(head + 4U, 4, 0, false);
-    api = xx_data_get_u16(head + 8U, 2, 0, false);
+    /* The API version alone uses big-endian nibbles (PHP Phar format). */
+    api = xx_data_get_u16(head + 8U, 2, 0, true);
     flags = xx_data_get_u32(head + 10U, 4, 0, false);
     alias_size = xx_data_get_u32(head + 14U, 4, 0, false);
     if (manifest_size < PHAR_MANIFEST_MIN - 4U || manifest_size > PHAR_MAX_MANIFEST || (int64_t)manifest_size > size - manifest_offset - 4) return false;

@@ -358,6 +358,7 @@ void xx_nitroplus_npk2_init(xx_nitroplus_npk2 *archive, xx_io_device *device, in
     archive->format.file_type = NP_FILE_TYPE;
     archive->format.format_type = XX_TYPE_ARCHIVE;
     archive->format.is_archive = true;
+    archive->format.is_crypted = true;
     xx_format_set_extension(&archive->format, "npk");
     xx_format_set_mime_type(&archive->format, "application/x-npk2");
     archive->format.destroy = np_destroy_format;
@@ -422,32 +423,42 @@ bool xx_nitroplus_npk2_check_is_valid(Abstractformat *format, xx_pd_struct *pd)
 }
 bool xx_nitroplus_npk2_handle_base_info(Abstractformat *format, xx_pd_struct *pd)
 {
-    np_layout *layout;
+    np_layout *layout = NULL;
     xx_nitroplus_npk2 *archive;
     uint8_t header[32];
     int64_t cursor;
-    bool header_ok;
+    bool header_ok, has_key;
     if (!format || np_stopped(pd)) return false;
     if (format->base_info_handled) return format->is_valid;
-    layout = np_parse(format, NULL, pd);
-    if (!layout) return false;
-    cursor = xx_io_tell(format->device);
+    archive = (xx_nitroplus_npk2 *)format;
+    cursor = format->device ? xx_io_tell(format->device) : -1;
     header_ok = np_header(format, header, pd);
     if (cursor >= 0 && xx_io_seek64(format->device, cursor, XX_RT_SEEK_SET)) header_ok = false;
-    if (!header_ok) {
-        np_layout_free(layout);
-        return false;
+    if (!header_ok) return false;
+    /* An explicitly supplied empty or malformed password is still a key
+     * attempt. It must not silently become the no-key metadata path. */
+    has_key = archive->key_size != 0U || xx_format_find_extra_parameter(format, XX_META_ID_OPT_PASSWORD) != NULL;
+    if (has_key) {
+        layout = np_parse(format, NULL, pd);
+        if (!layout) return false;
     }
-    archive = (xx_nitroplus_npk2 *)format;
-    archive->number_of_records = layout->count;
+    archive->number_of_records = xx_data_get_u32(header + 24U, 4, 0, false);
     archive->encrypted_index_size = xx_data_get_u32(header + 28U, 4, 0, false);
     xx_mem_copy(archive->iv, header + 8U, 16U);
-    format->number_of_archive_records = layout->count;
-    format->format_size = layout->format_size;
+    format->number_of_archive_records = archive->number_of_records;
+    /* Without decrypting the index, the only known extent is the supplied
+     * device/view. No ciphertext is interpreted as an offset or member. */
+    format->format_size = layout ? layout->format_size : xx_io_total_size(format->device) - format->base_address;
+    format->is_crypted = true;
     format->is_valid = true;
     format->base_info_handled = true;
     np_layout_free(layout);
     return true;
+}
+bool xx_nitroplus_npk2_is_metadata_only(const xx_nitroplus_npk2 *archive)
+{
+    return archive && archive->format.base_info_handled && archive->format.is_valid && !archive->key_size &&
+           !xx_format_find_extra_parameter(&archive->format, XX_META_ID_OPT_PASSWORD);
 }
 int64_t xx_nitroplus_npk2_get_format_size(Abstractformat *format, xx_pd_struct *pd)
 {

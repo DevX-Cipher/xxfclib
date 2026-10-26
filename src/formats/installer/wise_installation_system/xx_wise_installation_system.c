@@ -397,14 +397,18 @@ static bool wise_window_inflate(wise_window *window, int64_t position, int64_t i
 
 /* The CRC-32 after a stream, possibly behind up to three zero bytes.
  * Returns the padding, or -1. */
-static int wise_find_crc(xx_io_device *device, int64_t base, int64_t limit, int64_t at, uint32_t crc32)
+static int wise_find_crc(xx_io_device *device, int64_t base, int64_t limit, int64_t at, uint32_t crc32, const wise_window *window)
 {
     uint8_t bytes[7];
     size_t available;
     size_t pad;
     if (at < 0 || at > limit || limit - at < 4) return -1;
     available = limit - at < 7 ? (size_t)(limit - at) : 7U;
-    if (!wise_read_at(device, base + at, bytes, available)) return -1;
+    if (window && window->buffer && at >= window->start && (size_t)(at - window->start) + available <= window->size) {
+        xx_rt_memcpy(bytes, window->buffer + (size_t)(at - window->start), available);
+    } else if (!wise_read_at(device, base + at, bytes, available)) {
+        return -1;
+    }
     for (pad = 0U; pad <= 3U && pad + 4U <= available; ++pad) {
         if (pad > 0U && bytes[pad - 1U] != 0U) break;
         if (xx_data_get_u32(bytes + pad, 4, 0, false) == crc32) return (int)pad;
@@ -754,7 +758,7 @@ static bool wise_native_first(wise_window *window, int64_t position, uint64_t li
     bool ok = wise_window_inflate(window, position, WISE_FIRST_INPUT(limit), limit, &first, pd);
     *over_limit = !ok && first.over_limit;
     if (!ok || first.raw_size == 0U) return false;
-    pad = wise_find_crc(window->device, window->base, window->limit, position + first.consumed, first.crc32);
+    pad = wise_find_crc(window->device, window->base, window->limit, position + first.consumed, first.crc32, window);
     if (pad < 0) return false;
     next = position + first.consumed + pad + 4;
     if (next >= window->limit) return false;
@@ -900,6 +904,7 @@ static bool wise_native_walk(xx_io_device *device, int64_t base, int64_t total, 
     window.base = base;
     window.limit = total;
     window.capacity = xx_get_file_buffer_size();
+    if (window.capacity < 2 * 1024 * 1024) window.capacity = 2 * 1024 * 1024;
     window.buffer = (uint8_t *)xx_mem_alloc(window.capacity);
     if (!window.buffer) return false;
     while (position < total) {
@@ -935,7 +940,7 @@ static bool wise_native_walk(xx_io_device *device, int64_t base, int64_t total, 
             break;
         }
         decoded += result.raw_size;
-        pad = wise_find_crc(device, base, total, position + result.consumed, result.crc32);
+        pad = wise_find_crc(device, base, total, position + result.consumed, result.crc32, &window);
         if (pad < 0) {
             table->truncated = true;
             break;
@@ -1645,12 +1650,21 @@ static void wise_pk_head(xx_io_device *device, int64_t base, wise_member *member
 
 static bool wise_parse(Abstractformat *format, wise_table **out, xx_pd_struct *pd)
 {
+    xx_wise_installation_system *archive = (xx_wise_installation_system *)format;
     wise_found found;
     wise_table *table;
     size_t index, script = 0U;
     bool ok;
     *out = NULL;
-    if (!wise_locate(format, &found, pd)) return false;
+    if (archive && archive->payload_offset >= 0 && archive->overlay_offset >= 0) {
+        found.overlay = archive->overlay_offset - format->base_address;
+        found.first = archive->payload_offset - format->base_address;
+        found.total = xx_io_total_size(format->device) - format->base_address;
+        found.is_ne = archive->is_ne;
+        found.pk_mode = archive->pk_mode;
+    } else if (!wise_locate(format, &found, pd)) {
+        return false;
+    }
     table = (wise_table *)xx_mem_calloc(1U, sizeof(*table));
     if (!table) return false;
     table->refs = 1U;
@@ -1740,7 +1754,21 @@ static bool wise_unpack_member(xx_io_device *device, int64_t base, const wise_me
         xx_mem_free(buffer);
         return ok && sink.crc32 == member->crc32;
     }
-    if (member->packed_size <= 0 || !wise_inflate_device(device, base + member->data_offset, member->packed_size, destination, member->raw_size, &result, pd))
+    if (member->packed_size <= 0) return false;
+    if (member->packed_size <= 2 * 1024 * 1024) {
+        uint8_t *packed = (uint8_t *)xx_mem_alloc((size_t)member->packed_size);
+        if (packed) {
+            bool ok = false, exhausted = false;
+            if (wise_read_at(device, base + member->data_offset, packed, (size_t)member->packed_size)) {
+                ok = wise_inflate_memory(packed, (size_t)member->packed_size, destination, member->raw_size, &result, &exhausted, pd);
+            }
+            xx_mem_free(packed);
+            if (ok) {
+                return result.raw_size == member->raw_size && result.crc32 == member->crc32 && result.consumed <= member->packed_size;
+            }
+        }
+    }
+    if (!wise_inflate_device(device, base + member->data_offset, member->packed_size, destination, member->raw_size, &result, pd))
         return false;
     return result.raw_size == member->raw_size && result.crc32 == member->crc32 && result.consumed <= member->packed_size;
 }
@@ -1870,8 +1898,16 @@ void xx_wise_installation_system_free(xx_wise_installation_system *archive)
 
 bool xx_wise_installation_system_check_is_valid(Abstractformat *format, xx_pd_struct *pd)
 {
+    xx_wise_installation_system *archive = (xx_wise_installation_system *)format;
     wise_found found;
-    return wise_locate(format, &found, pd);
+    bool ok = wise_locate(format, &found, pd);
+    if (ok && archive) {
+        archive->overlay_offset = format->base_address + found.overlay;
+        archive->payload_offset = format->base_address + found.first;
+        archive->is_ne = found.is_ne;
+        archive->pk_mode = found.pk_mode;
+    }
+    return ok;
 }
 
 bool xx_wise_installation_system_handle_base_info(Abstractformat *format, xx_pd_struct *pd)

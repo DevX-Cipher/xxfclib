@@ -379,6 +379,90 @@ void *xx_io_platform_file_open(const char *path, const char *mode)
     return (void *)hFile;
 }
 
+void *xx_io_platform_file_open_w(const wchar_t *path, const char *mode)
+{
+    if (!xx_io_policy_file_open_allowed(mode)) return NULL;
+    if (!path || !mode) {
+        return NULL;
+    }
+
+    DWORD dwDesiredAccess = 0;
+    DWORD dwShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    DWORD dwCreationDisposition = 0;
+    int append = 0;
+
+    if (xx_win_mode_has_char(mode, 'r')) {
+        if (xx_win_mode_has_char(mode, '+')) {
+            dwDesiredAccess = GENERIC_READ | GENERIC_WRITE;
+        } else {
+            dwDesiredAccess = GENERIC_READ;
+        }
+        dwCreationDisposition = OPEN_EXISTING;
+    } else if (xx_win_mode_has_char(mode, 'w')) {
+        if (xx_win_mode_has_char(mode, '+')) {
+            dwDesiredAccess = GENERIC_READ | GENERIC_WRITE;
+        } else {
+            dwDesiredAccess = GENERIC_WRITE;
+        }
+        dwCreationDisposition = xx_win_mode_has_char(mode, 'x') ? CREATE_NEW : CREATE_ALWAYS;
+    } else if (xx_win_mode_has_char(mode, 'a')) {
+        if (xx_win_mode_has_char(mode, '+')) {
+            dwDesiredAccess = GENERIC_READ | GENERIC_WRITE;
+        } else {
+            dwDesiredAccess = FILE_APPEND_DATA | SYNCHRONIZE;
+        }
+        dwCreationDisposition = OPEN_ALWAYS;
+        append = 1;
+    } else {
+        return NULL;
+    }
+
+    wchar_t api_stack[MAX_PATH];
+    wchar_t *api = xx_win_api_path(path, api_stack, MAX_PATH, false);
+    HANDLE hFile = INVALID_HANDLE_VALUE;
+    DWORD error = ERROR_SUCCESS;
+
+    if (api) {
+        DWORD disposition = dwCreationDisposition;
+        if (disposition == CREATE_ALWAYS && xx_io_extract_root()) disposition = xx_win_replace_entry(api, disposition);
+        if (disposition) {
+            DWORD flags_and_attrs = FILE_ATTRIBUTE_NORMAL;
+            if (xx_win_mode_has_char(mode, 'S') || !xx_win_mode_has_char(mode, '+')) {
+                flags_and_attrs |= FILE_FLAG_SEQUENTIAL_SCAN;
+            }
+            hFile = CreateFileW(api, dwDesiredAccess, dwShareMode, NULL, disposition, flags_and_attrs, NULL);
+            if (hFile == INVALID_HANDLE_VALUE) {
+                error = GetLastError();
+                if (disposition == CREATE_ALWAYS && error == ERROR_ACCESS_DENIED) {
+                    DWORD existing_attrs = GetFileAttributesW(api);
+                    if (existing_attrs != INVALID_FILE_ATTRIBUTES && (existing_attrs & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))) {
+                        if (SetFileAttributesW(api, FILE_ATTRIBUTE_NORMAL)) {
+                            hFile = CreateFileW(api, dwDesiredAccess, dwShareMode, NULL, disposition, flags_and_attrs, NULL);
+                            if (hFile == INVALID_HANDLE_VALUE) error = GetLastError();
+                            else error = ERROR_SUCCESS;
+                        }
+                    }
+                }
+            }
+        }
+        xx_win_free_path(api, api_stack);
+    }
+
+    if (hFile == INVALID_HANDLE_VALUE) {
+        if (dwDesiredAccess != GENERIC_READ && error != ERROR_SUCCESS) xx_io_extract_fail(xx_win_errno(error));
+        return NULL;
+    }
+    if (dwDesiredAccess != GENERIC_READ) xx_io_extract_opened();
+
+    if (append) {
+        LARGE_INTEGER liZero;
+        liZero.QuadPart = 0;
+        SetFilePointerEx(hFile, liZero, NULL, FILE_END);
+    }
+
+    return (void *)hFile;
+}
+
 ssize_t xx_io_platform_file_read(void *handle, void *buf, size_t n)
 {
     if (!handle || handle == INVALID_HANDLE_VALUE || !buf) {

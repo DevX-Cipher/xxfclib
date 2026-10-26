@@ -80,6 +80,9 @@ typedef struct xx_omf_s {
     bool has_entry;
 } xx_omf;
 
+/** Optional stream providers, available when their build module is enabled. */
+XXFC_API const StreamSymbols *xx_omf_get_stream_symbols(void);
+
 XXFC_API void xx_omf_init(xx_omf *reader, xx_io_device *device, int64_t base_address);
 XXFC_API xx_omf *xx_omf_create(xx_io_device *device, int64_t base_address);
 XXFC_API void xx_omf_destroy(xx_omf *reader);

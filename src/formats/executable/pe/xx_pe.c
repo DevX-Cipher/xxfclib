@@ -4,7 +4,6 @@
 
 #include "xxfclib/formats/executable/pe/xx_pe.h"
 
-#include "xx_pe_data.h"
 
 #include "xxfclib/data/xx_data.h"
 #include "xxfclib/io/xx_io.h"
@@ -533,32 +532,6 @@ void xx_pe_init(xx_pe *pe, xx_io_device *device, int64_t base_address)
     pe->format.check_is_valid = xx_pe_check_is_valid;
     pe->format.handle_base_info = xx_pe_handle_base_info;
     pe->format.get_format_size = xx_pe_get_format_size;
-    pe->format.get_number_of_imports = xx_pe_get_number_of_imports;
-    pe->format.get_number_of_exports = xx_pe_get_number_of_exports;
-    pe->format.get_number_of_resources = xx_pe_get_number_of_resources;
-    pe->format.get_number_of_metadata = xx_pe_get_number_of_metadata;
-    pe->format.get_number_of_symbols = xx_pe_get_number_of_symbols;
-    pe->format.create_symbols_reading = xx_pe_create_symbols_reading;
-    pe->format.get_current_symbol = xx_pe_get_current_symbol;
-    pe->format.symbol_move_to_next = xx_pe_symbol_move_to_next;
-    pe->format.free_symbols_reading = xx_pe_free_symbols_reading;
-    pe->format.create_imports_reading = xx_pe_create_imports_reading;
-    pe->format.get_current_import = xx_pe_get_current_import;
-    pe->format.import_move_to_next = xx_pe_import_move_to_next;
-    pe->format.free_imports_reading = xx_pe_free_imports_reading;
-    pe->format.create_exports_reading = xx_pe_create_exports_reading;
-    pe->format.get_current_export = xx_pe_get_current_export;
-    pe->format.export_move_to_next = xx_pe_export_move_to_next;
-    pe->format.free_exports_reading = xx_pe_free_exports_reading;
-    pe->format.create_resources_reading = xx_pe_create_resources_reading;
-    pe->format.get_current_resource = xx_pe_get_current_resource;
-    pe->format.resource_move_to_next = xx_pe_resource_move_to_next;
-    pe->format.free_resources_reading = xx_pe_free_resources_reading;
-    pe->format.create_metadata_reading = xx_pe_create_metadata_reading;
-    pe->format.get_current_metadata = xx_pe_get_current_metadata;
-    pe->format.metadata_move_to_next = xx_pe_metadata_move_to_next;
-    pe->format.free_metadata_reading = xx_pe_free_metadata_reading;
-    xx_pe_setup_data_struct_callbacks(pe);
     pe->format.get_memory_map = xx_pe_get_memory_map;
     pe->format.destroy = xx_pe_vtable_destroy;
 }
@@ -806,21 +779,6 @@ bool xx_pe_handle_base_info(Abstractformat *format, xx_pd_struct *pd)
 int64_t xx_pe_get_format_size(Abstractformat *format, xx_pd_struct *pd)
 {
     return format && (format->base_info_handled || xx_pe_handle_base_info(format, pd)) ? format->format_size : -1;
-}
-
-uint64_t xx_pe_get_number_of_imports(Abstractformat *format, xx_pd_struct *pd)
-{
-    return format && (format->base_info_handled || xx_pe_handle_base_info(format, pd)) ? format->number_of_imports : 0U;
-}
-
-uint64_t xx_pe_get_number_of_exports(Abstractformat *format, xx_pd_struct *pd)
-{
-    return format && (format->base_info_handled || xx_pe_handle_base_info(format, pd)) ? format->number_of_exports : 0U;
-}
-
-uint64_t xx_pe_get_number_of_resources(Abstractformat *format, xx_pd_struct *pd)
-{
-    return format && (format->base_info_handled || xx_pe_handle_base_info(format, pd)) ? format->number_of_resources : 0U;
 }
 
 bool xx_pe_is_64(const xx_pe *pe)

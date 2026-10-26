@@ -3,6 +3,7 @@
  */
 #ifndef XXFCLIB_DOTNET_DATA_INTERNAL_H
 #define XXFCLIB_DOTNET_DATA_INTERNAL_H
+#include "xxfclib/formats/xx_format_streams.h"
 #include "xxfclib/formats/executable/dotnet/xx_dotnet.h"
-void xx_dotnet_setup_data_struct_callbacks(xx_dotnet *dotnet);
+const StreamDataStructs *xx_dotnet_get_stream_datastructs(void);
 #endif

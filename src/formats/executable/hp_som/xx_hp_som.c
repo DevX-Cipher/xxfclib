@@ -233,7 +233,9 @@ static bool som_parse_sections(xx_hp_som *reader, const char *strings)
         section->name_offset = xx_data_get_u32(data, sizeof(data), 28U, true);
         section->fixup_request_index = xx_data_get_u32(data, sizeof(data), 32U, true);
         section->fixup_request_quantity = xx_data_get_u32(data, sizeof(data), 36U, true);
-        if (!som_range_is_valid(section->file_offset, section->file_size, reader->header.som_length) ||
+        /* file_loc_init_value is an initialization pattern when the length
+         * is zero, not a physical location. Keep its original bits. */
+        if ((section->file_size != 0U && !som_range_is_valid(section->file_offset, section->file_size, reader->header.som_length)) ||
             !som_duplicate_string(strings, reader->header.space_strings_size, section->name_offset, &section->name))
             return false;
         section->address = XX_HP_SOM_BASE_ADDRESS + section->subspace_start;
@@ -242,7 +244,7 @@ static bool som_parse_sections(xx_hp_som *reader, const char *strings)
         const xx_hp_som_section *section = &reader->sections[reader->header.entry_subspace];
         if (reader->header.entry_offset <= section->virtual_size) {
             reader->entry_address = section->address + reader->header.entry_offset;
-            if (reader->header.entry_offset <= section->file_size) {
+            if (reader->header.entry_offset < section->file_size) {
                 uint64_t relative = (uint64_t)section->file_offset + reader->header.entry_offset;
                 if (relative <= (uint64_t)(INT64_MAX - reader->format.base_address))
                     reader->entry_file_offset = reader->format.base_address + (int64_t)relative;

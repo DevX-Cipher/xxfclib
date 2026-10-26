@@ -31,6 +31,9 @@ typedef struct xx_pef {
     uint32_t term_offset;
 } xx_pef;
 
+/** Optional stream providers, available when their build module is enabled. */
+XXFC_API const StreamImport *xx_pef_get_stream_import(void);
+
 XXFC_API void xx_pef_init(xx_pef *reader, xx_io_device *device, int64_t base_address);
 XXFC_API xx_pef *xx_pef_create(xx_io_device *device, int64_t base_address);
 XXFC_API void xx_pef_destroy(xx_pef *reader);

@@ -79,6 +79,18 @@ XXFC_API bool xx_cpm_handle_base_info(Abstractformat *, xx_pd_struct *);
 XXFC_API int64_t xx_cpm_get_format_size(Abstractformat *, xx_pd_struct *);
 XXFC_API uint64_t xx_cpm_get_number_of_archive_records(Abstractformat *, xx_pd_struct *);
 XXFC_API xx_archive_record_state *xx_cpm_create_archive_records_reading(Abstractformat *, const xx_list_s *, xx_pd_struct *);
+/** Authenticated physical directory-slot location from an owned native iterator.
+ * The iterator remains owned by the caller. The output is changed only on
+ * success; no input cursor, reader base or iteration position is modified.
+ * Slot indexes include live, erased and CP/M3 metadata entries. */
+typedef struct xx_cpm_directory_slot {
+    int64_t offset;                  /**< Absolute physical source offset. */
+    uint32_t entry_count;            /**< Total physical directory slots. */
+    uint8_t allocation_pointer_size; /**< Stored block numbers use1 or2 bytes. */
+    xx_cpm_version version;
+    xx_cpm_length_mode length_mode;
+} xx_cpm_directory_slot;
+XXFC_API bool xx_cpm_get_directory_slot(Abstractformat *, const xx_archive_record_state *, uint32_t index, xx_cpm_directory_slot *);
 XXFC_API const xx_archive_record *xx_cpm_get_current_archive_record(Abstractformat *, xx_archive_record_state *);
 XXFC_API bool xx_cpm_archive_record_move_to_next(Abstractformat *, xx_archive_record_state *, xx_pd_struct *);
 XXFC_API bool xx_cpm_unpack_current_archive_record(Abstractformat *, xx_archive_record_state *, xx_pd_struct *);

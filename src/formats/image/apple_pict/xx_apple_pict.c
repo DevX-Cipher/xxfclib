@@ -21,7 +21,8 @@ static bool image_document_quick(Abstractformat *f, uint64_t n)
         at = 512;
         if (!pm_read(f, at, b, 14)) return false;
     }
-    return xx_data_get_u16(b + 6, 2, 0, true) < xx_data_get_u16(b + 8, 2, 0, true) && component_tag(b + 10, "\0\x11\2\xff", 4);
+    return xx_data_get_i16(b + 2, 2, 0, true) < xx_data_get_i16(b + 6, 2, 0, true) &&
+           xx_data_get_i16(b + 4, 2, 0, true) < xx_data_get_i16(b + 8, 2, 0, true) && component_tag(b + 10, "\0\x11\2\xff", 4);
 }
 static bool image_document_pict_rect(const uint8_t *p, const uint8_t *frame)
 {
@@ -36,11 +37,11 @@ static bool image_document_parse(Abstractformat *f, pm_stream *s, const uint8_t 
     bool ok = false;
     if (!component_span(base, 40, n) || (base == 512 && !component_zero(b, 512))) return false;
     frame = b + base + 2;
-    if (xx_data_get_u16(frame, 2, 0, true) > 32767 || xx_data_get_u16(frame + 2, 2, 0, true) > 32767 ||
-        xx_data_get_u16(frame + 4, 2, 0, true) <= xx_data_get_u16(frame, 2, 0, true) || xx_data_get_u16(frame + 6, 2, 0, true) <= xx_data_get_u16(frame + 2, 2, 0, true))
-        return false;
-    h = xx_data_get_u16(frame + 4, 2, 0, true) - xx_data_get_u16(frame, 2, 0, true);
-    w = xx_data_get_u16(frame + 6, 2, 0, true) - xx_data_get_u16(frame + 2, 2, 0, true);
+    int32_t top = xx_data_get_i16(frame, 2, 0, true), left = xx_data_get_i16(frame + 2, 2, 0, true);
+    int32_t bottom = xx_data_get_i16(frame + 4, 2, 0, true), right = xx_data_get_i16(frame + 6, 2, 0, true);
+    if (bottom <= top || right <= left) return false;
+    h = (uint32_t)(bottom - top);
+    w = (uint32_t)(right - left);
     if (w > 8192 || h > 4091 || (uint64_t)w * h > 8388608 || !component_tag(b + base + 10, "\0\x11\2\xff\x0c\0\xff\xfe\0\0", 10) ||
         !xx_data_get_u32(b + base + 20, 4, 0, true) || !xx_data_get_u32(b + base + 24, 4, 0, true) || !image_document_pict_rect(b + base + 28, frame) ||
         xx_data_get_u32(b + base + 36, 4, 0, true))

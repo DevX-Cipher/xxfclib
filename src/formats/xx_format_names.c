@@ -109,17 +109,7 @@ const char *xx_os_to_string(xx_os_t os)
     }
 }
 
-const char *xx_data_struct_type_to_string(xx_data_struct_type_t type)
-{
-    switch (type) {
-        case XX_DATA_STRUCT_TYPE_STRUCT: return "struct";
-        case XX_DATA_STRUCT_TYPE_ENTRY: return "entry";
-        case XX_DATA_STRUCT_TYPE_FOOTER: return "footer";
-        case XX_DATA_STRUCT_TYPE_LOCATOR: return "locator";
-        case XX_DATA_STRUCT_TYPE_RAW_DATA: return "raw_data";
-        default: return "unknown";
-    }
-}
+
 
 const char *xx_format_file_type_to_string(xx_file_type_t type)
 {
@@ -952,7 +942,7 @@ const char *xx_format_file_type_to_string(xx_file_type_t type)
         case XX_FILE_TYPE_LECROY_TRC: return "lecroy trc";
         case XX_FILE_TYPE_TEKTRONIX_ISF: return "tektronix isf";
         case XX_FILE_TYPE_IRCAM_SDIF: return "ircam sdif";
-        case XX_FILE_TYPE_TRACKER_LIQUID: return "tracker dsm";
+        case XX_FILE_TYPE_TRACKER_LIQUID: return "tracker liquid";
         case XX_FILE_TYPE_TRACKER_DMF: return "tracker dmf";
         case XX_FILE_TYPE_TRACKER_PTM: return "tracker ptm";
         case XX_FILE_TYPE_TRACKER_AMS: return "tracker ams";
@@ -1337,6 +1327,11 @@ const char *xx_format_file_type_to_string(xx_file_type_t type)
         case XX_FILE_TYPE_XCOFF: return "AIX Extended COFF executable";
         case XX_FILE_TYPE_EXECUTABLE_OVERLAY: return "Executable overlay";
         case XX_FILE_TYPE_SCUMMVM_DXA: return "ScummVM DXA video";
+        case XX_FILE_TYPE_APPLE_DIAGS: return "Apple Hardware Test LOC";
+        case XX_FILE_TYPE_EID: return "EID";
+        case XX_FILE_TYPE_NATATA_EBOOK: return "Natata eBook";
+        case XX_FILE_TYPE_STOR_RESOURCE: return "STOR resource archive";
+        case XX_FILE_TYPE_INSTALLSHIELD_OBL: return "InstallShield OBL library";
         case XX_FILE_TYPE_SFX_INFTOOL: return "sfx inftool";
         case XX_FILE_TYPE_AMIGA_EXT_ADF: return "amiga ext adf";
         case XX_FILE_TYPE_AMIGA_OLD_EXT_ADF: return "amiga old ext adf";

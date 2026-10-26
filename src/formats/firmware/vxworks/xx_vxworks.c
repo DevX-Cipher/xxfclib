@@ -198,7 +198,6 @@ void xx_vxworks_init(xx_vxworks *vxworks, xx_io_device *dev, int64_t base_addres
     vxworks->format.check_is_valid = xx_vxworks_check_is_valid;
     vxworks->format.handle_base_info = xx_vxworks_handle_base_info;
     vxworks->format.get_format_size = xx_vxworks_get_format_size;
-    vxworks->format.get_number_of_metadata = xx_vxworks_get_number_of_metadata;
     vxworks->format.destroy = xx_vxworks_vtable_destroy;
     vxworks->table_offset = -1;
     vxworks->table_size = -1;
@@ -286,12 +285,6 @@ int64_t xx_vxworks_get_format_size(Abstractformat *self, xx_pd_struct *pd)
 {
     if (!self || (!self->base_info_handled && !xx_format_handle_base_info(self, pd))) return -1;
     return self->format_size;
-}
-
-uint64_t xx_vxworks_get_number_of_metadata(Abstractformat *self, xx_pd_struct *pd)
-{
-    if (!self || (!self->base_info_handled && !xx_format_handle_base_info(self, pd))) return 0U;
-    return ((xx_vxworks *)self)->number_of_symbols;
 }
 
 uint64_t xx_vxworks_get_number_of_symbols(const xx_vxworks *vxworks)

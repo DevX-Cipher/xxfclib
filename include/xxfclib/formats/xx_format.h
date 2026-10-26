@@ -416,6 +416,7 @@ typedef uint32_t xx_data_struct_record_property_t;
 #define XX_DATA_STRUCT_RECORD_PROPERTY_STRING 0x00000100u          /**< Value is a text string */
 #define XX_DATA_STRUCT_RECORD_PROPERTY_RESERVED 0x00000200u        /**< Value is reserved/padding */
 #define XX_DATA_STRUCT_RECORD_PROPERTY_SIGNATURE 0x00000400u       /**< Value is a format signature or magic */
+#define XX_DATA_STRUCT_RECORD_PROPERTY_CHECKSUM 0x00000800u  /**< Stored checksum, computed hash or message digest; does not imply verification */
 
 /**
  * @brief Describes one named field within a fixed-layout data struct
@@ -425,7 +426,7 @@ struct xx_data_struct_field_desc {
     const wchar_t *name;                       /**< Dynamic or static Unicode display name of the field */
     const wchar_t *type;                       /**< Dynamic or static Unicode display type (e.g. L"uint16", L"uint32") */
     int64_t rel_offset;                        /**< Offset of the field relative to the start of the parent data struct */
-    int64_t size;                              /**< Size in bytes of the field (1, 2, 4, 8) */
+    int64_t size;                              /**< Size in bytes of the field (1–8 for integers, arbitrary for arrays) */
     xx_data_struct_record_property_t property; /**< Bit flags describing the record's semantic role */
 };
 
@@ -530,10 +531,6 @@ struct Abstractformat {
     xx_endian_t (*get_endian)(Abstractformat *self);
     int64_t (*get_format_size)(Abstractformat *self, xx_pd_struct *pd);
     uint64_t (*get_number_of_archive_records)(Abstractformat *self, xx_pd_struct *pd);
-    uint64_t (*get_number_of_imports)(Abstractformat *self, xx_pd_struct *pd);
-    uint64_t (*get_number_of_exports)(Abstractformat *self, xx_pd_struct *pd);
-    uint64_t (*get_number_of_resources)(Abstractformat *self, xx_pd_struct *pd);
-    uint64_t (*get_number_of_metadata)(Abstractformat *self, xx_pd_struct *pd);
     bool (*check_is_executable)(Abstractformat *self);
     bool (*check_is_archive)(Abstractformat *self);
     bool (*check_is_signed)(Abstractformat *self);
@@ -553,22 +550,6 @@ struct Abstractformat {
     bool (*pack_archive_record)(Abstractformat *self, xx_archive_write_state *state, const xx_archive_record *record, xx_io_device *source_dev, xx_pd_struct *pd);
     bool (*finalize_archive_records_writing)(Abstractformat *self, xx_archive_write_state *state, xx_pd_struct *pd);
     void (*free_archive_records_writing)(Abstractformat *self, xx_archive_write_state *state);
-
-    /* Format-specific data struct id <-> string conversion */
-    const char *(*data_struct_id_to_string)(Abstractformat *self, uint32_t id);
-    uint32_t (*data_struct_string_to_id)(Abstractformat *self, const char *name);
-
-    /* Stream data structs reading vtable callbacks (headers/tables/records of the format) */
-    xx_data_struct_state *(*create_data_structs_reading)(Abstractformat *self, xx_pd_struct *pd);
-    const xx_data_struct *(*get_current_data_struct)(Abstractformat *self, xx_data_struct_state *state);
-    bool (*data_struct_move_to_next)(Abstractformat *self, xx_data_struct_state *state, xx_pd_struct *pd);
-    void (*free_data_structs_reading)(Abstractformat *self, xx_data_struct_state *state);
-
-    /* Stream data struct records reading vtable callbacks (named fields of a single data struct) */
-    xx_data_struct_record_state *(*create_data_struct_records_reading)(Abstractformat *self, const xx_data_struct *ds, xx_pd_struct *pd);
-    const xx_data_struct_record *(*get_current_data_struct_record)(Abstractformat *self, xx_data_struct_record_state *state);
-    bool (*data_struct_record_move_to_next)(Abstractformat *self, xx_data_struct_record_state *state, xx_pd_struct *pd);
-    void (*free_data_struct_records_reading)(Abstractformat *self, xx_data_struct_record_state *state);
 
     /**
      * Optional read-side preparation for split archives, before parsing.
@@ -598,35 +579,8 @@ struct Abstractformat {
     /** Optional loaded module VA; UINT64_MAX asks the format for its default. */
     uint64_t module_address;
 
-    /* Read-only symbol/resource/metadata streams. Appended to preserve existing
-     * member offsets; the larger public struct still requires an ABI rebuild. */
-    xx_import_state *(*create_imports_reading)(Abstractformat *self, xx_pd_struct *pd);
-    const xx_import_record *(*get_current_import)(Abstractformat *self, xx_import_state *state);
-    bool (*import_move_to_next)(Abstractformat *self, xx_import_state *state, xx_pd_struct *pd);
-    void (*free_imports_reading)(Abstractformat *self, xx_import_state *state);
-
-    xx_export_state *(*create_exports_reading)(Abstractformat *self, xx_pd_struct *pd);
-    const xx_export_record *(*get_current_export)(Abstractformat *self, xx_export_state *state);
-    bool (*export_move_to_next)(Abstractformat *self, xx_export_state *state, xx_pd_struct *pd);
-    void (*free_exports_reading)(Abstractformat *self, xx_export_state *state);
-
-    xx_resource_state *(*create_resources_reading)(Abstractformat *self, xx_pd_struct *pd);
-    const xx_resource_record *(*get_current_resource)(Abstractformat *self, xx_resource_state *state);
-    bool (*resource_move_to_next)(Abstractformat *self, xx_resource_state *state, xx_pd_struct *pd);
-    void (*free_resources_reading)(Abstractformat *self, xx_resource_state *state);
-
-    xx_metadata_state *(*create_metadata_reading)(Abstractformat *self, xx_pd_struct *pd);
-    const xx_metadata_record *(*get_current_metadata)(Abstractformat *self, xx_metadata_state *state);
-    bool (*metadata_move_to_next)(Abstractformat *self, xx_metadata_state *state, xx_pd_struct *pd);
-    void (*free_metadata_reading)(Abstractformat *self, xx_metadata_state *state);
-
-    /** Native symbol-table primary entries, excluding auxiliary records. */
+    /** Cached native symbol count; stream implementations are separate interfaces. */
     uint64_t number_of_symbols;
-    uint64_t (*get_number_of_symbols)(Abstractformat *self, xx_pd_struct *pd);
-    xx_symbol_state *(*create_symbols_reading)(Abstractformat *self, xx_pd_struct *pd);
-    const xx_symbol_record *(*get_current_symbol)(Abstractformat *self, xx_symbol_state *state);
-    bool (*symbol_move_to_next)(Abstractformat *self, xx_symbol_state *state, xx_pd_struct *pd);
-    void (*free_symbols_reading)(Abstractformat *self, xx_symbol_state *state);
 };
 
 /**
@@ -1162,7 +1116,8 @@ static inline bool xx_format_is_crypted(Abstractformat *f)
 static inline uint64_t xx_format_get_number_of_imports_pd(Abstractformat *f, xx_pd_struct *pd)
 {
     if (!f) return 0;
-    if (f->get_number_of_imports) return f->get_number_of_imports(f, pd);
+    const StreamImport *stream = xx_format_get_stream_import(f);
+    if (stream && stream->get_number_of_imports) return stream->get_number_of_imports(f, pd);
     return f->number_of_imports;
 }
 
@@ -1174,7 +1129,8 @@ static inline uint64_t xx_format_get_number_of_imports(Abstractformat *f, xx_pd_
 static inline uint64_t xx_format_get_number_of_exports_pd(Abstractformat *f, xx_pd_struct *pd)
 {
     if (!f) return 0;
-    if (f->get_number_of_exports) return f->get_number_of_exports(f, pd);
+    const StreamExport *stream = xx_format_get_stream_export(f);
+    if (stream && stream->get_number_of_exports) return stream->get_number_of_exports(f, pd);
     return f->number_of_exports;
 }
 
@@ -1186,7 +1142,8 @@ static inline uint64_t xx_format_get_number_of_exports(Abstractformat *f, xx_pd_
 static inline uint64_t xx_format_get_number_of_resources_pd(Abstractformat *f, xx_pd_struct *pd)
 {
     if (!f) return 0;
-    if (f->get_number_of_resources) return f->get_number_of_resources(f, pd);
+    const StreamResources *stream = xx_format_get_stream_resources(f);
+    if (stream && stream->get_number_of_resources) return stream->get_number_of_resources(f, pd);
     return f->number_of_resources;
 }
 
@@ -1198,7 +1155,8 @@ static inline uint64_t xx_format_get_number_of_resources(Abstractformat *f, xx_p
 static inline uint64_t xx_format_get_number_of_metadata_pd(Abstractformat *f, xx_pd_struct *pd)
 {
     if (!f) return 0;
-    if (f->get_number_of_metadata) return f->get_number_of_metadata(f, pd);
+    const StreamMetadata *stream = xx_format_get_stream_metadata(f);
+    if (stream && stream->get_number_of_metadata) return stream->get_number_of_metadata(f, pd);
     return f->number_of_metadata;
 }
 
@@ -1210,7 +1168,8 @@ static inline uint64_t xx_format_get_number_of_metadata(Abstractformat *f, xx_pd
 static inline uint64_t xx_format_get_number_of_symbols_pd(Abstractformat *f, xx_pd_struct *pd)
 {
     if (!f) return 0;
-    if (f->get_number_of_symbols) return f->get_number_of_symbols(f, pd);
+    const StreamSymbols *stream = xx_format_get_stream_symbols(f);
+    if (stream && stream->get_number_of_symbols) return stream->get_number_of_symbols(f, pd);
     return f->number_of_symbols;
 }
 
@@ -2059,6 +2018,8 @@ XXFC_API void xx_data_struct_state_init(xx_data_struct_state *state, Abstractfor
 XXFC_API void xx_data_struct_state_cleanup(xx_data_struct_state *state);
 XXFC_API void xx_data_struct_state_free(xx_data_struct_state *state);
 
+/** True when native or registered on-disk schemas can enumerate structures. */
+XXFC_API bool xx_format_has_data_structs(Abstractformat *f);
 XXFC_API xx_data_struct_state *xx_format_create_data_structs_reading(Abstractformat *f, xx_pd_struct *pd);
 XXFC_API const xx_data_struct *xx_format_get_current_data_struct(Abstractformat *f, xx_data_struct_state *state);
 XXFC_API bool xx_format_data_struct_move_to_next(Abstractformat *f, xx_data_struct_state *state, xx_pd_struct *pd);
@@ -2146,6 +2107,11 @@ XXFC_API bool xx_data_struct_record_set_raw_value(xx_data_struct_record *rec, co
 XXFC_API bool xx_data_struct_record_set_raw_uint(xx_data_struct_record *rec, uint64_t value, int64_t size);
 /** Store exactly @p size source bytes, in file order, as uppercase hexadecimal. */
 XXFC_API bool xx_data_struct_record_set_raw_bytes(xx_data_struct_record *rec, xx_io_device *device, int64_t offset, int64_t size);
+/** Store display text. Non-NULL text for integer address, offset, and pointer
+ *  fields is normalized to uppercase hexadecimal from rec->value. Set the
+ *  record's property, type, size, and value first. Signed negatives retain a
+ *  leading minus sign; NULL clears the display and noninteger text is preserved.
+ */
 XXFC_API bool xx_data_struct_record_set_display_value(xx_data_struct_record *rec, const wchar_t *display_value);
 XXFC_API bool xx_data_struct_record_set_comment(xx_data_struct_record *rec, const wchar_t *comment);
 XXFC_API bool xx_data_struct_record_set_value(xx_data_struct_record *rec, const xx_var *value);

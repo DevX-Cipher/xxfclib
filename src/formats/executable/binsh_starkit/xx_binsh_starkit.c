@@ -47,7 +47,7 @@ static int64_t binsh_starkit_starkit_offset(xx_io_device *d, int64_t base)
     f.base_address = base;
     n = binsh_starkit_available(&f);
     size = n < 4096 ? (size_t)n : 4096;
-    if (n < 8 || !binsh_starkit_read(&f, 0, h, size) || xx_rt_memcmp(h, "#!/bin/sh", 9)) return -1;
+    if (n < 9 || !binsh_starkit_read(&f, 0, h, size) || xx_rt_memcmp(h, "#!/bin/sh", 9)) return -1;
     for (i = 9; i + 8 <= size; ++i)
         if (!xx_rt_memcmp(h + i, "JL\x1a\0", 4) && xx_data_get_u32(h + i + 4, 4, 0, true) == (uint64_t)n - i) return base + (int64_t)i;
     return -1;
@@ -95,6 +95,26 @@ static bool binsh_starkit_set_carrier(Abstractformat *f, xx_file_type_t type, in
     f->get_format_size = binsh_starkit_carrier_size;
     f->get_number_of_archive_records = binsh_starkit_carrier_records;
     f->destroy = binsh_starkit_carrier_destroy;
+    return true;
+}
+
+/* Authenticated physical carrier coordinates; no payload decoding or ownership transfer. */
+bool xx_binsh_starkit_get_container_span(Abstractformat *f, int64_t *base, int64_t *size, int64_t *inner)
+{
+    int64_t cursor, total, outer, at;
+    binsh_starkit_carrier *c;
+    if (!f || !base || !size || !inner || !f->device || f->file_type != XX_FILE_TYPE_BINSH_STARKIT ||
+        f->handle_base_info != binsh_starkit_carrier_info || f->destroy != binsh_starkit_carrier_destroy || !f->priv) return false;
+    c = (binsh_starkit_carrier *)f->priv;
+    cursor = xx_io_tell(f->device);
+    total = xx_io_total_size(f->device);
+    if (cursor < 0 || total < 0 || c->size < 0 || c->size > total) return false;
+    outer = total - c->size;
+    at = binsh_starkit_starkit_offset(f->device, outer);
+    if (xx_io_seek64(f->device, cursor, SEEK_SET) != 0 || at < outer || at != f->base_address || at > total) return false;
+    *base = outer;
+    *size = c->size;
+    *inner = at;
     return true;
 }
 

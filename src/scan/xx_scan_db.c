@@ -74,6 +74,443 @@ static const struct {
                      {"ISO9660", XFT_ISO9660},
                      {NULL, XFT_UNKNOWN}};
 
+typedef struct db_metadata_blob {
+    XFileType fileType;
+    char *pText;
+    size_t nSize;
+} db_metadata_blob;
+
+static unsigned char db_ascii_fold(unsigned char c)
+{
+    if (c >= (unsigned char)'A' && c <= (unsigned char)'Z') return (unsigned char)(c - 'A' + 'a');
+    return c;
+}
+
+static int db_ascii_span_equal(const char *pLeft, size_t nLeft, const char *pRight, size_t nRight)
+{
+    size_t i;
+    if (!pLeft || !pRight || nLeft != nRight) return 0;
+    for (i = 0; i < nLeft; ++i) {
+        if (db_ascii_fold((unsigned char)pLeft[i]) != db_ascii_fold((unsigned char)pRight[i])) return 0;
+    }
+    return 1;
+}
+
+static int db_is_tag_space(char c)
+{
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v';
+}
+
+static void db_trim_span(const char **ppText, size_t *pSize)
+{
+    const char *pText = *ppText;
+    size_t nSize = *pSize;
+    while (nSize && db_is_tag_space(*pText)) {
+        ++pText;
+        --nSize;
+    }
+    while (nSize && db_is_tag_space(pText[nSize - 1])) --nSize;
+    *ppText = pText;
+    *pSize = nSize;
+}
+
+static int db_next_filter_tag(const char **ppCursor, const char **ppTag, size_t *pTagSize)
+{
+    const char *pCursor;
+    const char *pStart;
+    size_t nSize;
+
+    if (!ppCursor || !(pCursor = *ppCursor)) return 0;
+    while (*pCursor == ';' || db_is_tag_space(*pCursor)) ++pCursor;
+    if (!*pCursor) {
+        *ppCursor = pCursor;
+        return 0;
+    }
+    pStart = pCursor;
+    while (*pCursor && *pCursor != ';') ++pCursor;
+    nSize = (size_t)(pCursor - pStart);
+    db_trim_span(&pStart, &nSize);
+    *ppCursor = *pCursor ? pCursor + 1 : pCursor;
+    if (!nSize) return db_next_filter_tag(ppCursor, ppTag, pTagSize);
+    *ppTag = pStart;
+    *pTagSize = nSize;
+    return 1;
+}
+
+static int db_signature_has_tag_span(const DBSignature *pSignature, const char *pTag, size_t nTagSize)
+{
+    const char *pCursor;
+    if (!pSignature || !pSignature->pTags || !pTag || !nTagSize) return 0;
+    pCursor = pSignature->pTags;
+    while (*pCursor) {
+        const char *pStart;
+        size_t nSize;
+        while (*pCursor == ';' || *pCursor == ',') ++pCursor;
+        pStart = pCursor;
+        while (*pCursor && *pCursor != ';' && *pCursor != ',') ++pCursor;
+        nSize = (size_t)(pCursor - pStart);
+        db_trim_span(&pStart, &nSize);
+        if (db_ascii_span_equal(pStart, nSize, pTag, nTagSize)) return 1;
+    }
+    return 0;
+}
+
+int db_signature_has_tag(const DBSignature *pSignature, const char *pTag)
+{
+    size_t nTagSize;
+    if (!pTag) return 0;
+    nTagSize = xx_rt_strlen(pTag);
+    db_trim_span(&pTag, &nTagSize);
+    return db_signature_has_tag_span(pSignature, pTag, nTagSize);
+}
+
+int db_signature_matches_tag_filters(const DBSignature *pSignature,
+                                     const char *pIncludeTags,
+                                     const char *pExcludeTags)
+{
+    const char *pCursor;
+    const char *pTag;
+    size_t nTagSize;
+    int bHasInclude = 0;
+    int bIncludeMatch = 0;
+
+    pCursor = pExcludeTags;
+    while (db_next_filter_tag(&pCursor, &pTag, &nTagSize)) {
+        if (db_signature_has_tag_span(pSignature, pTag, nTagSize)) return 0;
+    }
+
+    pCursor = pIncludeTags;
+    while (db_next_filter_tag(&pCursor, &pTag, &nTagSize)) {
+        bHasInclude = 1;
+        if (db_signature_has_tag_span(pSignature, pTag, nTagSize)) bIncludeMatch = 1;
+    }
+    return !bHasInclude || bIncludeMatch;
+}
+
+typedef struct db_used_tag {
+    char *pText;
+    size_t nSize;
+} db_used_tag;
+
+static int db_used_tag_compare(const void *pLeft, const void *pRight)
+{
+    const db_used_tag *pTagLeft = (const db_used_tag *)pLeft;
+    const db_used_tag *pTagRight = (const db_used_tag *)pRight;
+    int nResult = cd_stricmp_ascii(pTagLeft->pText, pTagRight->pText);
+
+    /* Case-insensitive duplicates are removed before sorting. Keep a complete
+     * ordering here so the result remains deterministic if that ever changes. */
+    return nResult ? nResult : x_strcmp(pTagLeft->pText, pTagRight->pText);
+}
+
+static void db_used_tags_free(db_used_tag *pTags, size_t nCount)
+{
+    size_t i;
+    for (i = 0; i < nCount; ++i) xx_rt_free(pTags[i].pText);
+    xx_rt_free(pTags);
+}
+
+static int db_collect_used_tags(db_used_tag **ppTags, size_t *pCount,
+                                size_t *pCapacity, const char *pText)
+{
+    const char *pCursor = pText;
+
+    if (!pCursor) return 1;
+    while (*pCursor) {
+        const char *pStart;
+        size_t nSize;
+        size_t i;
+
+        while (*pCursor == ';' || *pCursor == ',' || db_is_tag_space(*pCursor)) ++pCursor;
+        pStart = pCursor;
+        while (*pCursor && *pCursor != ';' && *pCursor != ',') ++pCursor;
+        nSize = (size_t)(pCursor - pStart);
+        db_trim_span(&pStart, &nSize);
+        if (!nSize) continue;
+
+        for (i = 0; i < *pCount; ++i) {
+            if (db_ascii_span_equal((*ppTags)[i].pText, (*ppTags)[i].nSize,
+                                    pStart, nSize)) break;
+        }
+        if (i != *pCount) continue;
+
+        if (*pCount == *pCapacity) {
+            size_t nNewCapacity;
+            db_used_tag *pNewTags;
+            if (*pCapacity) {
+                if (*pCapacity > SIZE_MAX / 2U) return 0;
+                nNewCapacity = *pCapacity * 2U;
+            } else {
+                nNewCapacity = 16U;
+            }
+            if (nNewCapacity > SIZE_MAX / sizeof(**ppTags)) return 0;
+            pNewTags = (db_used_tag *)xx_rt_realloc(
+                *ppTags, nNewCapacity * sizeof(**ppTags));
+            if (!pNewTags) return 0;
+            *ppTags = pNewTags;
+            *pCapacity = nNewCapacity;
+        }
+        if (nSize == SIZE_MAX) return 0;
+        (*ppTags)[*pCount].pText = (char *)xx_rt_malloc(nSize + 1U);
+        if (!(*ppTags)[*pCount].pText) return 0;
+        x_memcpy((*ppTags)[*pCount].pText, pStart, nSize);
+        (*ppTags)[*pCount].pText[nSize] = '\0';
+        (*ppTags)[*pCount].nSize = nSize;
+        ++*pCount;
+    }
+    return 1;
+}
+
+char *db_get_used_tags(const DBase *pDb)
+{
+    db_used_tag *pTags = NULL;
+    size_t nCount = 0;
+    size_t nCapacity = 0;
+    size_t nResultSize = 0;
+    size_t nPosition = 0;
+    size_t i;
+    char *pResult;
+
+    if (pDb && pDb->pRecords && pDb->nCount > 0) {
+        for (i = 0; i < (size_t)pDb->nCount; ++i) {
+            if (!db_collect_used_tags(&pTags, &nCount, &nCapacity,
+                                      pDb->pRecords[i].pTags)) {
+                db_used_tags_free(pTags, nCount);
+                return NULL;
+            }
+        }
+    }
+
+    if (nCount > 1U) {
+        x_qsort(pTags, nCount, sizeof(*pTags), db_used_tag_compare);
+    }
+    for (i = 0; i < nCount; ++i) {
+        size_t nSeparatorSize = i ? 1U : 0U;
+        if (nResultSize > SIZE_MAX - nSeparatorSize ||
+            pTags[i].nSize > SIZE_MAX - nResultSize - nSeparatorSize) {
+            db_used_tags_free(pTags, nCount);
+            return NULL;
+        }
+        nResultSize += pTags[i].nSize + nSeparatorSize;
+    }
+
+    if (nResultSize == SIZE_MAX) {
+        db_used_tags_free(pTags, nCount);
+        return NULL;
+    }
+    pResult = (char *)xx_rt_malloc(nResultSize + 1U);
+    if (!pResult) {
+        db_used_tags_free(pTags, nCount);
+        return NULL;
+    }
+    for (i = 0; i < nCount; ++i) {
+        if (i) pResult[nPosition++] = ';';
+        x_memcpy(pResult + nPosition, pTags[i].pText, pTags[i].nSize);
+        nPosition += pTags[i].nSize;
+    }
+    pResult[nPosition] = '\0';
+    db_used_tags_free(pTags, nCount);
+    return pResult;
+}
+
+static char *db_normalize_metadata_tags(const char *pText, size_t nSize)
+{
+    char *pResult = (char *)cd_malloc(nSize + 1U);
+    size_t nOut = 0;
+    size_t nPosition = 0;
+    while (nPosition < nSize) {
+        size_t nStart;
+        size_t nEnd;
+        while (nPosition < nSize && (pText[nPosition] == ',' || pText[nPosition] == ';' || db_is_tag_space(pText[nPosition]))) ++nPosition;
+        nStart = nPosition;
+        while (nPosition < nSize && pText[nPosition] != ',' && pText[nPosition] != ';') ++nPosition;
+        nEnd = nPosition;
+        while (nEnd > nStart && db_is_tag_space(pText[nEnd - 1])) --nEnd;
+        while (nStart < nEnd && db_is_tag_space(pText[nStart])) ++nStart;
+        if (nEnd > nStart) {
+            if (nOut) pResult[nOut++] = ';';
+            x_memcpy(pResult + nOut, pText + nStart, nEnd - nStart);
+            nOut += nEnd - nStart;
+        }
+        if (nPosition < nSize) ++nPosition;
+    }
+    pResult[nOut] = '\0';
+    return pResult;
+}
+
+static int db_metadata_matches(const DBSignatureMetadata *pMetadata,
+                               XFileType fileType, const char *pName, size_t nNameSize)
+{
+    return pMetadata && pMetadata->fileType == fileType && pMetadata->pName &&
+           db_ascii_span_equal(pMetadata->pName, xx_rt_strlen(pMetadata->pName), pName, nNameSize);
+}
+
+static unsigned int db_metadata_kind_mask(DBKind kind)
+{
+    /* The authoritative db/_metadata files are generated from db plus
+     * db_custom. Extra databases own their metadata independently. */
+    if ((unsigned int)kind > (unsigned int)DB_CUSTOM) return 0U;
+    if (kind == DB_MAIN) return (1U << DB_MAIN) | (1U << DB_CUSTOM);
+    return 1U << (unsigned int)kind;
+}
+
+static void db_apply_metadata_entry(DBase *pDb, const DBSignatureMetadata *pMetadata, int nFirstRecord)
+{
+    int i;
+    if (!pDb || !pMetadata || !pMetadata->pName) return;
+    if (nFirstRecord < 0) nFirstRecord = 0;
+    for (i = nFirstRecord; i < pDb->nCount; ++i) {
+        DBSignature *pRecord = &pDb->pRecords[i];
+        if ((unsigned int)pRecord->databaseType > (unsigned int)DB_CUSTOM) continue;
+        if ((pMetadata->databaseKinds & (1U << (unsigned int)pRecord->databaseType)) == 0U) continue;
+        if (!db_metadata_matches(pMetadata, pRecord->fileType,
+                                 pRecord->pName ? pRecord->pName : "",
+                                 pRecord->pName ? xx_rt_strlen(pRecord->pName) : 0U)) continue;
+        cd_free(pRecord->pTags);
+        pRecord->pTags = cd_strdup(pMetadata->pTags ? pMetadata->pTags : "");
+    }
+}
+
+static void db_apply_stored_metadata(DBase *pDb, int nFirstRecord)
+{
+    int i;
+    if (!pDb) return;
+    for (i = 0; i < pDb->nMetadataCount; ++i) {
+        db_apply_metadata_entry(pDb, &pDb->pMetadata[i], nFirstRecord);
+    }
+}
+
+static DBSignatureMetadata *db_store_metadata(DBase *pDb, XFileType fileType,
+                                               const char *pName, size_t nNameSize,
+                                               char *pNormalizedTags, unsigned int databaseKinds)
+{
+    DBSignatureMetadata *pMetadata;
+    int i;
+    if (!pDb || !pName || !nNameSize || !pNormalizedTags) return NULL;
+    for (i = 0; i < pDb->nMetadataCount; ++i) {
+        pMetadata = &pDb->pMetadata[i];
+        if (pMetadata->databaseKinds != databaseKinds ||
+            !db_metadata_matches(pMetadata, fileType, pName, nNameSize)) continue;
+        cd_free(pMetadata->pTags);
+        pMetadata->pTags = pNormalizedTags;
+        return pMetadata;
+    }
+    if (pDb->nMetadataCount == pDb->nMetadataCapacity) {
+        int nNewCapacity = pDb->nMetadataCapacity ? pDb->nMetadataCapacity * 2 : 64;
+        pDb->pMetadata = (DBSignatureMetadata *)cd_realloc(
+            pDb->pMetadata, (size_t)nNewCapacity * sizeof(*pDb->pMetadata));
+        pDb->nMetadataCapacity = nNewCapacity;
+    }
+    pMetadata = &pDb->pMetadata[pDb->nMetadataCount++];
+    pMetadata->pName = (char *)cd_malloc(nNameSize + 1U);
+    x_memcpy(pMetadata->pName, pName, nNameSize);
+    pMetadata->pName[nNameSize] = '\0';
+    pMetadata->pTags = pNormalizedTags;
+    pMetadata->fileType = fileType;
+    pMetadata->databaseKinds = databaseKinds;
+    return pMetadata;
+}
+
+static void db_apply_metadata_text(DBase *pDb, DBKind metadataKind, XFileType fileType,
+                                   const char *pText, size_t nTextSize)
+{
+    size_t nPosition = 0;
+    if (!pDb || !pText) return;
+    while (nPosition < nTextSize) {
+        size_t nLineStart = nPosition;
+        size_t nLineEnd;
+        size_t nHash = SIZE_MAX;
+        const char *pName;
+        size_t nNameSize;
+        XFileType recordFileType = fileType;
+        const char *pTags = NULL;
+        size_t nTagsSize = 0;
+        char *pNormalized;
+        DBSignatureMetadata *pMetadata;
+        size_t i;
+
+        while (nPosition < nTextSize && pText[nPosition] != '\n') ++nPosition;
+        nLineEnd = nPosition;
+        if (nPosition < nTextSize) ++nPosition;
+        while (nLineEnd > nLineStart && (pText[nLineEnd - 1] == '\r' || pText[nLineEnd - 1] == '\n')) --nLineEnd;
+        while (nLineStart < nLineEnd && db_is_tag_space(pText[nLineStart])) ++nLineStart;
+        while (nLineEnd > nLineStart && db_is_tag_space(pText[nLineEnd - 1])) --nLineEnd;
+        if (nLineStart == nLineEnd) continue;
+        if (nLineStart == 0 && nLineEnd - nLineStart >= 3 &&
+            (unsigned char)pText[0] == 0xefU && (unsigned char)pText[1] == 0xbbU && (unsigned char)pText[2] == 0xbfU) nLineStart += 3;
+
+        for (i = nLineStart; i < nLineEnd; ++i) {
+            if (pText[i] == '#') nHash = (size_t)i;
+        }
+        pName = pText + nLineStart;
+        nNameSize = (nHash == SIZE_MAX ? nLineEnd : nHash) - nLineStart;
+        db_trim_span(&pName, &nNameSize);
+        if (!nNameSize) continue;
+        /* PE metadata is recursive. Its DOTNET/foo.sg names correspond to
+         * records loaded from db/PE/DOTNET with the CLI-assembly type. */
+        if (fileType == XFT_PE && nNameSize > 7U &&
+            db_ascii_span_equal(pName, 7U, "DOTNET/", 7U)) {
+            recordFileType = XFT_CLI_ASSEMBLY;
+            pName += 7U;
+            nNameSize -= 7U;
+        }
+        if (nHash != SIZE_MAX) {
+            pTags = pText + nHash + 1U;
+            nTagsSize = nLineEnd - nHash - 1U;
+            db_trim_span(&pTags, &nTagsSize);
+        }
+        pNormalized = db_normalize_metadata_tags(pTags ? pTags : "", nTagsSize);
+        pMetadata = db_store_metadata(pDb, recordFileType, pName, nNameSize, pNormalized,
+                                      db_metadata_kind_mask(metadataKind));
+        if (pMetadata) db_apply_metadata_entry(pDb, pMetadata, 0);
+        else cd_free(pNormalized);
+    }
+}
+
+static int db_metadata_name_type(const char *pName, XFileType *pFileType)
+{
+    size_t nNameSize;
+    size_t nBaseSize;
+    int i;
+    if (!pName || !pFileType) return 0;
+    nNameSize = xx_rt_strlen(pName);
+    if (nNameSize <= 4U || !db_ascii_span_equal(pName + nNameSize - 4U, 4U, ".txt", 4U)) return 0;
+    nBaseSize = nNameSize - 4U;
+    for (i = 0; g_directories[i].pDirectory; ++i) {
+        const char *pDirectory = g_directories[i].pDirectory;
+        size_t nDirectorySize;
+        if (!pDirectory[0] || xx_rt_strchr(pDirectory, '/')) continue;
+        nDirectorySize = xx_rt_strlen(pDirectory);
+        if (db_ascii_span_equal(pName, nBaseSize, pDirectory, nDirectorySize)) {
+            *pFileType = g_directories[i].fileType;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int db_metadata_tar_path_type(const char *pPath, XFileType *pFileType)
+{
+    const char *pStart = pPath;
+    const char *pLastSlash;
+    const char *pDirectoryStart;
+    const char *pCursor;
+    size_t nDirectorySize;
+    if (!pPath) return 0;
+    while (pStart[0] == '.' && (pStart[1] == '/' || pStart[1] == '\\')) pStart += 2;
+    while (*pStart == '/' || *pStart == '\\') ++pStart;
+    pLastSlash = xx_rt_strrchr(pStart, '/');
+    if (!pLastSlash) pLastSlash = xx_rt_strrchr(pStart, '\\');
+    if (!pLastSlash) return 0;
+    pDirectoryStart = pStart;
+    for (pCursor = pStart; pCursor < pLastSlash; ++pCursor) {
+        if (*pCursor == '/' || *pCursor == '\\') pDirectoryStart = pCursor + 1;
+    }
+    nDirectorySize = (size_t)(pLastSlash - pDirectoryStart);
+    if (!db_ascii_span_equal(pDirectoryStart, nDirectorySize, "_metadata", 9U)) return 0;
+    return db_metadata_name_type(pLastSlash + 1, pFileType);
+}
+
 /* QDir's default Name | IgnoreCase order is also used by the reference TAR
  * loader. Establish that input order before its pair-dependent priority sort. */
 static int db_directory_order(XFileType fileType)
@@ -175,6 +612,7 @@ static void db_add(DBase *pDb, const char *pName, const char *pPath, char *pText
     pRecord->fileType = fileType;
     pRecord->databaseType = kind;
     pRecord->nElapsedTime = 0;
+    pRecord->pTags = cd_strdup("");
 }
 
 /* Read directly into the allocator owned by DBSignature. Using the common
@@ -244,6 +682,56 @@ static char *db_read_signature_at(intptr_t nDirectory, const char *pName, size_t
     return pText;
 }
 
+static void db_load_metadata_directory(DBase *pDb, const char *pDatabasePath, DBKind kind)
+{
+    char *pMetadataPath;
+    xx_list_t list;
+    intptr_t nDirectory;
+    size_t nCount;
+    size_t i;
+
+    if (!pDb || !pDatabasePath) return;
+    pMetadataPath = xx_fs_path_join(pDatabasePath, "_metadata");
+    if (!pMetadataPath || !xx_fs_is_dir(pMetadataPath)) {
+        xx_str_free(pMetadataPath);
+        return;
+    }
+    if (!xx_list_init(&list, sizeof(xx_fs_entry_t *), NULL)) {
+        xx_str_free(pMetadataPath);
+        return;
+    }
+    if (!xx_fs_list_dir_sorted(pMetadataPath, &list, XX_FS_SORT_NAME)) {
+        nCount = xx_list_count(&list);
+        for (i = 0; i < nCount; ++i) {
+            xx_fs_entry_t *pEntry = *(xx_fs_entry_t **)xx_list_at(&list, i);
+            if (pEntry) xx_fs_entry_free(pEntry);
+        }
+        xx_list_cleanup(&list);
+        xx_str_free(pMetadataPath);
+        return;
+    }
+    nCount = xx_list_count(&list);
+    nDirectory = nCount ? xx_io_platform_read_directory_open(pMetadataPath) : -1;
+    for (i = 0; i < nCount; ++i) {
+        xx_fs_entry_t *pEntry = *(xx_fs_entry_t **)xx_list_at(&list, i);
+        XFileType fileType;
+        if (pEntry && db_metadata_name_type(pEntry->name, &fileType)) {
+            char *pText = NULL;
+            size_t nSize = 0;
+            if (nDirectory != -1) pText = db_read_signature_at(nDirectory, pEntry->name, &nSize);
+            else if (xx_fs_is_file(pEntry->path)) pText = db_read_signature(pEntry->path, &nSize);
+            if (pText) {
+                db_apply_metadata_text(pDb, kind, fileType, pText, nSize);
+                cd_free(pText);
+            }
+        }
+        if (pEntry) xx_fs_entry_free(pEntry);
+    }
+    if (nDirectory != -1) xx_io_platform_close_descriptor(nDirectory);
+    xx_list_cleanup(&list);
+    xx_str_free(pMetadataPath);
+}
+
 static void db_load_directory(DBase *pDb, const char *pPath, XFileType fileType, DBKind kind)
 {
     xx_list_t list;
@@ -283,7 +771,7 @@ static void db_load_directory(DBase *pDb, const char *pPath, XFileType fileType,
             continue;
         }
 
-        if (is_signature_path(pEntry->path)) {
+        if (pEntry->type == XX_FS_ENTRY_FILE && is_signature_path(pEntry->path)) {
             size_t nSize = 0;
             char *pText = NULL;
 
@@ -380,6 +868,61 @@ static int tar_write_end(xx_io_device *pFile)
     return (xx_io_write(pFile, zeroes, sizeof(zeroes)) == (ssize_t)sizeof(zeroes)) ? 1 : 0;
 }
 
+static int db_write_metadata_tar(xx_io_device *pTar, const char *pDbPath)
+{
+    char *pMetadataPath = xx_fs_path_join(pDbPath, "_metadata");
+    xx_list_t list;
+    intptr_t nDirectory;
+    size_t nCount;
+    size_t i;
+    int bResult = 1;
+
+    if (!pMetadataPath || !xx_fs_is_dir(pMetadataPath)) {
+        xx_str_free(pMetadataPath);
+        return 1;
+    }
+    if (!xx_list_init(&list, sizeof(xx_fs_entry_t *), NULL)) {
+        xx_str_free(pMetadataPath);
+        return 0;
+    }
+    if (!xx_fs_list_dir_sorted(pMetadataPath, &list, XX_FS_SORT_NAME)) {
+        nCount = xx_list_count(&list);
+        for (i = 0; i < nCount; ++i) {
+            xx_fs_entry_t *pEntry = *(xx_fs_entry_t **)xx_list_at(&list, i);
+            if (pEntry) xx_fs_entry_free(pEntry);
+        }
+        xx_list_cleanup(&list);
+        xx_str_free(pMetadataPath);
+        return 0;
+    }
+    nCount = xx_list_count(&list);
+    nDirectory = nCount ? xx_io_platform_read_directory_open(pMetadataPath) : -1;
+    for (i = 0; i < nCount; ++i) {
+        xx_fs_entry_t *pEntry = *(xx_fs_entry_t **)xx_list_at(&list, i);
+        XFileType ignoredType;
+        if (bResult && pEntry && db_metadata_name_type(pEntry->name, &ignoredType)) {
+            char *pText = NULL;
+            size_t nSize = 0;
+            char sRelativePath[256];
+            if (nDirectory != -1) pText = db_read_signature_at(nDirectory, pEntry->name, &nSize);
+            else if (xx_fs_is_file(pEntry->path)) pText = db_read_signature(pEntry->path, &nSize);
+            if (!pText) {
+                bResult = 0;
+            } else {
+                xx_rt_snprintf(sRelativePath, sizeof(sRelativePath), "_metadata/%s", pEntry->name);
+                sRelativePath[sizeof(sRelativePath) - 1] = '\0';
+                bResult = tar_write_header(pTar, sRelativePath, nSize) && tar_write_data(pTar, pText, nSize);
+                cd_free(pText);
+            }
+        }
+        if (pEntry) xx_fs_entry_free(pEntry);
+    }
+    if (nDirectory != -1) xx_io_platform_close_descriptor(nDirectory);
+    xx_list_cleanup(&list);
+    xx_str_free(pMetadataPath);
+    return bResult;
+}
+
 static int tar_strnicmp_ascii(const char *pLeft, const char *pRight, size_t n)
 {
     while (n > 0) {
@@ -462,6 +1005,7 @@ static int db_create_tar_internal(const char *pDbPath, const char *pTarPath, int
     xx_io_device *pTar = NULL;
     JSCtx *pJs = NULL;
     int i = 0;
+    int bResult = 1;
 
     if (!pDbPath || !pTarPath || !xx_fs_is_dir(pDbPath)) {
         return 0;
@@ -495,7 +1039,8 @@ static int db_create_tar_internal(const char *pDbPath, const char *pTarPath, int
 
         if (!xx_list_init(&list, sizeof(xx_fs_entry_t *), NULL)) {
             cd_free(pDirPath);
-            continue;
+            bResult = 0;
+            break;
         }
 
         if (xx_fs_list_dir_sorted(pDirPath, &list, XX_FS_SORT_NAME)) {
@@ -504,7 +1049,7 @@ static int db_create_tar_internal(const char *pDbPath, const char *pTarPath, int
             nDirectory = nCount ? xx_io_platform_read_directory_open(pDirPath) : -1;
             for (j = 0; j < nCount; j++) {
                 xx_fs_entry_t *pEntry = *(xx_fs_entry_t **)xx_list_at(&list, j);
-                if (pEntry && is_signature_path(pEntry->path)) {
+                if (bResult && pEntry && pEntry->type == XX_FS_ENTRY_FILE && is_signature_path(pEntry->path)) {
                     size_t nFileSize = 0;
                     char *pText = NULL;
                     /* Compilation uses the same regular-file reader and
@@ -533,19 +1078,21 @@ static int db_create_tar_internal(const char *pDbPath, const char *pTarPath, int
                             size_t nBcSize = 0;
                             void *pBc = js_compile_to_bytecode(pJs, pText, pEntry->name, &nBcSize);
                             if (pBc && nBcSize > 0) {
-                                tar_write_header(pTar, sRelPath, nBcSize);
-                                tar_write_data(pTar, pBc, nBcSize);
+                                bResult = tar_write_header(pTar, sRelPath, nBcSize) &&
+                                          tar_write_data(pTar, pBc, nBcSize);
                                 xx_rt_free(pBc);
                             } else {
-                                tar_write_header(pTar, sRelPath, (size_t)nFileSize);
-                                tar_write_data(pTar, pText, (size_t)nFileSize);
+                                bResult = tar_write_header(pTar, sRelPath, (size_t)nFileSize) &&
+                                          tar_write_data(pTar, pText, (size_t)nFileSize);
                             }
                         } else {
-                            tar_write_header(pTar, sRelPath, (size_t)nFileSize);
-                            tar_write_data(pTar, pText, (size_t)nFileSize);
+                            bResult = tar_write_header(pTar, sRelPath, (size_t)nFileSize) &&
+                                      tar_write_data(pTar, pText, (size_t)nFileSize);
                         }
 
                         cd_free(pText);
+                    } else {
+                        bResult = 0;
                     }
                 }
                 if (pEntry) {
@@ -553,20 +1100,29 @@ static int db_create_tar_internal(const char *pDbPath, const char *pTarPath, int
                 }
             }
             if (nDirectory != -1) xx_io_platform_close_descriptor(nDirectory);
+        } else {
+            nCount = xx_list_count(&list);
+            for (j = 0; j < nCount; ++j) {
+                xx_fs_entry_t *pEntry = *(xx_fs_entry_t **)xx_list_at(&list, j);
+                if (pEntry) xx_fs_entry_free(pEntry);
+            }
+            bResult = 0;
         }
 
         xx_list_cleanup(&list);
         cd_free(pDirPath);
+        if (!bResult) break;
     }
 
-    tar_write_end(pTar);
+    if (bResult) bResult = db_write_metadata_tar(pTar, pDbPath);
+    if (bResult) bResult = tar_write_end(pTar);
     xx_io_close(pTar);
 
     if (pJs) {
         js_free(pJs);
     }
 
-    return 1;
+    return bResult;
 }
 
 int db_create_tar(const char *pDbPath, const char *pTarPath)
@@ -610,9 +1166,11 @@ static int db_load_builtin_audio_subset(DBase *pDb, DBKind kind, int bMusicOnly)
             cd_free(record->pName);
             cd_free(record->pFilePath);
             cd_free(record->pText);
+            cd_free(record->pTags);
         }
         return 0;
     }
+    db_apply_stored_metadata(pDb, nBefore);
     xx_scan_sort_database_records(pDb);
     return 1;
 }
@@ -632,6 +1190,10 @@ int db_load_tar(DBase *pDb, const char *pTarPath, DBKind kind)
     xx_io_device *pFile = NULL;
     int nBefore = 0;
     char header[512];
+    db_metadata_blob *pMetadata = NULL;
+    size_t nMetadataCount = 0;
+    size_t nMetadataCapacity = 0;
+    int bReadError = 0;
 
     if (!pDb || !pTarPath || !pTarPath[0]) {
         return 0;
@@ -652,7 +1214,8 @@ int db_load_tar(DBase *pDb, const char *pTarPath, DBKind kind)
 
     nBefore = pDb->nCount;
 
-    while (xx_io_read(pFile, header, 512) == 512) {
+    for (;;) {
+        ssize_t nHeaderRead = xx_io_read(pFile, header, 512);
         uint64_t nSize = 0;
         char typeflag = 0;
         char sName[256];
@@ -662,6 +1225,11 @@ int db_load_tar(DBase *pDb, const char *pTarPath, DBKind kind)
         const char *pBaseName = NULL;
         XFileType fileType = XFT_UNKNOWN;
 
+        if (nHeaderRead == 0) break;
+        if (nHeaderRead != 512) {
+            bReadError = 1;
+            break;
+        }
         if (header[0] == '\0') {
             break;
         }
@@ -681,18 +1249,20 @@ int db_load_tar(DBase *pDb, const char *pTarPath, DBKind kind)
             if (*pC == '\\') *pC = '/';
         }
 
-        if (typeflag == '5') {
-            continue;
+        if (nSize >= (uint64_t)SIZE_MAX) {
+            bReadError = 1;
+            break;
         }
-
-        pData = (char *)cd_malloc((size_t)nSize + 1);
+        pData = (char *)cd_malloc((size_t)nSize + 1U);
         if (!pData) {
+            bReadError = 1;
             break;
         }
 
         if (nSize > 0) {
             if (xx_io_read(pFile, pData, (size_t)nSize) != (ssize_t)nSize) {
                 cd_free(pData);
+                bReadError = 1;
                 break;
             }
         }
@@ -700,16 +1270,32 @@ int db_load_tar(DBase *pDb, const char *pTarPath, DBKind kind)
 
         nPad = (512 - (nSize % 512)) % 512;
         if (nPad > 0) {
-            /* The header fields are already copied. Consume padding into
-             * the spare header buffer so sequential reads keep stdio's
-             * buffer, rather than seeking between every archive member.
-             * As before, a complete payload survives missing final padding. */
-            (void)xx_io_read(pFile, header, nPad);
+            /* The header fields are already copied. Consume padding into the
+             * spare header buffer so sequential reads keep stdio's buffer. */
+            if (xx_io_read(pFile, header, nPad) != (ssize_t)nPad) {
+                cd_free(pData);
+                bReadError = 1;
+                break;
+            }
+        }
+
+        if (typeflag == '5') {
+            cd_free(pData);
+            continue;
         }
 
         fileType = file_type_from_tar_path(sName, &pBaseName);
 
-        if (is_signature_name(pBaseName)) {
+        if (db_metadata_tar_path_type(sName, &fileType)) {
+            if (nMetadataCount == nMetadataCapacity) {
+                nMetadataCapacity = nMetadataCapacity ? nMetadataCapacity * 2U : 8U;
+                pMetadata = (db_metadata_blob *)cd_realloc(pMetadata, nMetadataCapacity * sizeof(*pMetadata));
+            }
+            pMetadata[nMetadataCount].fileType = fileType;
+            pMetadata[nMetadataCount].pText = pData;
+            pMetadata[nMetadataCount].nSize = (size_t)nSize;
+            ++nMetadataCount;
+        } else if (is_signature_name(pBaseName)) {
             db_add(pDb, pBaseName, sName, pData, (size_t)nSize, fileType, kind);
         } else {
             cd_free(pData);
@@ -717,6 +1303,32 @@ int db_load_tar(DBase *pDb, const char *pTarPath, DBKind kind)
     }
 
     xx_io_close(pFile);
+
+    {
+        size_t i;
+        if (!bReadError && pDb->nCount > nBefore) {
+            db_apply_stored_metadata(pDb, nBefore);
+            for (i = 0; i < nMetadataCount; ++i) {
+                db_apply_metadata_text(pDb, kind, pMetadata[i].fileType,
+                                       pMetadata[i].pText, pMetadata[i].nSize);
+            }
+        }
+        for (i = 0; i < nMetadataCount; ++i) {
+            cd_free(pMetadata[i].pText);
+        }
+        cd_free(pMetadata);
+    }
+
+    if (bReadError) {
+        while (pDb->nCount > nBefore) {
+            DBSignature *pRecord = &pDb->pRecords[--pDb->nCount];
+            cd_free(pRecord->pName);
+            cd_free(pRecord->pFilePath);
+            cd_free(pRecord->pText);
+            cd_free(pRecord->pTags);
+        }
+        return 0;
+    }
 
     if (pDb->nCount > nBefore) db_sort_loaded_records(pDb, nBefore, kind);
 
@@ -726,7 +1338,10 @@ int db_load_tar(DBase *pDb, const char *pTarPath, DBKind kind)
 int db_load(DBase *pDb, const char *pPath, DBKind kind)
 {
     int i = 0;
-    int nBefore = pDb->nCount;
+    int nBefore;
+
+    if (!pDb) return 0;
+    nBefore = pDb->nCount;
 
     if ((pPath == NULL) || (pPath[0] == 0)) {
         return 0;
@@ -755,6 +1370,13 @@ int db_load(DBase *pDb, const char *pPath, DBKind kind)
         }
     }
 
+    /* Metadata from the main database also describes db_custom. Apply the
+     * retained catalog before reading an optional local metadata directory. */
+    if (pDb->nCount > nBefore) {
+        db_apply_stored_metadata(pDb, nBefore);
+        db_load_metadata_directory(pDb, pPath, kind);
+    }
+
     db_sort_loaded_records(pDb, nBefore, kind);
 
     return (pDb->nCount > nBefore) ? 1 : 0;
@@ -768,9 +1390,16 @@ void db_free(DBase *pDb)
         cd_free(pDb->pRecords[i].pName);
         cd_free(pDb->pRecords[i].pFilePath);
         cd_free(pDb->pRecords[i].pText);
+        cd_free(pDb->pRecords[i].pTags);
+    }
+
+    for (i = 0; i < pDb->nMetadataCount; i++) {
+        cd_free(pDb->pMetadata[i].pName);
+        cd_free(pDb->pMetadata[i].pTags);
     }
 
     cd_free(pDb->pRecords);
+    cd_free(pDb->pMetadata);
     x_memset(pDb, 0, sizeof(*pDb));
 }
 

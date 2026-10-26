@@ -4,6 +4,7 @@
 #ifndef XX_FORMAT_STREAMS_H
 #define XX_FORMAT_STREAMS_H
 
+#include "xxfclib/formats/xx_format_stream_features.h"
 #include "xxfclib/data/xx_pd.h"
 #include "xxfclib/var/xx_var.h"
 #include <stdbool.h>
@@ -105,8 +106,9 @@ typedef struct xx_metadata_record {
 } xx_metadata_record;
 
 /* Cursors borrow the format/device, which must outlive them. create preloads
- * the first record; current is borrowed until next/free. An absent table is a
- * successful empty cursor. current_index starts at -1 when empty; total_records
+ * the first record; current is borrowed until next/free. A missing native table
+ * in a supported reader yields a successful empty cursor. current_index starts
+ * at -1 when empty; total_records
  * is -1 until known. Exhaustion returns false with failed=false; malformed
  * input/cancellation returns false with failed=true and an optional pd error.
  * Independent cursors preserve the device position, but concurrent access from
@@ -138,6 +140,80 @@ XX_FORMAT_DECLARE_STREAM_STATE(resource);
 XX_FORMAT_DECLARE_STREAM_STATE(metadata);
 XX_FORMAT_DECLARE_STREAM_STATE(symbol);
 #undef XX_FORMAT_DECLARE_STREAM_STATE
+
+/** Stateless capability interfaces. The returned descriptors are borrowed and
+ * shared; every operation receives its borrowed format context. Cursors own
+ * their iteration state and the format/device must outlive each cursor.
+ * Callbacks can be NULL; count-only providers do not expose record iteration.
+ * Use the checked operation helpers, or check the specific callback before use.
+ * Abstractformat contains no callbacks or pointers for these capabilities. */
+typedef struct xx_data_struct xx_data_struct;
+typedef struct xx_data_struct_record xx_data_struct_record;
+typedef struct xx_data_struct_state xx_data_struct_state;
+typedef struct xx_data_struct_record_state xx_data_struct_record_state;
+
+typedef struct StreamDataStructs {
+    const char *(*data_struct_id_to_string)(Abstractformat *self, uint32_t id);
+    uint32_t (*data_struct_string_to_id)(Abstractformat *self, const char *name);
+    xx_data_struct_state *(*create_data_structs_reading)(Abstractformat *self, xx_pd_struct *pd);
+    const xx_data_struct *(*get_current_data_struct)(Abstractformat *self, xx_data_struct_state *state);
+    bool (*data_struct_move_to_next)(Abstractformat *self, xx_data_struct_state *state, xx_pd_struct *pd);
+    void (*free_data_structs_reading)(Abstractformat *self, xx_data_struct_state *state);
+    xx_data_struct_record_state *(*create_data_struct_records_reading)(Abstractformat *self, const xx_data_struct *ds, xx_pd_struct *pd);
+    const xx_data_struct_record *(*get_current_data_struct_record)(Abstractformat *self, xx_data_struct_record_state *state);
+    bool (*data_struct_record_move_to_next)(Abstractformat *self, xx_data_struct_record_state *state, xx_pd_struct *pd);
+    void (*free_data_struct_records_reading)(Abstractformat *self, xx_data_struct_record_state *state);
+} StreamDataStructs;
+
+typedef struct StreamImport {
+    uint64_t (*get_number_of_imports)(Abstractformat *self, xx_pd_struct *pd);
+    xx_import_state *(*create_imports_reading)(Abstractformat *self, xx_pd_struct *pd);
+    const xx_import_record *(*get_current_import)(Abstractformat *self, xx_import_state *state);
+    bool (*import_move_to_next)(Abstractformat *self, xx_import_state *state, xx_pd_struct *pd);
+    void (*free_imports_reading)(Abstractformat *self, xx_import_state *state);
+} StreamImport;
+
+typedef struct StreamExport {
+    uint64_t (*get_number_of_exports)(Abstractformat *self, xx_pd_struct *pd);
+    xx_export_state *(*create_exports_reading)(Abstractformat *self, xx_pd_struct *pd);
+    const xx_export_record *(*get_current_export)(Abstractformat *self, xx_export_state *state);
+    bool (*export_move_to_next)(Abstractformat *self, xx_export_state *state, xx_pd_struct *pd);
+    void (*free_exports_reading)(Abstractformat *self, xx_export_state *state);
+} StreamExport;
+
+typedef struct StreamResources {
+    uint64_t (*get_number_of_resources)(Abstractformat *self, xx_pd_struct *pd);
+    xx_resource_state *(*create_resources_reading)(Abstractformat *self, xx_pd_struct *pd);
+    const xx_resource_record *(*get_current_resource)(Abstractformat *self, xx_resource_state *state);
+    bool (*resource_move_to_next)(Abstractformat *self, xx_resource_state *state, xx_pd_struct *pd);
+    void (*free_resources_reading)(Abstractformat *self, xx_resource_state *state);
+} StreamResources;
+
+typedef struct StreamMetadata {
+    uint64_t (*get_number_of_metadata)(Abstractformat *self, xx_pd_struct *pd);
+    xx_metadata_state *(*create_metadata_reading)(Abstractformat *self, xx_pd_struct *pd);
+    const xx_metadata_record *(*get_current_metadata)(Abstractformat *self, xx_metadata_state *state);
+    bool (*metadata_move_to_next)(Abstractformat *self, xx_metadata_state *state, xx_pd_struct *pd);
+    void (*free_metadata_reading)(Abstractformat *self, xx_metadata_state *state);
+} StreamMetadata;
+
+typedef struct StreamSymbols {
+    uint64_t (*get_number_of_symbols)(Abstractformat *self, xx_pd_struct *pd);
+    xx_symbol_state *(*create_symbols_reading)(Abstractformat *self, xx_pd_struct *pd);
+    const xx_symbol_record *(*get_current_symbol)(Abstractformat *self, xx_symbol_state *state);
+    bool (*symbol_move_to_next)(Abstractformat *self, xx_symbol_state *state, xx_pd_struct *pd);
+    void (*free_symbols_reading)(Abstractformat *self, xx_symbol_state *state);
+} StreamSymbols;
+
+/** Compatibility spelling requested by older callers. */
+typedef StreamSymbols StreamSymols;
+
+XXFC_API const StreamDataStructs *xx_format_get_stream_datastructs(Abstractformat *format);
+XXFC_API const StreamImport *xx_format_get_stream_import(Abstractformat *format);
+XXFC_API const StreamExport *xx_format_get_stream_export(Abstractformat *format);
+XXFC_API const StreamResources *xx_format_get_stream_resources(Abstractformat *format);
+XXFC_API const StreamMetadata *xx_format_get_stream_metadata(Abstractformat *format);
+XXFC_API const StreamSymbols *xx_format_get_stream_symbols(Abstractformat *format);
 
 XXFC_API xx_import_state *xx_format_create_imports_reading(Abstractformat *format, xx_pd_struct *pd);
 XXFC_API const xx_import_record *xx_format_get_current_import(Abstractformat *format, xx_import_state *state);

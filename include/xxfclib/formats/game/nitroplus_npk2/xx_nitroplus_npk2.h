@@ -21,7 +21,13 @@ extern "C" {
  * parameters, which take priority over the explicit raw-key setter. Format-
  * wide passwords are available to base parsing and validity checks as well
  * as record creation. No game-key database is embedded. Header recognition
- * without a supplied key does not verify encrypted contents.
+ * without a supplied key does not verify encrypted contents. Base-info
+ * handling in that state reports only the clear header's declared count,
+ * IV, encrypted-index size and the available physical view size. The query
+ * xx_nitroplus_npk2_is_metadata_only then returns true. Listing/extraction
+ * still require a correct key. Supplied wrong or
+ * malformed keys still make base-info handling fail. The is_crypted format
+ * flag remains true in both metadata-only and fully parsed states.
  *
  * The reader accepts empty files and segmented files. Backslashes in names
  * become '/', '%' becomes "%25", and ASCII-case duplicate names receive
@@ -56,6 +62,8 @@ XXFC_API void xx_nitroplus_npk2_destroy(xx_nitroplus_npk2 *archive);
 XXFC_API void xx_nitroplus_npk2_free(xx_nitroplus_npk2 *archive);
 XXFC_API bool xx_nitroplus_npk2_check_is_valid(Abstractformat *self, xx_pd_struct *pd);
 XXFC_API bool xx_nitroplus_npk2_handle_base_info(Abstractformat *self, xx_pd_struct *pd);
+/** True only for successfully handled clear metadata without a supplied key. */
+XXFC_API bool xx_nitroplus_npk2_is_metadata_only(const xx_nitroplus_npk2 *archive);
 XXFC_API int64_t xx_nitroplus_npk2_get_format_size(Abstractformat *self, xx_pd_struct *pd);
 XXFC_API uint64_t xx_nitroplus_npk2_get_number_of_archive_records(Abstractformat *self, xx_pd_struct *pd);
 XXFC_API xx_archive_record_state *xx_nitroplus_npk2_create_archive_records_reading(Abstractformat *self, const xx_list_s *options, xx_pd_struct *pd);

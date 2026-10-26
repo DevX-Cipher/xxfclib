@@ -173,6 +173,48 @@ static bool lyme_sfx_lyme_table(Abstractformat *f, pm_stream *s, int64_t at, uin
     s->size = pm_available(f);
     return true;
 }
+/* Extended records are [name length][name + NUL][packed, plain, offset]
+ * [eight opaque timestamp bytes][backward length = name length + 24].
+ * The footer tag is shared with compact records. Decode the whole directory
+ * under one grammar; never fall back with partially added members. */
+static bool lyme_sfx_extended_table(Abstractformat *f, pm_stream *s, int64_t at, uint32_t count, xx_pd_struct *pd)
+{
+    uint8_t h[20];
+    uint64_t last_payload_end = 0;
+    uint32_t i;
+    const xx_var *limit = xx_format_resolve_extra_parameter(f, NULL, XX_META_ID_OPT_MAX_MEMBER_SIZE);
+    uint64_t maximum = limit ? xx_var_get_u64(limit) : LYME_SFX_MEMORY_CAP;
+    if (!count || count > 65536U) return false;
+    for (i = 0; i < count; ++i) {
+        char name[4096];
+        uint32_t span, len, packed, plain, offset;
+        int64_t start;
+        uint64_t end;
+        if (lyme_sfx_stop(pd) || at < 4 || !pm_read(f, at - 4, h, 4U)) return false;
+        span = lyme_sfx_u32(h);
+        if (span < 26U || span > 4120U || (uint64_t)span + 4U > (uint64_t)at) return false;
+        start = at - (int64_t)span - 4;
+        if (!pm_read(f, start, h, 4U)) return false;
+        len = lyme_sfx_u32(h);
+        if (len < 2U || len > sizeof(name) || span != len + 24U || !pm_read(f, start + 4, name, len) ||
+            name[len - 1U] != 0 || xx_rt_memchr(name, 0, len - 1U) || !pm_read(f, start + 4 + len, h, sizeof(h))) return false;
+        packed = lyme_sfx_u32(h);
+        plain = lyme_sfx_u32(h + 4);
+        offset = lyme_sfx_u32(h + 8);
+        end = (uint64_t)offset + packed;
+        if (packed < 6U || packed > LYME_SFX_MEMORY_CAP || plain > LYME_SFX_MEMORY_CAP || plain > maximum || end > (uint64_t)start ||
+            !lyme_sfx_name(f, s, name, offset, packed)) return false;
+        if (end > last_payload_end) last_payload_end = end;
+        s->items[s->count - 1U].size = plain;
+        s->items[s->count - 1U].compression_method = 8U;
+        s->items[s->count - 1U].read_all = lyme_sfx_zlib_read;
+        at = start;
+    }
+    /* Every payload must precede the entire table, not just its own entry. */
+    if (last_payload_end > (uint64_t)at) return false;
+    s->size = pm_available(f);
+    return !lyme_sfx_stop(pd);
+}
 static bool lyme_sfx_lyme(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
 {
     uint8_t h[18];
@@ -186,6 +228,15 @@ static bool lyme_sfx_lyme(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
         uint32_t len = lyme_sfx_u32(h);
         int64_t begin = at - 8 - (int64_t)len - 4;
         if (len <= 4096 && begin >= 0 && pm_read(f, begin, h, 4) && !lyme_sfx_u32(h)) at = begin;
+    }
+    if (at >= 4 && pm_read(f, at - 4, h, 4U)) {
+        uint32_t span = lyme_sfx_u32(h);
+        if (span >= 26U && span <= 4120U && (uint64_t)span + 4U <= (uint64_t)at &&
+            pm_read(f, at - span - 4, h, 4U) && lyme_sfx_u32(h) == span - 24U) {
+            /* A valid compact name cannot start with this small LE length:
+             * its upper bytes are NUL, which compact names prohibit. */
+            return lyme_sfx_extended_table(f, s, at, count, pd);
+        }
     }
     return lyme_sfx_lyme_table(f, s, at, count, pd);
 }

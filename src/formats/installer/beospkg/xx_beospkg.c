@@ -492,13 +492,13 @@ static const xx_var *beos_option(const xx_list_s *options, uint32_t id)
     return NULL;
 }
 
-static bool beos_set_record(xx_archive_record *record, const beos_member *member)
+static bool beos_set_record(xx_archive_record *record, const beos_member *member, int64_t base_address)
 {
     xx_archive_record_cleanup(record);
     xx_archive_record_init(record);
-    record->header_offset = member->header_offset;
+    record->header_offset = base_address + member->header_offset;
     record->header_size = BEOS_TAG_SIZE + BEOS_TAG_SIZE + BEOS_CHUNK_DESCRIPTOR_SIZE;
-    record->data_offset = member->stream_offset;
+    record->data_offset = base_address + member->stream_offset;
     record->compressed_size = member->compressed_size;
     return xx_archive_record_set_original_name(record, member->name) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSED_SIZE, (uint64_t)member->compressed_size) &&
@@ -597,7 +597,7 @@ xx_archive_record_state *xx_beospkg_create_archive_records_reading(Abstractforma
     state->internal_state = stream;
     state->free_internal = beos_stream_free;
     state->total_records = (int64_t)stream->count;
-    if (!beos_copy_options(&state->options, options) || !beos_set_record(&state->current_record, &stream->items[0])) {
+    if (!beos_copy_options(&state->options, options) || !beos_set_record(&state->current_record, &stream->items[0], format->base_address)) {
         xx_archive_record_state_free(state);
         return NULL;
     }
@@ -619,7 +619,7 @@ bool xx_beospkg_archive_record_move_to_next(Abstractformat *format, xx_archive_r
         return false;
     }
     ++state->current_index;
-    state->has_record = beos_set_record(&state->current_record, &stream->items[stream->index]);
+    state->has_record = beos_set_record(&state->current_record, &stream->items[stream->index], format->base_address);
     return state->has_record;
 }
 

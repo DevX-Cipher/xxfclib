@@ -191,7 +191,8 @@ XX_FORMAT_READER_PROBE(vdi, XX_FILE_TYPE_VDI,
 XX_FORMAT_READER_PROBE(bmp, XX_FILE_TYPE_BMP,
     (header_size >= 2U && (xx_rt_memcmp(header + 0U, "\x42\x4D", 2U) == 0)))
 XX_FORMAT_READER_PROBE(cfe, XX_FILE_TYPE_CFE,
-    (header_size >= 36U && (xx_rt_memcmp(header + 28U, "\x43\x46\x45\x31\x43\x46\x45\x31", 8U) == 0)))
+    ((header_size >= 36U && (xx_rt_memcmp(header + 28U, "\x43\x46\x45\x31\x43\x46\x45\x31", 8U) == 0)) ||
+     (header_size >= 4U && xx_rt_memcmp(header, "CFE1", 4U) == 0)))
 XX_FORMAT_READER_PROBE(dxbc, XX_FILE_TYPE_DXBC,
     (header_size >= 4U && (xx_rt_memcmp(header + 0U, "\x44\x58\x42\x43", 4U) == 0)))
 XX_FORMAT_READER_PROBE(gif, XX_FILE_TYPE_GIF,
@@ -243,7 +244,7 @@ XX_FORMAT_READER_PROBE(commodore_crt, XX_FILE_TYPE_COMMODORE_CRT,
 XX_FORMAT_READER_PROBE(uf2, XX_FILE_TYPE_UF2,
     (header_size >= 8U && xx_rt_memcmp(header, "\x55\x46\x32\x0a\x57\x51\x5d\x9e", 8U) == 0))
 XX_FORMAT_READER_PROBE(ico, XX_FILE_TYPE_ICO,
-    (header_size >= 4U && xx_rt_memcmp(header, "\x00\x00\x01\x00", 4U) == 0))
+    (header_size >= 4U && header[0] == 0 && header[1] == 0 && (header[2] == 1 || header[2] == 2) && header[3] == 0))
 XX_FORMAT_READER_PROBE(midi, XX_FILE_TYPE_MIDI,
     (header_size >= 4U && xx_rt_memcmp(header, "\x4d\x54\x68\x64", 4U) == 0))
 
@@ -1053,7 +1054,8 @@ XX_FORMAT_READER_PROBE(postgres_custom, XX_FILE_TYPE_POSTGRES_CUSTOM,
 XX_FORMAT_READER_PROBE(mysql_binlog, XX_FILE_TYPE_MYSQL_BINLOG,
     (header_size >= 4 && !xx_rt_memcmp(header, "\xfe\x62\x69\x6e", 4)))
 XX_FORMAT_READER_PROBE(android_binary_xml, XX_FILE_TYPE_ANDROID_BINARY_XML,
-    (header_size >= 4 && !xx_rt_memcmp(header, "\x03\x00\x08\x00", 4)))
+    (header_size >= 8 && header[0] == 3 && header[1] == 0 && xx_data_get_u16(header + 2, 2, 0, false) >= 8 &&
+     xx_data_get_u16(header + 2, 2, 0, false) <= total_size && xx_data_get_u32(header + 4, 4, 0, false) == total_size))
 XX_FORMAT_READER_PROBE(android_resources_arsc, XX_FILE_TYPE_ANDROID_RESOURCES_ARSC,
     (header_size >= 4 && !xx_rt_memcmp(header, "\x02\x00\x0c\x00", 4)))
 XX_FORMAT_READER_PROBE(erlang_external_term, XX_FILE_TYPE_ERLANG_EXTERNAL_TERM,

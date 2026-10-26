@@ -55,7 +55,7 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/elf/xx_elf.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/elf/xx_elf_symbols.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/elf/xx_elf_resources.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/elf/xx_elf_data.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/elf/xx_elf_datastructs.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/gz/xx_gz.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/bz2/xx_bz2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/lha/xx_lha.c
@@ -69,7 +69,7 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/image/jpeg/xx_jpeg.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/macho/xx_macho_inspect.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/macho/xx_macho.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/macho/xx_macho_data.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/macho/xx_macho_datastructs.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/msdos/xx_msdos.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/ne/xx_ne.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/le/xx_le.c
@@ -79,18 +79,18 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/document/pdf/xxpdf_decode.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_inspect.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_unwind_validate.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_stream_symbols.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_stream_coff.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_stream_metadata.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_import.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_export.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_metadata.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_stream_common.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_data.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pe/xx_pe_datastructs.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dotnet/xx_dotnet.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dotnet/xx_dotnet_inspect.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dotnet/platforms/xx_dotnet_us_simd.h
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dotnet/platforms/xx_dotnet_us_sse2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dotnet/platforms/xx_dotnet_us_avx2.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dotnet/xx_dotnet_data.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/dotnet/xx_dotnet_datastructs.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/image/png/xx_png.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/executable/pyc/xx_pyc.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/rar/xx_rar.c
@@ -106,6 +106,7 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_data_signature.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_memory_map.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format_base.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format_datastructs.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format_handle_types.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format_names.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/xx_format_streams.c

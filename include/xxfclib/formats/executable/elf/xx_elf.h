@@ -200,6 +200,10 @@ typedef struct xx_elf {
 typedef xx_elf xx_elf_t;
 typedef xx_elf XELF;
 
+/** Optional stream providers, available when their build module is enabled. */
+XXFC_API const StreamSymbols *xx_elf_get_stream_symbols(void);
+XXFC_API const StreamResources *xx_elf_get_stream_resources(void);
+
 XXFC_API void xx_elf_init(xx_elf *elf, xx_io_device *device, int64_t base_address);
 XXFC_API xx_elf *xx_elf_create(xx_io_device *device, int64_t base_address);
 XXFC_API void xx_elf_destroy(xx_elf *elf);

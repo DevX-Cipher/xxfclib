@@ -21,6 +21,7 @@ list(REMOVE_DUPLICATES XXFC_FORMATS_PROFILE_SOURCES)
 
 add_library(xxfclib STATIC ${XXFC_FORMATS_PROFILE_SOURCES})
 add_library(xxfclib::xxfclib ALIAS xxfclib)
+xxfclib_configure_streams(xxfclib)
 target_compile_features(xxfclib PUBLIC c_std_11)
 target_compile_definitions(xxfclib
     PUBLIC XXFC_STATIC XXFC_FORMATS_ONLY=1
@@ -62,5 +63,21 @@ install(EXPORT xxfclibTargets
     NAMESPACE xxfclib::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xxfclib)
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_apple_diags_tests.cmake")
+
 unset(_xxfc_formats_profile_libraries)
 unset(_xxfc_formats_profile_source_count)
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_eid_crypto_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_eid_reader_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_natata_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_fox_sqz_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_stor_resource_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_lyme_sfx_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_installshield_obl_tests.cmake")

@@ -379,11 +379,17 @@ static void parse_exports(xx_pe_inspection *pPE)
         return;
     }
 
-    nNamesOffset = xx_memory_map_address_to_offset(&pPE->map, inspect_rva_address(pPE, nAddressOfNames));
-    nOrdinalsOffset = xx_memory_map_address_to_offset(&pPE->map, inspect_rva_address(pPE, nAddressOfOrdinals));
-
-    if ((nNamesOffset == -1) || (nOrdinalsOffset == -1) || (xx_memory_map_address_to_offset(&pPE->map, inspect_rva_address(pPE, nAddressOfFunctions)) == -1)) {
+    if (xx_memory_map_address_to_offset(&pPE->map, inspect_rva_address(pPE, nAddressOfFunctions)) == -1) {
         return;
+    }
+
+    if (nNumberOfNames != 0) {
+        nNamesOffset = xx_memory_map_address_to_offset(&pPE->map, inspect_rva_address(pPE, nAddressOfNames));
+        nOrdinalsOffset = xx_memory_map_address_to_offset(&pPE->map, inspect_rva_address(pPE, nAddressOfOrdinals));
+
+        if ((nNamesOffset == -1) || (nOrdinalsOffset == -1)) {
+            return;
+        }
     }
 
     pPE->ppExportFunctions = (char **)xx_mem_calloc(nNumberOfFunctions, sizeof(char *));
@@ -391,14 +397,11 @@ static void parse_exports(xx_pe_inspection *pPE)
         pPE->pInput->failed = true;
         return;
     }
-    for (i = 0; i < nNumberOfFunctions; i++) {
-        pPE->ppExportFunctions[i] = xx_exec_copy_string(pPE->pInput, "");
-        if (!pPE->ppExportFunctions[i]) {
-            pPE->nExportCount = (int)i;
-            pPE->pInput->failed = true;
-            return;
-        }
-    }
+
+    /* Keep the EAT slot layout for the legacy script API, but leave ordinal-
+     * only and zero-RVA positions as NULL. Allocating an empty string for every
+     * slot is especially expensive for sparse tables such as MSO.DLL. */
+    pPE->nExportCount = (int)nNumberOfFunctions;
 
     for (i = 0; i < nNumberOfNames; i++) {
         uint16_t nIndex = xx_exec_u16(pPE->pInput, nOrdinalsOffset + i * 2, false);
@@ -407,11 +410,9 @@ static void parse_exports(xx_pe_inspection *pPE)
 
         if (nIndex < nNumberOfFunctions) {
             xx_mem_free(pPE->ppExportFunctions[nIndex]);
-            pPE->ppExportFunctions[nIndex] = (nNameOffset != -1) ? xx_exec_string(pPE->pInput, nNameOffset, 2048) : xx_exec_copy_string(pPE->pInput, "");
+            pPE->ppExportFunctions[nIndex] = (nNameOffset != -1) ? xx_exec_string(pPE->pInput, nNameOffset, 2048) : NULL;
         }
     }
-
-    pPE->nExportCount = (int)nNumberOfFunctions;
 }
 
 /* ------------------------------------------------------------ resources  */
@@ -1059,8 +1060,10 @@ void xx_pe_inspect_free(xx_pe_inspection *pPE)
 
     xx_mem_free(pPE->pImports);
 
-    for (i = 0; i < pPE->nExportCount; i++) {
-        xx_mem_free(pPE->ppExportFunctions[i]);
+    for (i = 0; pPE->ppExportFunctions && (i < pPE->nExportCount); i++) {
+        if (pPE->ppExportFunctions[i]) {
+            xx_mem_free(pPE->ppExportFunctions[i]);
+        }
     }
 
     xx_mem_free(pPE->ppExportFunctions);

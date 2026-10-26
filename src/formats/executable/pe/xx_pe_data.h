@@ -5,12 +5,20 @@
 #ifndef XXFCLIB_PE_DATA_INTERNAL_H
 #define XXFCLIB_PE_DATA_INTERNAL_H
 
+#include "xxfclib/formats/xx_format_streams.h"
 #include "xxfclib/formats/executable/pe/xx_pe.h"
 
-void xx_pe_setup_data_struct_callbacks(xx_pe *pe);
+const StreamDataStructs *xx_pe_get_stream_datastructs(void);
 const char *xx_pe_data_struct_id_to_string(Abstractformat *format, uint32_t id);
 uint32_t xx_pe_data_struct_string_to_id(Abstractformat *format, const char *name);
 xx_data_struct_record_state *xx_pe_create_data_struct_records_reading(Abstractformat *format, const xx_data_struct *ds, xx_pd_struct *pd);
+
+const xx_data_struct *xx_pe_get_current_data_struct(Abstractformat *format, xx_data_struct_state *state);
+bool xx_pe_data_struct_move_to_next(Abstractformat *format, xx_data_struct_state *state, xx_pd_struct *pd);
+void xx_pe_free_data_structs_reading(Abstractformat *format, xx_data_struct_state *state);
+const xx_data_struct_record *xx_pe_get_current_data_struct_record(Abstractformat *format, xx_data_struct_record_state *state);
+bool xx_pe_data_struct_record_move_to_next(Abstractformat *format, xx_data_struct_record_state *state, xx_pd_struct *pd);
+void xx_pe_free_data_struct_records_reading(Abstractformat *format, xx_data_struct_record_state *state);
 
 /* Internal composition hooks for readers that extend a PE container. */
 typedef struct pe_data_stream_s xx_pe_data_stream;

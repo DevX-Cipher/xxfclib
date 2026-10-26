@@ -18,6 +18,8 @@ project(xxfclib
 # 32 KiB Windows limit however deep the checkout is. MSBuild already does.
 set(CMAKE_NINJA_FORCE_RESPONSE_FILE ON)
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_streams.cmake")
+
 set(XXFC_BUILD_PROFILE "full" CACHE STRING "xxfclib source profile: full, formats, apk_emul, dotnet_emul or bytecode")
 set_property(CACHE XXFC_BUILD_PROFILE PROPERTY STRINGS full formats apk_emul dotnet_emul bytecode)
 if(XXFC_BUILD_PROFILE STREQUAL "formats")
@@ -379,6 +381,8 @@ set(XXFCLIB_PUBLIC_HEADERS
     include/xxfclib/algo/zstd/xx_zstd.h
     include/xxfclib/algo/zipcrypto/xx_zipcrypto.h
     include/xxfclib/algo/aes/xx_aes.h
+    include/xxfclib/algo/eid/xx_eid_crypto.h
+    include/xxfclib/algo/ripemd256/xx_ripemd256.h
     include/xxfclib/algo/aes_winzip/xx_aes_winzip.h
     include/xxfclib/algo/cmpsc/xx_cmpsc.h
     include/xxfclib/algo/packmp3/xx_packmp3.h
@@ -1203,6 +1207,11 @@ set(XXFCLIB_PUBLIC_HEADERS
     include/xxfclib/formats/video/rad_bink/xx_rad_bink.h
     include/xxfclib/formats/video/rad_smacker/xx_rad_smacker.h
     include/xxfclib/formats/video/scummvm_dxa/xx_scummvm_dxa.h
+    include/xxfclib/formats/archive/apple_diags/xx_apple_diags.h
+    include/xxfclib/formats/archive/eid/xx_eid.h
+    include/xxfclib/formats/installer/natata_ebook/xx_natata_ebook.h
+    include/xxfclib/formats/archive/stor_resource/xx_stor_resource.h
+    include/xxfclib/formats/archive/installshield_obl/xx_installshield_obl.h
     include/xxfclib/formats/video/interplay_mve/xx_interplay_mve.h
     include/xxfclib/formats/video/westwood_vqa/xx_westwood_vqa.h
     include/xxfclib/formats/video/autodesk_flic/xx_autodesk_flic.h
@@ -1920,9 +1929,9 @@ set(XXFCLIB_SOURCES
     src/die_engine/xx_die_engine_xdisasm.c
     src/formats/executable/pe/xx_pe_inspect.c
     src/formats/executable/pe/xx_pe_unwind_validate.c
-    src/formats/executable/pe/xx_pe_stream_symbols.c
-    src/formats/executable/pe/xx_pe_stream_coff.c
-    src/formats/executable/pe/xx_pe_stream_metadata.c
+    src/formats/executable/pe/xx_pe_import.c
+    src/formats/executable/pe/xx_pe_export.c
+    src/formats/executable/pe/xx_pe_metadata.c
     src/formats/executable/pe/xx_pe_stream_common.c
     src/formats/executable/dotnet/xx_dotnet.c
     src/formats/executable/dotnet/xx_dotnet_inspect.c
@@ -1930,7 +1939,7 @@ set(XXFCLIB_SOURCES
     src/formats/executable/dotnet/platforms/xx_dotnet_us_sse2.c
     src/formats/executable/dotnet/platforms/xx_dotnet_us_avx2.c
     src/formats/executable/dotnet/xx_dotnet_reader.c
-    src/formats/executable/dotnet/xx_dotnet_data.c
+    src/formats/executable/dotnet/xx_dotnet_datastructs.c
     src/formats/executable/dotnet/xx_dotnet_extractor.c
     src/formats/installer/apk/xx_apk_inspect.c
     src/formats/document/pdf/xxpdf.c
@@ -2056,6 +2065,8 @@ set(XXFCLIB_SOURCES
     src/algo/zstd/xx_zstd_dec.c
     src/algo/zipcrypto/xx_zipcrypto.c
     src/algo/aes/xx_aes.c
+    src/algo/eid/xx_eid_crypto.c
+    src/algo/ripemd256/xx_ripemd256.c
     src/algo/aes/xx_aes_internal.h
     src/algo/aes/platforms/xx_aes_arm_crypto.c
     src/algo/aes_winzip/xx_aes_winzip.c
@@ -2169,6 +2180,7 @@ set(XXFCLIB_SOURCES
     src/algo/quantum/xx_quantum.c
     src/formats/xx_format.c
     src/formats/xx_format_base.c
+    src/formats/xx_format_datastructs.c
     src/formats/xx_format_handle_types.c
     src/formats/xx_format_unpack_handles.c
     src/formats/xx_format_streams.c
@@ -3081,13 +3093,13 @@ set(XXFCLIB_SOURCES
     src/formats/executable/pe/xx_pe.c
     src/formats/executable/pe/xx_pe_make.c
     src/formats/executable/pe/xx_pe_extractor.c
-    src/formats/executable/pe/xx_pe_data.c
+    src/formats/executable/pe/xx_pe_datastructs.c
     src/formats/executable/pe/xx_pe_exception.c
     src/formats/executable/elf/xx_elf.c
     src/formats/executable/elf/xx_elf_symbols.c
     src/formats/executable/elf/xx_elf_resources.c
     src/formats/executable/elf/xx_elf_extractor.c
-    src/formats/executable/elf/xx_elf_data.c
+    src/formats/executable/elf/xx_elf_datastructs.c
     src/formats/executable/elf/xx_elf_dwarf.c
     src/formats/executable/elf/xx_elf_dwarf_analysis.c
     src/formats/executable/dwarf/xx_dwarf_loclists.c
@@ -3101,7 +3113,7 @@ set(XXFCLIB_SOURCES
     src/formats/executable/macho/xx_macho.c
     src/formats/executable/macho/xx_macho_exception.c
     src/formats/executable/macho/xx_macho_extractor.c
-    src/formats/executable/macho/xx_macho_data.c
+    src/formats/executable/macho/xx_macho_datastructs.c
     src/formats/executable/ne/xx_ne.c
     src/formats/executable/ne/xx_ne_extractor.c
     src/formats/executable/le/xx_le.c
@@ -3945,6 +3957,11 @@ set(XXFCLIB_SOURCES
     src/formats/video/rad_bink/xx_rad_bink_extractor.c
     src/formats/video/rad_smacker/xx_rad_smacker.c
     src/formats/video/rad_smacker/xx_rad_smacker_extractor.c
+    src/formats/archive/apple_diags/xx_apple_diags.c
+    src/formats/archive/eid/xx_eid.c
+    src/formats/installer/natata_ebook/xx_natata_ebook.c
+    src/formats/archive/stor_resource/xx_stor_resource.c
+    src/formats/archive/installshield_obl/xx_installshield_obl.c
     src/formats/video/scummvm_dxa/xx_scummvm_dxa.c
     src/formats/video/scummvm_dxa/xx_scummvm_dxa_reader_adapters.c
     src/formats/video/interplay_mve/xx_interplay_mve.c
@@ -4916,10 +4933,13 @@ if(NOT WIN32)
     find_package(Threads REQUIRED)
 endif()
 
+xxfclib_select_stream_sources(XXFCLIB_SOURCES)
+
 # Helper to configure target include dirs, warnings, and export/import definitions
 include(src/die_engine/xx_die_engine_cdisasm.cmake)
 
 function(xxfclib_configure_target target is_shared)
+    xxfclib_configure_streams(${target})
     target_compile_definitions(${target} PRIVATE XXFC_PROCESS_STRUCTS_USE_RUNTIME)
     if(is_shared)
         target_link_libraries(${target} PRIVATE cdisasm::cdisasm)
@@ -5408,10 +5428,16 @@ function(xxfclib_configure_target target is_shared)
             target_link_libraries(${target} PRIVATE kernel32.lib)
         endif()
 
-        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-            target_sources(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/algo/lzma/asm/lzma_x64.asm")
+        if(XXFC_MSVC_X64)
+            target_sources(${target} PRIVATE
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/algo/lzma/asm/lzma_x64.asm"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/algo/bzip2/asm/bzip2_x64.asm"
+            )
         elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
-            target_sources(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/algo/lzma/asm/lzma_x86.asm")
+            target_sources(${target} PRIVATE
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/algo/lzma/asm/lzma_x86.asm"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/algo/bzip2/asm/bzip2_x86.asm"
+            )
         endif()
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
@@ -5504,6 +5530,7 @@ endif()
 # Configured like the static xxfclib, including XXFC_STATIC_NO_CRT.
 if(XXFC_BUILD_DIE_ENGINE)
     include("${CMAKE_CURRENT_SOURCE_DIR}/die_engine.cmake")
+    xxfclib_select_stream_sources(XXFC_DIE_ENGINE_SOURCES)
     add_library(die_engine STATIC ${XXFC_DIE_ENGINE_SOURCES})
     xxfclib_configure_target(die_engine FALSE)
     add_library(xxfclib::die_engine ALIAS die_engine)
@@ -6463,6 +6490,8 @@ set(CPACK_ARCHIVE_COMPONENT_INSTALL OFF)
 set(CPACK_COMPONENTS_ALL_IN_ONE_PACKAGE ON)
 
 include(CPack)
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_apple_diags_tests.cmake")
 
 # Regression checks for the additional archive, disk-image and filesystem readers.
 if(XXFC_BUILD_FORMAT_EXPANSION_TESTS)
@@ -7627,3 +7656,17 @@ if(XXFC_BUILD_CODEPAGE_TESTS AND TARGET xxfclib AND NOT BUILD_SHARED_LIBS)
     endforeach()
     unset(_cp_format)
 endif()
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_eid_crypto_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_eid_reader_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_natata_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_fox_sqz_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_stor_resource_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_lyme_sfx_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_installshield_obl_tests.cmake")

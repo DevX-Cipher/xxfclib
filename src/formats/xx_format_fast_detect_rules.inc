@@ -677,6 +677,7 @@ static const uint8_t fast_bytes_674[] = { 0x01,0xD8 };
 static const uint8_t fast_bytes_675[] = { 0x01,0xDD };
 static const uint8_t fast_bytes_676[] = { 0x01,0xDF };
 
+static const uint8_t fast_bytes_ico_cursor[] = { 0x00,0x00,0x02,0x00 };
 static const fast_atom fast_atoms[] = {
     { INT64_C(0), fast_bytes_0, fast_bytes_1, 4U, FAST_BASE, false },
     { INT64_C(0), fast_bytes_2, fast_bytes_1, 4U, FAST_BASE, false },
@@ -1538,6 +1539,9 @@ static const fast_atom fast_atoms[] = {
     { INT64_C(16), fast_bytes_671, fast_bytes_47, 2U, FAST_BASE, false },
     { INT64_C(0), fast_bytes_676, fast_bytes_47, 2U, FAST_BASE, false },
     { INT64_C(16), fast_bytes_671, fast_bytes_47, 2U, FAST_BASE, false },
+    { INT64_C(0), fast_bytes_ico_cursor, fast_bytes_1, 4U, FAST_BASE, false },
+    { INT64_C(4), fast_bytes_136, fast_bytes_47, 2U, FAST_BASE, true },
+    { INT64_C(9), fast_bytes_415, fast_bytes_263, 1U, FAST_BASE, false },
 };
 static const fast_rule fast_rules[] = {
     { INT64_C(0), INT64_C(9223372036854775807), 0U, 1U },
@@ -1963,6 +1967,7 @@ static const fast_rule fast_rules[] = {
     { INT64_C(0), INT64_C(9223372036854775807), 577U, 1U },
     { INT64_C(12), INT64_C(9223372036854775807), 578U, 2U },
     { INT64_C(22), INT64_C(9223372036854775807), 580U, 3U },
+    { INT64_C(22), INT64_C(9223372036854775807), 860U, 3U },
     { INT64_C(0), INT64_C(9223372036854775807), 583U, 1U },
     { INT64_C(0), INT64_C(9223372036854775807), 584U, 1U },
     { INT64_C(12), INT64_C(9223372036854775807), 585U, 3U },
@@ -2452,127 +2457,127 @@ static const fast_type fast_types[] = {
     { XX_FILE_TYPE_VDI, 419U, 1U }, /* src/formats/vdi/xx_vdi_fast_detect.json */
     { XX_FILE_TYPE_BMP, 420U, 1U }, /* src/formats/bmp/xx_bmp_fast_detect.json */
     { XX_FILE_TYPE_QUAKE_PAK, 421U, 1U }, /* src/formats/quake_pak/xx_quake_pak_fast_detect.json */
-    { XX_FILE_TYPE_ICO, 422U, 1U }, /* src/formats/ico/xx_ico_fast_detect.json */
-    { XX_FILE_TYPE_VALVE_BSP, 423U, 1U }, /* src/formats/valve_bsp/xx_valve_bsp_fast_detect.json */
-    { XX_FILE_TYPE_SONY_PSARC, 424U, 1U }, /* src/formats/sony_psarc/xx_sony_psarc_fast_detect.json */
-    { XX_FILE_TYPE_SFNT, 425U, 4U }, /* src/formats/sfnt/xx_sfnt_fast_detect.json */
-    { XX_FILE_TYPE_LMD_CONTAINER, 429U, 2U }, /* src/formats/lmd_container/xx_lmd_container_fast_detect.json */
-    { XX_FILE_TYPE_KIRIKIRI_XP3, 431U, 1U }, /* src/formats/kirikiri_xp3/xx_kirikiri_xp3_fast_detect.json */
-    { XX_FILE_TYPE_RENPY_RPA, 432U, 5U }, /* src/formats/renpy_rpa/xx_renpy_rpa_fast_detect.json */
-    { XX_FILE_TYPE_SQLITE3, 437U, 1U }, /* src/formats/sqlite3/xx_sqlite3_fast_detect.json */
-    { XX_FILE_TYPE_CRX, 438U, 2U }, /* src/formats/crx_native/xx_crx_native_fast_detect.json */
-    { XX_FILE_TYPE_NINTENDO_WBFS, 440U, 1U }, /* src/formats/nintendo_wbfs/xx_nintendo_wbfs_fast_detect.json */
-    { XX_FILE_TYPE_VICE_X64, 441U, 1U }, /* src/formats/vice_x64/xx_vice_x64_fast_detect.json */
-    { XX_FILE_TYPE_BINARY_PLIST, 442U, 1U }, /* src/formats/binary_plist/xx_binary_plist_fast_detect.json */
-    { XX_FILE_TYPE_JASC_PALETTE, 443U, 1U }, /* src/formats/jasc_palette/xx_jasc_palette_fast_detect.json */
-    { XX_FILE_TYPE_AMIGA_DISKOBJECT, 444U, 1U }, /* src/formats/amiga_diskobject/xx_amiga_diskobject_fast_detect.json */
-    { XX_FILE_TYPE_HXC_STREAM_HFE, 445U, 1U }, /* src/formats/hxc_stream_hfe/xx_hxc_stream_hfe_fast_detect.json */
-    { XX_FILE_TYPE_QNAP_NAS_FIRMWARE, 446U, 1U }, /* src/formats/qnap_nas_firmware/xx_qnap_nas_firmware_fast_detect.json */
-    { XX_FILE_TYPE_RDB, 447U, 16U }, /* src/formats/rdb/xx_rdb_fast_detect.json */
-    { XX_FILE_TYPE_T98_NEXT_NFD, 463U, 2U }, /* src/formats/t98_next_nfd/xx_t98_next_nfd_fast_detect.json */
-    { XX_FILE_TYPE_VISIONAIRE_STUDIO_VIS, 465U, 1U }, /* src/formats/visionaire_studio_vis/xx_visionaire_studio_vis_fast_detect.json */
-    { XX_FILE_TYPE_X68000_DIM, 466U, 1U }, /* src/formats/x68000_dim/xx_x68000_dim_fast_detect.json */
-    { XX_FILE_TYPE_BLINDWRITE_5_6_IMAGE, 467U, 1U }, /* src/formats/blindwrite_5_6_image/xx_blindwrite_5_6_image_fast_detect.json */
-    { XX_FILE_TYPE_BTRFS_STREAM, 468U, 1U }, /* src/formats/btrfs_stream/xx_btrfs_stream_fast_detect.json */
-    { XX_FILE_TYPE_CPK, 469U, 1U }, /* src/formats/cpk/xx_cpk_fast_detect.json */
-    { XX_FILE_TYPE_D_LINK_ALPHA_ENCIMG_V2, 470U, 2U }, /* src/formats/d_link_alpha_encimg_v2/xx_d_link_alpha_encimg_v2_fast_detect.json */
-    { XX_FILE_TYPE_D_LINK_FPKG_CPKG, 472U, 2U }, /* src/formats/d_link_fpkg_cpkg/xx_d_link_fpkg_cpkg_fast_detect.json */
-    { XX_FILE_TYPE_DAEMON_TOOLS_MDX, 474U, 1U }, /* src/formats/daemon_tools_mdx/xx_daemon_tools_mdx_fast_detect.json */
-    { XX_FILE_TYPE_EA_FSH, 475U, 4U }, /* src/formats/ea_fsh/xx_ea_fsh_fast_detect.json */
-    { XX_FILE_TYPE_EWF2_EX01, 479U, 1U }, /* src/formats/ewf2_ex01/xx_ewf2_ex01_fast_detect.json */
-    { XX_FILE_TYPE_EWF2_LX01, 480U, 1U }, /* src/formats/ewf2_lx01/xx_ewf2_lx01_fast_detect.json */
-    { XX_FILE_TYPE_EWF_L01, 481U, 1U }, /* src/formats/ewf_l01/xx_ewf_l01_fast_detect.json */
-    { XX_FILE_TYPE_FMOD_SAMPLE_BANK, 482U, 5U }, /* src/formats/fmod_sample_bank/xx_fmod_sample_bank_fast_detect.json */
-    { XX_FILE_TYPE_HSF, 487U, 1U }, /* src/formats/hsf/xx_hsf_fast_detect.json */
-    { XX_FILE_TYPE_HTC_NBH_ROM_IMAGE, 488U, 1U }, /* src/formats/htc_nbh_rom_image/xx_htc_nbh_rom_image_fast_detect.json */
-    { XX_FILE_TYPE_LIVEMAKER, 489U, 1U }, /* src/formats/livemaker/xx_livemaker_fast_detect.json */
-    { XX_FILE_TYPE_MAXIS_FAR_ARCHIVE, 490U, 1U }, /* src/formats/maxis_far_archive/xx_maxis_far_archive_fast_detect.json */
-    { XX_FILE_TYPE_MINIX, 491U, 10U }, /* src/formats/minix/xx_minix_fast_detect.json */
-    { XX_FILE_TYPE_NOA, 501U, 2U }, /* src/formats/noa/xx_noa_fast_detect.json */
-    { XX_FILE_TYPE_OUTLOOK_EXPRESS_DBX_MAILBOX, 503U, 1U }, /* src/formats/outlook_express_dbx_mailbox/xx_outlook_express_dbx_mailbox_fast_detect.json */
-    { XX_FILE_TYPE_PARTCLONE_IMAGE, 504U, 1U }, /* src/formats/partclone_image/xx_partclone_image_fast_detect.json */
-    { XX_FILE_TYPE_PPMD, 505U, 2U }, /* src/formats/ppmd/xx_ppmd_fast_detect.json */
-    { XX_FILE_TYPE_RPG_MAKER_RGSSAD, 507U, 2U }, /* src/formats/rpg_maker_rgssad/xx_rpg_maker_rgssad_fast_detect.json */
-    { XX_FILE_TYPE_SFARK_COMPRESSED_SOUNDFONT, 509U, 1U }, /* src/formats/sfark_compressed_soundfont/xx_sfark_compressed_soundfont_fast_detect.json */
-    { XX_FILE_TYPE_SPECTRUM_UDI, 510U, 1U }, /* src/formats/spectrum_udi/xx_spectrum_udi_fast_detect.json */
-    { XX_FILE_TYPE_STUFFITX, 511U, 1U }, /* src/formats/stuffitx/xx_stuffitx_fast_detect.json */
-    { XX_FILE_TYPE_SUFS, 512U, 2U }, /* src/formats/sufs/xx_sufs_fast_detect.json */
-    { XX_FILE_TYPE_UFS2, 514U, 8U }, /* src/formats/ufs2/xx_ufs2_fast_detect.json */
-    { XX_FILE_TYPE_UIF, 522U, 1U }, /* src/formats/uif/xx_uif_fast_detect.json */
-    { XX_FILE_TYPE_VALVE_XZP, 523U, 1U }, /* src/formats/valve_xzp/xx_valve_xzp_fast_detect.json */
-    { XX_FILE_TYPE_VMDK_COWD_SPARSE, 524U, 1U }, /* src/formats/vmdk_cowd_sparse/xx_vmdk_cowd_sparse_fast_detect.json */
-    { XX_FILE_TYPE_VMDK_SESPARSE, 525U, 1U }, /* src/formats/vmdk_sesparse/xx_vmdk_sesparse_fast_detect.json */
-    { XX_FILE_TYPE_XIAOMI_HDR1, 526U, 1U }, /* src/formats/xiaomi_hdr1/xx_xiaomi_hdr1_fast_detect.json */
-    { XX_FILE_TYPE_XIAOMI_HDR2, 527U, 1U }, /* src/formats/xiaomi_hdr2/xx_xiaomi_hdr2_fast_detect.json */
-    { XX_FILE_TYPE_XPK_COMPRESSED_FILE, 528U, 1U }, /* src/formats/xpk_compressed_file/xx_xpk_compressed_file_fast_detect.json */
-    { XX_FILE_TYPE_YPF, 529U, 1U }, /* src/formats/ypf/xx_ypf_fast_detect.json */
-    { XX_FILE_TYPE_BZIP1, 530U, 9U }, /* src/formats/bzip1/xx_bzip1_fast_detect.json */
-    { XX_FILE_TYPE_FREEZE, 539U, 2U }, /* src/formats/freeze/xx_freeze_fast_detect.json */
-    { XX_FILE_TYPE_SDI, 541U, 1U }, /* src/formats/sdi/xx_sdi_fast_detect.json */
-    { XX_FILE_TYPE_HFS, 542U, 1U }, /* src/formats/hfs/xx_hfs_fast_detect.json */
-    { XX_FILE_TYPE_APRIDISK, 543U, 1U }, /* src/formats/apridisk/xx_apridisk_fast_detect.json */
-    { XX_FILE_TYPE_CKP, 544U, 1U }, /* src/formats/ckp/xx_ckp_fast_detect.json */
-    { XX_FILE_TYPE_EDP, 545U, 1U }, /* src/formats/edp/xx_edp_fast_detect.json */
-    { XX_FILE_TYPE_PARSEC_RIB, 546U, 1U }, /* src/formats/parsec_rib/xx_parsec_rib_fast_detect.json */
-    { XX_FILE_TYPE_PTERO_BIGF, 547U, 1U }, /* src/formats/ptero_bigf/xx_ptero_bigf_fast_detect.json */
-    { XX_FILE_TYPE_RVZ, 548U, 1U }, /* src/formats/rvz/xx_rvz_fast_detect.json */
-    { XX_FILE_TYPE_NSIS, 549U, 13U }, /* src/formats/nsis/xx_nsis_fast_detect.json */
-    { XX_FILE_TYPE_EXCELSIOR_INSTALLER, 562U, 1U }, /* src/formats/excelsior/xx_excelsior_fast_detect.json */
-    { XX_FILE_TYPE_ZXML, 563U, 1U }, /* src/formats/zxml/xx_zxml_fast_detect.json */
-    { XX_FILE_TYPE_ZISOFS, 564U, 1U }, /* src/formats/zisofs/xx_zisofs_fast_detect.json */
-    { XX_FILE_TYPE_NVP, 565U, 1U }, /* src/formats/nvp/xx_nvp_fast_detect.json */
-    { XX_FILE_TYPE_SQZE, 566U, 1U }, /* src/formats/sqze/xx_sqze_fast_detect.json */
-    { XX_FILE_TYPE_DCS, 567U, 1U }, /* src/formats/dcs/xx_dcs_fast_detect.json */
-    { XX_FILE_TYPE_MSKN1, 568U, 1U }, /* src/formats/mskn1/xx_mskn1_fast_detect.json */
-    { XX_FILE_TYPE_MSKN2, 569U, 1U }, /* src/formats/mskn2/xx_mskn2_fast_detect.json */
-    { XX_FILE_TYPE_MSKN3, 570U, 1U }, /* src/formats/mskn3/xx_mskn3_fast_detect.json */
-    { XX_FILE_TYPE_CSQ, 571U, 1U }, /* src/formats/csq/xx_csq_fast_detect.json */
-    { XX_FILE_TYPE_ZOOT1, 572U, 1U }, /* src/formats/zoot1/xx_zoot1_fast_detect.json */
-    { XX_FILE_TYPE_RDFZ, 573U, 1U }, /* src/formats/rdfz/xx_rdfz_fast_detect.json */
-    { XX_FILE_TYPE_ZBEOS, 574U, 1U }, /* src/formats/zbeos/xx_zbeos_fast_detect.json */
-    { XX_FILE_TYPE_SOLARISPKG_ZIP, 575U, 1U }, /* src/formats/solarispkg_zip/xx_solarispkg_zip_fast_detect.json */
-    { XX_FILE_TYPE_GTA_IMG, 576U, 1U }, /* src/formats/gta_img/xx_gta_img_fast_detect.json */
-    { XX_FILE_TYPE_PIRS, 577U, 3U }, /* src/formats/pirs/xx_pirs_fast_detect.json */
-    { XX_FILE_TYPE_PAM_PAK, 580U, 1U }, /* src/formats/pam_pak/xx_pam_pak_fast_detect.json */
-    { XX_FILE_TYPE_PFPK, 581U, 1U }, /* src/formats/pfpk/xx_pfpk_fast_detect.json */
-    { XX_FILE_TYPE_PX, 582U, 1U }, /* src/formats/px/xx_px_fast_detect.json */
-    { XX_FILE_TYPE_SBPAK, 583U, 1U }, /* src/formats/sbpak/xx_sbpak_fast_detect.json */
-    { XX_FILE_TYPE_TITAN_QUEST, 584U, 1U }, /* src/formats/titan_quest/xx_titan_quest_fast_detect.json */
-    { XX_FILE_TYPE_CGJP, 585U, 1U }, /* src/formats/cgjp/xx_cgjp_fast_detect.json */
-    { XX_FILE_TYPE_BIRDIES, 586U, 3U }, /* src/formats/birdies/xx_birdies_fast_detect.json */
-    { XX_FILE_TYPE_XUIZ, 589U, 1U }, /* src/formats/xuiz/xx_xuiz_fast_detect.json */
-    { XX_FILE_TYPE_DESKSOFT, 590U, 1U }, /* src/formats/desksoft/xx_desksoft_fast_detect.json */
-    { XX_FILE_TYPE_METAPRODUCTS, 591U, 1U }, /* src/formats/metaproducts/xx_metaproducts_fast_detect.json */
-    { XX_FILE_TYPE_VISUALWARE, 592U, 1U }, /* src/formats/visualware/xx_visualware_fast_detect.json */
-    { XX_FILE_TYPE_AUDIALS, 593U, 1U }, /* src/formats/audials/xx_audials_fast_detect.json */
-    { XX_FILE_TYPE_ASD, 594U, 1U }, /* src/formats/asd/xx_asd_fast_detect.json */
-    { XX_FILE_TYPE_FOX_SQZ, 595U, 1U }, /* src/formats/fox_sqz/xx_fox_sqz_fast_detect.json */
-    { XX_FILE_TYPE_SKF, 596U, 2U }, /* src/formats/skf/xx_skf_fast_detect.json */
-    { XX_FILE_TYPE_LDS, 598U, 1U }, /* src/formats/lds/xx_lds_fast_detect.json */
-    { XX_FILE_TYPE_PSA_DISK, 599U, 1U }, /* src/formats/psa_disk/xx_psa_disk_fast_detect.json */
-    { XX_FILE_TYPE_DCP_DISK, 600U, 1U }, /* src/formats/dcp_disk/xx_dcp_disk_fast_detect.json */
-    { XX_FILE_TYPE_SONY_IMAGE, 601U, 1U }, /* src/formats/sony_image/xx_sony_image_fast_detect.json */
-    { XX_FILE_TYPE_PARSEC_DTC, 602U, 1U }, /* src/formats/parsec_dtc/xx_parsec_dtc_fast_detect.json */
-    { XX_FILE_TYPE_PARSEC_DMA, 603U, 1U }, /* src/formats/parsec_dma/xx_parsec_dma_fast_detect.json */
-    { XX_FILE_TYPE_PALLADIX_MUS, 604U, 1U }, /* src/formats/palladix_mus/xx_palladix_mus_fast_detect.json */
-    { XX_FILE_TYPE_PALLADIX_SND, 605U, 1U }, /* src/formats/palladix_snd/xx_palladix_snd_fast_detect.json */
-    { XX_FILE_TYPE_PALLADIX_PMA, 606U, 1U }, /* src/formats/palladix_pma/xx_palladix_pma_fast_detect.json */
-    { XX_FILE_TYPE_MDH, 607U, 1U }, /* src/formats/mdh/xx_mdh_fast_detect.json */
-    { XX_FILE_TYPE_SM8, 608U, 1U }, /* src/formats/sm8/xx_sm8_fast_detect.json */
-    { XX_FILE_TYPE_SAR, 609U, 3U }, /* src/formats/sar/xx_sar_fast_detect.json */
-    { XX_FILE_TYPE_LARC_PFX, 612U, 1U }, /* src/formats/larc_pfx/xx_larc_pfx_fast_detect.json */
-    { XX_FILE_TYPE_BFLT, 613U, 1U }, /* src/formats/bflt/xx_bflt_fast_detect.json */
-    { XX_FILE_TYPE_CGC, 614U, 1U }, /* src/formats/cgc/xx_cgc_fast_detect.json */
-    { XX_FILE_TYPE_MENUET, 615U, 3U }, /* src/formats/menuet/xx_menuet_fast_detect.json */
-    { XX_FILE_TYPE_PLAN9_EXEC, 618U, 14U }, /* src/formats/plan9_exec/xx_plan9_exec_fast_detect.json */
-    { XX_FILE_TYPE_SEGA_SMS_ROM, 632U, 3U }, /* src/formats/sega_sms_rom/xx_sega_sms_rom_fast_detect.json */
-    { XX_FILE_TYPE_NINTENDO_NRO, 635U, 1U }, /* src/formats/nintendo_nro/xx_nintendo_nro_fast_detect.json */
-    { XX_FILE_TYPE_NINTENDO_NSO, 636U, 1U }, /* src/formats/nintendo_nso/xx_nintendo_nso_fast_detect.json */
-    { XX_FILE_TYPE_WINDOWS_DMP64, 637U, 1U }, /* src/formats/windows_dmp64/xx_windows_dmp64_fast_detect.json */
-    { XX_FILE_TYPE_OMF, 638U, 2U }, /* src/formats/omf/xx_omf_fast_detect.json */
-    { XX_FILE_TYPE_XTAC, 640U, 1U }, /* src/formats/xtac/xx_xtac_fast_detect.json */
-    { XX_FILE_TYPE_PEBBLE, 641U, 1U }, /* src/formats/pebble/xx_pebble_fast_detect.json */
-    { XX_FILE_TYPE_HP_SOM, 642U, 7U }, /* src/formats/hp_som/xx_hp_som_fast_detect.json */
-    { XX_FILE_TYPE_XCOFF, 649U, 6U }, /* src/formats/xcoff/xx_xcoff_fast_detect.json */
+    { XX_FILE_TYPE_ICO, 422U, 2U }, /* src/formats/ico/xx_ico_fast_detect.json */
+    { XX_FILE_TYPE_VALVE_BSP, 424U, 1U }, /* src/formats/valve_bsp/xx_valve_bsp_fast_detect.json */
+    { XX_FILE_TYPE_SONY_PSARC, 425U, 1U }, /* src/formats/sony_psarc/xx_sony_psarc_fast_detect.json */
+    { XX_FILE_TYPE_SFNT, 426U, 4U }, /* src/formats/sfnt/xx_sfnt_fast_detect.json */
+    { XX_FILE_TYPE_LMD_CONTAINER, 430U, 2U }, /* src/formats/lmd_container/xx_lmd_container_fast_detect.json */
+    { XX_FILE_TYPE_KIRIKIRI_XP3, 432U, 1U }, /* src/formats/kirikiri_xp3/xx_kirikiri_xp3_fast_detect.json */
+    { XX_FILE_TYPE_RENPY_RPA, 433U, 5U }, /* src/formats/renpy_rpa/xx_renpy_rpa_fast_detect.json */
+    { XX_FILE_TYPE_SQLITE3, 438U, 1U }, /* src/formats/sqlite3/xx_sqlite3_fast_detect.json */
+    { XX_FILE_TYPE_CRX, 439U, 2U }, /* src/formats/crx_native/xx_crx_native_fast_detect.json */
+    { XX_FILE_TYPE_NINTENDO_WBFS, 441U, 1U }, /* src/formats/nintendo_wbfs/xx_nintendo_wbfs_fast_detect.json */
+    { XX_FILE_TYPE_VICE_X64, 442U, 1U }, /* src/formats/vice_x64/xx_vice_x64_fast_detect.json */
+    { XX_FILE_TYPE_BINARY_PLIST, 443U, 1U }, /* src/formats/binary_plist/xx_binary_plist_fast_detect.json */
+    { XX_FILE_TYPE_JASC_PALETTE, 444U, 1U }, /* src/formats/jasc_palette/xx_jasc_palette_fast_detect.json */
+    { XX_FILE_TYPE_AMIGA_DISKOBJECT, 445U, 1U }, /* src/formats/amiga_diskobject/xx_amiga_diskobject_fast_detect.json */
+    { XX_FILE_TYPE_HXC_STREAM_HFE, 446U, 1U }, /* src/formats/hxc_stream_hfe/xx_hxc_stream_hfe_fast_detect.json */
+    { XX_FILE_TYPE_QNAP_NAS_FIRMWARE, 447U, 1U }, /* src/formats/qnap_nas_firmware/xx_qnap_nas_firmware_fast_detect.json */
+    { XX_FILE_TYPE_RDB, 448U, 16U }, /* src/formats/rdb/xx_rdb_fast_detect.json */
+    { XX_FILE_TYPE_T98_NEXT_NFD, 464U, 2U }, /* src/formats/t98_next_nfd/xx_t98_next_nfd_fast_detect.json */
+    { XX_FILE_TYPE_VISIONAIRE_STUDIO_VIS, 466U, 1U }, /* src/formats/visionaire_studio_vis/xx_visionaire_studio_vis_fast_detect.json */
+    { XX_FILE_TYPE_X68000_DIM, 467U, 1U }, /* src/formats/x68000_dim/xx_x68000_dim_fast_detect.json */
+    { XX_FILE_TYPE_BLINDWRITE_5_6_IMAGE, 468U, 1U }, /* src/formats/blindwrite_5_6_image/xx_blindwrite_5_6_image_fast_detect.json */
+    { XX_FILE_TYPE_BTRFS_STREAM, 469U, 1U }, /* src/formats/btrfs_stream/xx_btrfs_stream_fast_detect.json */
+    { XX_FILE_TYPE_CPK, 470U, 1U }, /* src/formats/cpk/xx_cpk_fast_detect.json */
+    { XX_FILE_TYPE_D_LINK_ALPHA_ENCIMG_V2, 471U, 2U }, /* src/formats/d_link_alpha_encimg_v2/xx_d_link_alpha_encimg_v2_fast_detect.json */
+    { XX_FILE_TYPE_D_LINK_FPKG_CPKG, 473U, 2U }, /* src/formats/d_link_fpkg_cpkg/xx_d_link_fpkg_cpkg_fast_detect.json */
+    { XX_FILE_TYPE_DAEMON_TOOLS_MDX, 475U, 1U }, /* src/formats/daemon_tools_mdx/xx_daemon_tools_mdx_fast_detect.json */
+    { XX_FILE_TYPE_EA_FSH, 476U, 4U }, /* src/formats/ea_fsh/xx_ea_fsh_fast_detect.json */
+    { XX_FILE_TYPE_EWF2_EX01, 480U, 1U }, /* src/formats/ewf2_ex01/xx_ewf2_ex01_fast_detect.json */
+    { XX_FILE_TYPE_EWF2_LX01, 481U, 1U }, /* src/formats/ewf2_lx01/xx_ewf2_lx01_fast_detect.json */
+    { XX_FILE_TYPE_EWF_L01, 482U, 1U }, /* src/formats/ewf_l01/xx_ewf_l01_fast_detect.json */
+    { XX_FILE_TYPE_FMOD_SAMPLE_BANK, 483U, 5U }, /* src/formats/fmod_sample_bank/xx_fmod_sample_bank_fast_detect.json */
+    { XX_FILE_TYPE_HSF, 488U, 1U }, /* src/formats/hsf/xx_hsf_fast_detect.json */
+    { XX_FILE_TYPE_HTC_NBH_ROM_IMAGE, 489U, 1U }, /* src/formats/htc_nbh_rom_image/xx_htc_nbh_rom_image_fast_detect.json */
+    { XX_FILE_TYPE_LIVEMAKER, 490U, 1U }, /* src/formats/livemaker/xx_livemaker_fast_detect.json */
+    { XX_FILE_TYPE_MAXIS_FAR_ARCHIVE, 491U, 1U }, /* src/formats/maxis_far_archive/xx_maxis_far_archive_fast_detect.json */
+    { XX_FILE_TYPE_MINIX, 492U, 10U }, /* src/formats/minix/xx_minix_fast_detect.json */
+    { XX_FILE_TYPE_NOA, 502U, 2U }, /* src/formats/noa/xx_noa_fast_detect.json */
+    { XX_FILE_TYPE_OUTLOOK_EXPRESS_DBX_MAILBOX, 504U, 1U }, /* src/formats/outlook_express_dbx_mailbox/xx_outlook_express_dbx_mailbox_fast_detect.json */
+    { XX_FILE_TYPE_PARTCLONE_IMAGE, 505U, 1U }, /* src/formats/partclone_image/xx_partclone_image_fast_detect.json */
+    { XX_FILE_TYPE_PPMD, 506U, 2U }, /* src/formats/ppmd/xx_ppmd_fast_detect.json */
+    { XX_FILE_TYPE_RPG_MAKER_RGSSAD, 508U, 2U }, /* src/formats/rpg_maker_rgssad/xx_rpg_maker_rgssad_fast_detect.json */
+    { XX_FILE_TYPE_SFARK_COMPRESSED_SOUNDFONT, 510U, 1U }, /* src/formats/sfark_compressed_soundfont/xx_sfark_compressed_soundfont_fast_detect.json */
+    { XX_FILE_TYPE_SPECTRUM_UDI, 511U, 1U }, /* src/formats/spectrum_udi/xx_spectrum_udi_fast_detect.json */
+    { XX_FILE_TYPE_STUFFITX, 512U, 1U }, /* src/formats/stuffitx/xx_stuffitx_fast_detect.json */
+    { XX_FILE_TYPE_SUFS, 513U, 2U }, /* src/formats/sufs/xx_sufs_fast_detect.json */
+    { XX_FILE_TYPE_UFS2, 515U, 8U }, /* src/formats/ufs2/xx_ufs2_fast_detect.json */
+    { XX_FILE_TYPE_UIF, 523U, 1U }, /* src/formats/uif/xx_uif_fast_detect.json */
+    { XX_FILE_TYPE_VALVE_XZP, 524U, 1U }, /* src/formats/valve_xzp/xx_valve_xzp_fast_detect.json */
+    { XX_FILE_TYPE_VMDK_COWD_SPARSE, 525U, 1U }, /* src/formats/vmdk_cowd_sparse/xx_vmdk_cowd_sparse_fast_detect.json */
+    { XX_FILE_TYPE_VMDK_SESPARSE, 526U, 1U }, /* src/formats/vmdk_sesparse/xx_vmdk_sesparse_fast_detect.json */
+    { XX_FILE_TYPE_XIAOMI_HDR1, 527U, 1U }, /* src/formats/xiaomi_hdr1/xx_xiaomi_hdr1_fast_detect.json */
+    { XX_FILE_TYPE_XIAOMI_HDR2, 528U, 1U }, /* src/formats/xiaomi_hdr2/xx_xiaomi_hdr2_fast_detect.json */
+    { XX_FILE_TYPE_XPK_COMPRESSED_FILE, 529U, 1U }, /* src/formats/xpk_compressed_file/xx_xpk_compressed_file_fast_detect.json */
+    { XX_FILE_TYPE_YPF, 530U, 1U }, /* src/formats/ypf/xx_ypf_fast_detect.json */
+    { XX_FILE_TYPE_BZIP1, 531U, 9U }, /* src/formats/bzip1/xx_bzip1_fast_detect.json */
+    { XX_FILE_TYPE_FREEZE, 540U, 2U }, /* src/formats/freeze/xx_freeze_fast_detect.json */
+    { XX_FILE_TYPE_SDI, 542U, 1U }, /* src/formats/sdi/xx_sdi_fast_detect.json */
+    { XX_FILE_TYPE_HFS, 543U, 1U }, /* src/formats/hfs/xx_hfs_fast_detect.json */
+    { XX_FILE_TYPE_APRIDISK, 544U, 1U }, /* src/formats/apridisk/xx_apridisk_fast_detect.json */
+    { XX_FILE_TYPE_CKP, 545U, 1U }, /* src/formats/ckp/xx_ckp_fast_detect.json */
+    { XX_FILE_TYPE_EDP, 546U, 1U }, /* src/formats/edp/xx_edp_fast_detect.json */
+    { XX_FILE_TYPE_PARSEC_RIB, 547U, 1U }, /* src/formats/parsec_rib/xx_parsec_rib_fast_detect.json */
+    { XX_FILE_TYPE_PTERO_BIGF, 548U, 1U }, /* src/formats/ptero_bigf/xx_ptero_bigf_fast_detect.json */
+    { XX_FILE_TYPE_RVZ, 549U, 1U }, /* src/formats/rvz/xx_rvz_fast_detect.json */
+    { XX_FILE_TYPE_NSIS, 550U, 13U }, /* src/formats/nsis/xx_nsis_fast_detect.json */
+    { XX_FILE_TYPE_EXCELSIOR_INSTALLER, 563U, 1U }, /* src/formats/excelsior/xx_excelsior_fast_detect.json */
+    { XX_FILE_TYPE_ZXML, 564U, 1U }, /* src/formats/zxml/xx_zxml_fast_detect.json */
+    { XX_FILE_TYPE_ZISOFS, 565U, 1U }, /* src/formats/zisofs/xx_zisofs_fast_detect.json */
+    { XX_FILE_TYPE_NVP, 566U, 1U }, /* src/formats/nvp/xx_nvp_fast_detect.json */
+    { XX_FILE_TYPE_SQZE, 567U, 1U }, /* src/formats/sqze/xx_sqze_fast_detect.json */
+    { XX_FILE_TYPE_DCS, 568U, 1U }, /* src/formats/dcs/xx_dcs_fast_detect.json */
+    { XX_FILE_TYPE_MSKN1, 569U, 1U }, /* src/formats/mskn1/xx_mskn1_fast_detect.json */
+    { XX_FILE_TYPE_MSKN2, 570U, 1U }, /* src/formats/mskn2/xx_mskn2_fast_detect.json */
+    { XX_FILE_TYPE_MSKN3, 571U, 1U }, /* src/formats/mskn3/xx_mskn3_fast_detect.json */
+    { XX_FILE_TYPE_CSQ, 572U, 1U }, /* src/formats/csq/xx_csq_fast_detect.json */
+    { XX_FILE_TYPE_ZOOT1, 573U, 1U }, /* src/formats/zoot1/xx_zoot1_fast_detect.json */
+    { XX_FILE_TYPE_RDFZ, 574U, 1U }, /* src/formats/rdfz/xx_rdfz_fast_detect.json */
+    { XX_FILE_TYPE_ZBEOS, 575U, 1U }, /* src/formats/zbeos/xx_zbeos_fast_detect.json */
+    { XX_FILE_TYPE_SOLARISPKG_ZIP, 576U, 1U }, /* src/formats/solarispkg_zip/xx_solarispkg_zip_fast_detect.json */
+    { XX_FILE_TYPE_GTA_IMG, 577U, 1U }, /* src/formats/gta_img/xx_gta_img_fast_detect.json */
+    { XX_FILE_TYPE_PIRS, 578U, 3U }, /* src/formats/pirs/xx_pirs_fast_detect.json */
+    { XX_FILE_TYPE_PAM_PAK, 581U, 1U }, /* src/formats/pam_pak/xx_pam_pak_fast_detect.json */
+    { XX_FILE_TYPE_PFPK, 582U, 1U }, /* src/formats/pfpk/xx_pfpk_fast_detect.json */
+    { XX_FILE_TYPE_PX, 583U, 1U }, /* src/formats/px/xx_px_fast_detect.json */
+    { XX_FILE_TYPE_SBPAK, 584U, 1U }, /* src/formats/sbpak/xx_sbpak_fast_detect.json */
+    { XX_FILE_TYPE_TITAN_QUEST, 585U, 1U }, /* src/formats/titan_quest/xx_titan_quest_fast_detect.json */
+    { XX_FILE_TYPE_CGJP, 586U, 1U }, /* src/formats/cgjp/xx_cgjp_fast_detect.json */
+    { XX_FILE_TYPE_BIRDIES, 587U, 3U }, /* src/formats/birdies/xx_birdies_fast_detect.json */
+    { XX_FILE_TYPE_XUIZ, 590U, 1U }, /* src/formats/xuiz/xx_xuiz_fast_detect.json */
+    { XX_FILE_TYPE_DESKSOFT, 591U, 1U }, /* src/formats/desksoft/xx_desksoft_fast_detect.json */
+    { XX_FILE_TYPE_METAPRODUCTS, 592U, 1U }, /* src/formats/metaproducts/xx_metaproducts_fast_detect.json */
+    { XX_FILE_TYPE_VISUALWARE, 593U, 1U }, /* src/formats/visualware/xx_visualware_fast_detect.json */
+    { XX_FILE_TYPE_AUDIALS, 594U, 1U }, /* src/formats/audials/xx_audials_fast_detect.json */
+    { XX_FILE_TYPE_ASD, 595U, 1U }, /* src/formats/asd/xx_asd_fast_detect.json */
+    { XX_FILE_TYPE_FOX_SQZ, 596U, 1U }, /* src/formats/fox_sqz/xx_fox_sqz_fast_detect.json */
+    { XX_FILE_TYPE_SKF, 597U, 2U }, /* src/formats/skf/xx_skf_fast_detect.json */
+    { XX_FILE_TYPE_LDS, 599U, 1U }, /* src/formats/lds/xx_lds_fast_detect.json */
+    { XX_FILE_TYPE_PSA_DISK, 600U, 1U }, /* src/formats/psa_disk/xx_psa_disk_fast_detect.json */
+    { XX_FILE_TYPE_DCP_DISK, 601U, 1U }, /* src/formats/dcp_disk/xx_dcp_disk_fast_detect.json */
+    { XX_FILE_TYPE_SONY_IMAGE, 602U, 1U }, /* src/formats/sony_image/xx_sony_image_fast_detect.json */
+    { XX_FILE_TYPE_PARSEC_DTC, 603U, 1U }, /* src/formats/parsec_dtc/xx_parsec_dtc_fast_detect.json */
+    { XX_FILE_TYPE_PARSEC_DMA, 604U, 1U }, /* src/formats/parsec_dma/xx_parsec_dma_fast_detect.json */
+    { XX_FILE_TYPE_PALLADIX_MUS, 605U, 1U }, /* src/formats/palladix_mus/xx_palladix_mus_fast_detect.json */
+    { XX_FILE_TYPE_PALLADIX_SND, 606U, 1U }, /* src/formats/palladix_snd/xx_palladix_snd_fast_detect.json */
+    { XX_FILE_TYPE_PALLADIX_PMA, 607U, 1U }, /* src/formats/palladix_pma/xx_palladix_pma_fast_detect.json */
+    { XX_FILE_TYPE_MDH, 608U, 1U }, /* src/formats/mdh/xx_mdh_fast_detect.json */
+    { XX_FILE_TYPE_SM8, 609U, 1U }, /* src/formats/sm8/xx_sm8_fast_detect.json */
+    { XX_FILE_TYPE_SAR, 610U, 3U }, /* src/formats/sar/xx_sar_fast_detect.json */
+    { XX_FILE_TYPE_LARC_PFX, 613U, 1U }, /* src/formats/larc_pfx/xx_larc_pfx_fast_detect.json */
+    { XX_FILE_TYPE_BFLT, 614U, 1U }, /* src/formats/bflt/xx_bflt_fast_detect.json */
+    { XX_FILE_TYPE_CGC, 615U, 1U }, /* src/formats/cgc/xx_cgc_fast_detect.json */
+    { XX_FILE_TYPE_MENUET, 616U, 3U }, /* src/formats/menuet/xx_menuet_fast_detect.json */
+    { XX_FILE_TYPE_PLAN9_EXEC, 619U, 14U }, /* src/formats/plan9_exec/xx_plan9_exec_fast_detect.json */
+    { XX_FILE_TYPE_SEGA_SMS_ROM, 633U, 3U }, /* src/formats/sega_sms_rom/xx_sega_sms_rom_fast_detect.json */
+    { XX_FILE_TYPE_NINTENDO_NRO, 636U, 1U }, /* src/formats/nintendo_nro/xx_nintendo_nro_fast_detect.json */
+    { XX_FILE_TYPE_NINTENDO_NSO, 637U, 1U }, /* src/formats/nintendo_nso/xx_nintendo_nso_fast_detect.json */
+    { XX_FILE_TYPE_WINDOWS_DMP64, 638U, 1U }, /* src/formats/windows_dmp64/xx_windows_dmp64_fast_detect.json */
+    { XX_FILE_TYPE_OMF, 639U, 2U }, /* src/formats/omf/xx_omf_fast_detect.json */
+    { XX_FILE_TYPE_XTAC, 641U, 1U }, /* src/formats/xtac/xx_xtac_fast_detect.json */
+    { XX_FILE_TYPE_PEBBLE, 642U, 1U }, /* src/formats/pebble/xx_pebble_fast_detect.json */
+    { XX_FILE_TYPE_HP_SOM, 643U, 7U }, /* src/formats/hp_som/xx_hp_som_fast_detect.json */
+    { XX_FILE_TYPE_XCOFF, 650U, 6U }, /* src/formats/xcoff/xx_xcoff_fast_detect.json */
 };
 static const size_t fast_type_count = 377U;

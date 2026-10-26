@@ -24,6 +24,7 @@
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/rt/xx_rt.h"
 #include "xx_scan_resources_internal.h"
+#include "xxfclib/formats/xx_format_stream_features.h"
 #include "xx_scan_archives_internal.h"
 
 #if defined(_MSC_VER)
@@ -294,6 +295,7 @@ typedef struct xx_scan_resources_context {
     xx_scan_result *result;
 } xx_scan_resources_context;
 
+#if XXFC_ENABLE_STREAM_RESOURCES
 /* The resource reader lends its record only for this call. Scan the payload
  * synchronously and merge before its view and result are released. */
 static bool xx_scan_run_resource(void *context, const xx_resource_record *resource, xx_pd_struct *pd)
@@ -381,6 +383,8 @@ static xx_scan_result *xx_scan_run_resources(xx_scan_engine *engine, xx_io_devic
     }
     return result;
 }
+
+#endif
 
 /* The extraction helper owns the decoded device and lends it only for this
  * synchronous callback. Packed positions and decoded positions stay distinct. */
@@ -622,7 +626,15 @@ static xx_scan_result *xx_scan_internal(xx_scan_engine *engine, xx_io_device *de
     }
     if (!xx_scan_resolve_options(engine, scan_device, &resolved, pd)) goto done;
     result = xx_scan_run_plan(engine, scan_device, &resolved, forbidden_result, pd);
-    if (result && resolved.resources_scan) result = xx_scan_run_resources(engine, scan_device, &resolved, result, pd);
+    if (result && resolved.resources_scan) {
+#if XXFC_ENABLE_STREAM_RESOURCES
+        result = xx_scan_run_resources(engine, scan_device, &resolved, result, pd);
+#else
+        xx_pd_set_error(pd, XXFC_ERR_INVALID_ARG, "Resource stream support is disabled in this build");
+        engine->free_result(engine, result);
+        result = NULL;
+#endif
+    }
     if (result && resolved.archives_scan) result = xx_scan_run_archives(engine, scan_device, &resolved, result, pd);
     if (result && resolved.overlay_scan) result = xx_scan_run_overlay(engine, scan_device, &resolved, result, pd);
 

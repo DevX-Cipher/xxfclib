@@ -115,11 +115,26 @@ static bool sfx_carrier_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
 {
     static const uint8_t sig[] = {0x4b, 0x2a};
     int64_t low;
+    int64_t overlay, cab, cabend;
     if (sfx_carrier_comments(f, s, pd)) return true;
     if (!sfx_carrier_carrier(f, false, &low, pd)) {
         return false;
     }
-    low = 64;
+    if (carrier_pe(f, &overlay, &cab, &cabend, pd)) {
+        Abstractformat *nested = nested_open(f->device, f->base_address + low);
+        if (nested) {
+            bool valid = xx_format_handle_base_info(nested, pd);
+            int64_t size = nested->format_size;
+            if (valid && size > 0 && carrier_range(pm_available(f), low, (uint64_t)size)) {
+                nested_close(nested);
+                if (!pm_add(f, s, "payload.rtp", low, size)) return false;
+                s->size = low + size;
+                return true;
+            }
+            nested_close(nested);
+        }
+        return false;
+    }
     return sfx_carrier_embedded(f, s, low, sig, sizeof(sig), 0, nested_open, nested_close, "payload.rtp", pd);
 }
 

@@ -28,9 +28,10 @@ static void xx_ico_search_close(Abstractformat *format)
 }
 
 static const uint8_t anchor_bytes[] = {0x00, 0x00, 0x01, 0x00};
-static const xx_format_search_anchor anchors[] = {{anchor_bytes, sizeof(anchor_bytes), 0}};
+static const uint8_t cursor_anchor_bytes[] = {0x00, 0x00, 0x02, 0x00};
+static const xx_format_search_anchor anchors[] = {{anchor_bytes, sizeof(anchor_bytes), 0}, {cursor_anchor_bytes, sizeof(cursor_anchor_bytes), 0}};
 
-static const xx_format_search_desc k_desc = {k_types, sizeof(k_types) / sizeof(k_types[0]), anchors, 1U, xx_ico_search_open, xx_ico_search_close, false};
+static const xx_format_search_desc k_desc = {k_types, sizeof(k_types) / sizeof(k_types[0]), anchors, 2U, xx_ico_search_open, xx_ico_search_close, false};
 
 static xx_format_search_state *xx_ico_create_format_search(xx_format_extractor *self, xx_io_device *device, const xx_list_s *options, xx_pd_struct *pd)
 {

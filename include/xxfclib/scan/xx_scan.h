@@ -112,12 +112,25 @@ typedef struct {
     XFileType fileType;
     DBKind databaseType;
     int64_t nElapsedTime; /* elapsed execution time in ms (when profiling/scan-time enabled) */
+    char *pTags;          /* owned, normalized semicolon-separated metadata tags             */
 } DBSignature;
+
+/** Retained metadata entry. Keeping the catalog on DBase lets metadata loaded
+ * with the main database also tag records added later from db_custom. */
+typedef struct {
+    char *pName;
+    char *pTags;
+    XFileType fileType;
+    unsigned int databaseKinds; /**< Bit set for each DBKind described by this entry. */
+} DBSignatureMetadata;
 
 typedef struct {
     DBSignature *pRecords;
     int nCount;
     int nCapacity;
+    DBSignatureMetadata *pMetadata;
+    int nMetadataCount;
+    int nMetadataCapacity;
 } DBase;
 
 XXFC_API int db_load(DBase *pDb, const char *pPath, DBKind kind);
@@ -135,6 +148,24 @@ XXFC_API int db_create_tar_precompiled(const char *pDbPath, const char *pTarPath
 XXFC_API void db_sort(DBase *pDb);
 XXFC_API void db_free(DBase *pDb);
 XXFC_API int db_count_for_type(DBase *pDb, XFileType fileType);
+/** Exact ASCII case-insensitive membership in a signature's tag list. */
+XXFC_API int db_signature_has_tag(const DBSignature *signature, const char *tag);
+/** Apply semicolon-separated include/exclude lists. Include is any-match;
+ * exclude is any-match and takes precedence. Empty lists impose no rule. */
+XXFC_API int db_signature_matches_tag_filters(const DBSignature *signature,
+                                              const char *include_tags,
+                                              const char *exclude_tags);
+/**
+ * Return every distinct tag attached to a loaded signature, sorted
+ * case-insensitively and joined with ';' (without a trailing separator).
+ * Tag identity is ASCII case-insensitive; the spelling from the first loaded
+ * signature that uses a tag is preserved. Metadata entries that are not
+ * attached to a loaded signature are not included. The caller owns the
+ * returned string and must release it with xx_rt_free(). An empty database
+ * returns an allocated empty string. NULL is returned only on allocation
+ * failure.
+ */
+XXFC_API char *db_get_used_tags(const DBase *database);
 
 /* --------------------------------------------------------------- options  */
 
@@ -215,6 +246,11 @@ typedef struct xx_scan_options {
     uint64_t archive_max_member_size;
     uint64_t archive_max_total_size;
     uint32_t archive_max_members;
+    /** Borrowed semicolon-separated signature tag filters. A signature must
+     * match at least one include tag when this list is nonempty. Any exclude
+     * match rejects it, including when the same tag is also included. */
+    const char *include_tags;
+    const char *exclude_tags;
 } xx_scan_options;
 typedef struct xx_scan_options xx_scan_options_t;
 

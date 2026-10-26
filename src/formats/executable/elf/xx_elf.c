@@ -4,7 +4,6 @@
 
 #include "xxfclib/formats/executable/elf/xx_elf.h"
 
-#include "xx_elf_data.h"
 
 #include "xxfclib/data/xx_data.h"
 #include "xxfclib/memory/xx_memory.h"
@@ -411,18 +410,7 @@ void xx_elf_init(xx_elf *elf, xx_io_device *device, int64_t base_address)
     elf->format.check_is_valid = xx_elf_check_is_valid;
     elf->format.handle_base_info = xx_elf_handle_base_info;
     elf->format.get_format_size = xx_elf_get_format_size;
-    elf->format.get_number_of_symbols = xx_elf_get_number_of_symbols;
-    elf->format.create_symbols_reading = xx_elf_create_symbols_reading;
-    elf->format.get_current_symbol = xx_elf_get_current_symbol;
-    elf->format.symbol_move_to_next = xx_elf_symbol_move_to_next;
-    elf->format.free_symbols_reading = xx_elf_free_symbols_reading;
-    elf->format.get_number_of_resources = xx_elf_get_number_of_resources;
-    elf->format.create_resources_reading = xx_elf_create_resources_reading;
-    elf->format.get_current_resource = xx_elf_get_current_resource;
-    elf->format.resource_move_to_next = xx_elf_resource_move_to_next;
-    elf->format.free_resources_reading = xx_elf_free_resources_reading;
     elf->format.get_memory_map = xx_elf_get_memory_map;
-    xx_elf_setup_data_struct_callbacks(elf);
     elf->format.destroy = xx_elf_vtable_destroy;
 }
 

@@ -49,7 +49,7 @@ typedef struct bnd_member_s {
     int64_t raw_size;
     uint64_t unpacked_size;
     uint32_t method;
-    uint32_t crc;
+    uint32_t attributes;
     uint32_t dos_time;
     bool folder;
 } bnd_member;
@@ -249,6 +249,7 @@ static bool bnd_parse(Abstractformat *format, bnd_stream **result)
             if (member_header[index] != 0U) goto fail;
         full = record_type == BND_RECORD_FULL;
         xx_mem_zero(&member, sizeof(member));
+        member.attributes = xx_data_get_u32(record + 4U, 4, 0, false);
         member.header_offset = format->base_address + cursor;
         member.data_offset = format->base_address + member_offset;
         member.raw_offset = member.data_offset;
@@ -263,8 +264,8 @@ static bool bnd_parse(Abstractformat *format, bnd_stream **result)
             member.data_offset += BND_MEMBER_HEADER_SIZE;
             member.packed_size = stored - BND_MEMBER_HEADER_SIZE;
             member.unpacked_size = 0U;
-            member.crc = xx_data_get_u32(member_header + 0xbaU, 4, 0, false);
-            member.dos_time = ((xx_data_get_u32(member_header + 0xcaU, 4, 0, false) & 0xffffU) << 16U) | (xx_data_get_u32(member_header + 0xc6U, 4, 0, false) & 0xffffU);
+            member.attributes = xx_data_get_u32(member_header + 0xbaU, 4, 0, false);
+            member.dos_time = ((xx_data_get_u32(member_header + 0xc6U, 4, 0, false) & 0xffffU) << 16U) | (xx_data_get_u32(member_header + 0xcaU, 4, 0, false) & 0xffffU);
             /* The record may hold less than the whole stream (the last member
              * of a volume continues on the next disk).  It may never hold
              * more, and only a complete member may be decoded. */
@@ -360,7 +361,7 @@ static bool bnd_set_record(xx_archive_record *record, const bnd_member *member)
            xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSED_SIZE, (uint64_t)member->packed_size) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_UNCOMPRESSED_SIZE, member->unpacked_size) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSION_METHOD, member->method) &&
-           xx_archive_record_set_meta_u64(record, XX_META_ID_CRC32, member->crc) && xx_archive_record_set_meta_u64(record, XX_META_ID_TIMESTAMP, member->dos_time) &&
+           xx_archive_record_set_meta_u64(record, XX_META_ID_ATTRIBUTES, member->attributes) && xx_archive_record_set_meta_u64(record, XX_META_ID_TIMESTAMP, member->dos_time) &&
            xx_archive_record_set_meta_bool(record, XX_META_ID_IS_FOLDER, member->folder);
 }
 

@@ -215,10 +215,12 @@ static inline int64_t io_get_size(xx_io_device *d)
  * @return Allocated xx_io_device pointer, or NULL on error.
  */
 XXFC_API xx_io_device *xx_io_file_open(const char *path, const char *mode);
+XXFC_API xx_io_device *xx_io_file_open_w(const wchar_t *path, const char *mode);
 /** Seekable 64-bit temporary stream, removed automatically on close. While a
  * memory-only scope is active it is RAM-backed and never spills to disk. */
 XXFC_API xx_io_device *xx_io_temp_open(void);
 XXFC_API xx_io_device *io_file_open(const char *path, const char *mode);
+XXFC_API xx_io_device *io_file_open_w(const wchar_t *path, const char *mode);
 
 /** Memory-only archive work policy, local to the calling thread. Initialize
  * each scope to zero. Begin before opening/detecting an archive and end after

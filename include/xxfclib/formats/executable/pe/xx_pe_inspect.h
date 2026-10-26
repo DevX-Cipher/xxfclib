@@ -153,6 +153,7 @@ typedef struct {
     xx_pe_inspect_import *pImports;
     int nImportCount;
 
+    /* Indexed by the original EAT slot. Unnamed slots remain NULL. */
     char **ppExportFunctions;
     int nExportCount;
 

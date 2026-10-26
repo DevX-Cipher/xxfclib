@@ -6,7 +6,20 @@
 
 static bool xx_reader_only_asf_check(Abstractformat *format, xx_pd_struct *pd) {
     (void)pd;
-    return xx_format_get_file_type_device(format->device) == XX_FILE_TYPE_ASF;
+    uint8_t bytes[16];
+    static const uint8_t magic[16] = {0x30U,0x26U,0xb2U,0x75U,0x8eU,0x66U,0xcfU,0x11U,0xa6U,0xd9U,0x00U,0xaaU,0x00U,0x62U,0xceU,0x6cU};
+    int64_t cursor, total;
+    bool valid;
+    if (!format || !format->device || format->base_address < 0) return false;
+    total = xx_io_total_size(format->device);
+    if (total < format->base_address || total - format->base_address < 16) return false;
+    cursor = xx_io_tell(format->device);
+    if (cursor < 0) return false;
+    valid = xx_io_read_at(format->device, format->base_address + 0, bytes, sizeof(bytes));
+    if (xx_io_seek64(format->device, cursor, SEEK_SET) != 0) return false;
+    if (!valid) return false;
+    for (size_t i = 0; i < sizeof(bytes); ++i) if (bytes[i] != magic[i]) return false;
+    return true;
 }
 static Abstractformat *xx_reader_only_asf_open(xx_io_device *device) {
     Abstractformat *format = xx_format_create(device, 0);
@@ -18,7 +31,20 @@ XX_FORMAT_DEFINE_READER_DESCRIPTOR(asf, XX_FILE_TYPE_ASF)
 
 static bool xx_reader_only_audible_aa_check(Abstractformat *format, xx_pd_struct *pd) {
     (void)pd;
-    return xx_format_get_file_type_device(format->device) == XX_FILE_TYPE_AUDIBLE_AA;
+    uint8_t bytes[4];
+    static const uint8_t magic[4] = {0x57U,0x90U,0x75U,0x36U};
+    int64_t cursor, total;
+    bool valid;
+    if (!format || !format->device || format->base_address < 0) return false;
+    total = xx_io_total_size(format->device);
+    if (total < format->base_address || total - format->base_address < 8) return false;
+    cursor = xx_io_tell(format->device);
+    if (cursor < 0) return false;
+    valid = xx_io_read_at(format->device, format->base_address + 4, bytes, sizeof(bytes));
+    if (xx_io_seek64(format->device, cursor, SEEK_SET) != 0) return false;
+    if (!valid) return false;
+    for (size_t i = 0; i < sizeof(bytes); ++i) if (bytes[i] != magic[i]) return false;
+    return true;
 }
 static Abstractformat *xx_reader_only_audible_aa_open(xx_io_device *device) {
     Abstractformat *format = xx_format_create(device, 0);

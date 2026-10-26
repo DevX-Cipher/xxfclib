@@ -116,7 +116,7 @@ static bool xx_crc32_use_pclmul(size_t size, size_t minimum_size)
 }
 #endif
 
-static uint32_t xx_crc32_mpeg2_raw(uint32_t reg, const void *data, size_t size)
+uint32_t xx_crc32_mpeg2_raw(uint32_t reg, const void *data, size_t size)
 {
     const uint8_t *p = (const uint8_t *)data;
     if (!p || !size) return reg;

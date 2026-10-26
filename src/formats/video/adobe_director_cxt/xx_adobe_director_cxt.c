@@ -40,9 +40,13 @@ static bool pm_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
         size = xx_data_get_u32(c + 4, 4, 0, be);
         next = p + 8U + (uint64_t)size + (size & 1U);
         if (next > total) return false;
-        if (!xx_rt_memcmp(c, "CAS", 3)) seen |= 1U;
-        if (!xx_rt_memcmp(c, "KEY*", 4)) seen |= 2U;
-        if (!xx_rt_memcmp(c, "snd", 3)) seen |= 4U;
+        /* XFIR stores FourCC words little-endian. Retain support for old
+         * literal-tag files previously accepted by this reader as well. */
+        uint8_t normalized[4];
+        for (i = 0; i < 4; ++i) normalized[i] = c[be ? i : 3U - i];
+        if (!xx_rt_memcmp(c, "CAS", 3) || !xx_rt_memcmp(normalized, "CAS", 3)) seen |= 1U;
+        if (!xx_rt_memcmp(c, "KEY*", 4) || !xx_rt_memcmp(normalized, "KEY*", 4)) seen |= 2U;
+        if (!xx_rt_memcmp(c, "snd", 3) || !xx_rt_memcmp(normalized, "snd", 3)) seen |= 4U;
         for (i = 0; i < 4; ++i) tag[i] = (c[i] >= 32 && c[i] <= 126 && c[i] != '*' && c[i] != '/' && c[i] != '\\') ? (char)c[i] : '_';
         tag[4] = 0;
         xx_rt_snprintf(label, sizeof(label), "%s.chunk", tag);

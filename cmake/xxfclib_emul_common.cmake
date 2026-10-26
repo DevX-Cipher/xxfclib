@@ -55,6 +55,7 @@ set(XXFC_EMUL_CORE_SOURCES
     src/algo/crc/platforms/xx_crc64_avx2.c
     src/algo/crc/platforms/xx_crc64_vpclmul.c
     src/formats/xx_format_base.c
+    src/formats/xx_format_datastructs.c
     src/formats/xx_format_handle_types.c
     src/formats/xx_format_streams.c
     src/formats/xx_memory_map.c
@@ -84,16 +85,18 @@ endif()
 set(XXFC_EMUL_NATIVE_FORMAT_SOURCES
     src/formats/executable/com/xx_com.c
     src/formats/executable/msdos/xx_msdos.c
-    src/formats/executable/pe/xx_pe.c src/formats/executable/pe/xx_pe_data.c
-    src/formats/executable/pe/xx_pe_stream_common.c src/formats/executable/pe/xx_pe_stream_coff.c
-    src/formats/executable/pe/xx_pe_stream_metadata.c src/formats/executable/pe/xx_pe_stream_symbols.c
-    src/formats/executable/elf/xx_elf.c src/formats/executable/elf/xx_elf_symbols.c src/formats/executable/elf/xx_elf_resources.c src/formats/executable/elf/xx_elf_data.c
-    src/formats/executable/macho/xx_macho.c src/formats/executable/macho/xx_macho_data.c)
+    src/formats/executable/pe/xx_pe.c src/formats/executable/pe/xx_pe_datastructs.c
+    src/formats/executable/pe/xx_pe_stream_common.c src/formats/executable/pe/xx_pe_export.c
+    src/formats/executable/pe/xx_pe_metadata.c src/formats/executable/pe/xx_pe_import.c
+    src/formats/executable/elf/xx_elf.c src/formats/executable/elf/xx_elf_symbols.c src/formats/executable/elf/xx_elf_resources.c src/formats/executable/elf/xx_elf_datastructs.c
+    src/formats/executable/macho/xx_macho.c src/formats/executable/macho/xx_macho_datastructs.c)
 set(XXFC_EMUL_SOURCES ${XXFC_EMUL_CORE_SOURCES}
     ${XXFC_EMUL_FORMAT_SOURCES} ${XXFC_EMUL_NATIVE_FORMAT_SOURCES})
 list(REMOVE_DUPLICATES XXFC_EMUL_SOURCES)
+xxfclib_select_stream_sources(XXFC_EMUL_SOURCES)
 add_library(xxfclib STATIC ${XXFC_EMUL_SOURCES})
 add_library(xxfclib::xxfclib ALIAS xxfclib)
+xxfclib_configure_streams(xxfclib)
 target_compile_features(xxfclib PUBLIC c_std_11)
 target_compile_definitions(xxfclib PUBLIC XXFC_STATIC PRIVATE ${XXFC_EMUL_DEFINITIONS})
 target_include_directories(xxfclib PUBLIC

@@ -28,6 +28,12 @@
 #define XXFCLIB_H
 
 #include "xxfclib/sort/xx_sort.h"
+#include "xxfclib/formats/archive/stor_resource/xx_stor_resource.h"
+#include "xxfclib/formats/archive/installshield_obl/xx_installshield_obl.h"
+#include "xxfclib/formats/installer/natata_ebook/xx_natata_ebook.h"
+#include "xxfclib/formats/archive/eid/xx_eid.h"
+#include "xxfclib/algo/eid/xx_eid_crypto.h"
+#include "xxfclib/algo/ripemd256/xx_ripemd256.h"
 
 #include "xxfclib/formats/filesystem/aaruformat/xx_aaruformat.h"
 #include "xxfclib/formats/filesystem/acorn_adfs/xx_acorn_adfs.h"

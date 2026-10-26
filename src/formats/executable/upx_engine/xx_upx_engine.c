@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "xxfclib/formats/executable/upx_engine/xx_upx_engine.h"
 #include "xxfclib/formats/archive/sevenzip_engine/xx_sevenzip_engine.h"
+#include "xxfclib/formats/executable/pe/xx_pe.h"
 #include "xxfclib/rt/xx_rt.h"
 #include <stdio.h>
 Abstractformat *xx_upx_create(xx_io_device *d, int64_t base)
@@ -55,6 +56,34 @@ static bool upx_scan(xx_io_device *d, int64_t start, int64_t count, unsigned req
     }
     return false;
 }
+/* A PE can contain another packed program in its resources or overlay. Its
+ * pack header must belong to the root headers or entry-point section, not
+ * an unrelated embedded image. Keep the existing bounded first/last windows
+ * within each of those ranges; packed section names need not be UPX0/UPX1. */
+static bool upx_scan_range(xx_io_device *d, int64_t start, int64_t count, xx_pd_struct *pd)
+{
+    int64_t window = count < 1024 * 1024 ? count : 1024 * 1024;
+    return upx_scan(d, start, window, 0, pd) ||
+           (count > window && upx_scan(d, start + count - window, window, 0, pd));
+}
+static bool upx_pe_marker(xx_io_device *d, xx_pd_struct *pd)
+{
+    xx_pe *pe = xx_pe_create(d, 0);
+    bool found = false;
+    uint16_t i;
+    if (!pe || !xx_pe_handle_base_info(&pe->format, pd)) goto done;
+    found = upx_scan_range(d, 0, pe->size_of_headers, pd);
+    for (i = 0; !found && i < pe->number_of_sections && !upx_stopped(pd); ++i) {
+        const xx_pe_section *section = &pe->sections[i];
+        uint32_t ep = pe->entry_point_rva;
+        if (ep >= section->virtual_address && ep - section->virtual_address < section->raw_size &&
+            (section->characteristics & UINT32_C(0x20000000)))
+            found = upx_scan_range(d, section->raw_offset, section->raw_size, pd);
+    }
+done:
+    xx_pe_free(pe);
+    return found;
+}
 bool xx_upx_has_marker_device(xx_io_device *d, xx_pd_struct *pd)
 {
     int64_t saved = xx_io_tell(d), size = xx_io_total_size(d), window;
@@ -71,6 +100,17 @@ bool xx_upx_has_marker_device(xx_io_device *d, xx_pd_struct *pd)
     if (legacy) {
         found = upx_scan(d, 0, size < 128 ? size : 128, legacy, pd);
         goto done;
+    }
+    if (h[0] == 'M' && h[1] == 'Z' && size >= 64) {
+        uint8_t pointer[4], signature[4];
+        if (xx_io_read_at(d, 0x3c, pointer, sizeof(pointer))) {
+            uint32_t nt = (uint32_t)pointer[0] | ((uint32_t)pointer[1] << 8) |
+                          ((uint32_t)pointer[2] << 16) | ((uint32_t)pointer[3] << 24);
+            if (nt >= 64U && xx_io_read_at(d, nt, signature, sizeof(signature)) && !xx_rt_memcmp(signature, "PE\0\0", 4U)) {
+                found = upx_pe_marker(d, pd);
+                goto done;
+            }
+        }
     }
     /* Official PE/DOS, ELF, Mach-O and Atari carriers. */
     if (!(h[0] == 'M' && h[1] == 'Z') && xx_rt_memcmp(h, "\177ELF", 4) && xx_rt_memcmp(h, "\xcf\xfa\xed\xfe", 4) && xx_rt_memcmp(h, "\xce\xfa\xed\xfe", 4) &&

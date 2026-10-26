@@ -121,24 +121,11 @@ static XXFC_MAYBE_UNUSED bool executable_carrier_scan_impl(Abstractformat *f, pm
                                                            executable_carrier_at parse, bool first, xx_pd_struct *pd)
 {
     int64_t low, limit = pm_available(f);
-    size_t n, i, done = 0, capacity = xx_get_file_buffer_size();
+    size_t n, i, capacity = xx_get_file_buffer_size();
     unsigned candidates = 0;
-    uint8_t *b;
     if (!siglen || !executable_carrier_carrier(f, &low, inside, elf, pd) || low >= limit) return false;
     n = limit - low > 16777216 ? 16777216U : (size_t)(limit - low);
     if (capacity > n) capacity = n;
-    b = (uint8_t *)xx_mem_alloc(capacity);
-    if (!b) return false;
-    /* The old locator validated this complete prefix before callbacks. */
-    while (done < n) {
-        size_t take = n - done > capacity ? capacity : n - done;
-        if (carrier_stop(pd) || !pm_read(f, low + (int64_t)done, b, take)) {
-            xx_mem_free(b);
-            return false;
-        }
-        done += take;
-    }
-    xx_mem_free(b);
     for (i = 0; i + siglen <= n; ++i) {
         int64_t at, found = xx_io_find_bytes_buffer_optimize_ex(f->device, f->base_address + low + (int64_t)i, (int64_t)(n - i), sig, siglen, capacity, pd);
         if (found < 0) {

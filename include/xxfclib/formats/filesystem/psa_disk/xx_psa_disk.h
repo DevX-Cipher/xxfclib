@@ -9,6 +9,10 @@
 extern "C" {
 #endif
 XXFC_API Abstractformat *xx_psa_disk_create(xx_io_device *device, int64_t base_address);
+/** Return the authenticated physical outer-container span for an actual PSA
+ * carrier. The FAT reader retains its inner base. Outputs and cursor are
+ * unchanged on failure; no reader/device ownership is transferred. */
+XXFC_API bool xx_psa_disk_get_container_span(Abstractformat *format, int64_t *base_address, int64_t *size);
 XXFC_API void xx_psa_disk_free(Abstractformat *format);
 XXFC_API xx_file_type_t xx_psa_disk_detect(xx_io_device *device, int64_t base_address);
 XXFC_API bool xx_psa_disk_fast_detect(xx_io_device *device, int64_t base_address, bool is_mapped);

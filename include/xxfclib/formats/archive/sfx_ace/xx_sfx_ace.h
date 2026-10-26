@@ -19,6 +19,9 @@ XXFC_API void xx_sfx_ace_destroy(xx_sfx_ace *);
 XXFC_API void xx_sfx_ace_free(xx_sfx_ace *);
 XXFC_API bool xx_sfx_ace_check_is_valid(Abstractformat *, xx_pd_struct *);
 XXFC_API bool xx_sfx_ace_handle_base_info(Abstractformat *, xx_pd_struct *);
+/* Validated physical embedded ACE extent in original device coordinates.
+ * Outputs are unchanged on failure; no decoded member offsets are returned. */
+XXFC_API bool xx_sfx_ace_get_payload_span(Abstractformat *, int64_t *offset, int64_t *size, xx_pd_struct *);
 #ifdef __cplusplus
 }
 #endif

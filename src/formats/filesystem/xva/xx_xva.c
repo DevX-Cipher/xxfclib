@@ -643,7 +643,8 @@ static bool xv_chunk_name(const char *path, char id[80], uint64_t *index, unsign
     memcpy(id, path, n);
     id[n] = 0;
     p = slash + 1U;
-    len = strspn(p, "0123456789");
+    len = 0;
+    while (p[len] >= '0' && p[len] <= '9') len++;
     if (!len || len > 20U || !xv_number(p, len, 10U, index)) return false;
     *hash = 0U;
     if (!p[len]) return true;

@@ -10,11 +10,9 @@
  * test is what pins the seed.  xx_panorama_seed_from_header() in
  * algo/panorama does both; this reader never reimplements it.
  *
- * Because the pad phase is indexed by the ABSOLUTE FILE OFFSET, the transform
- * is only defined for a whole file starting at offset 0.  A Panorama stream
- * nested at a non-zero base address would need a phase this codec does not
- * accept, so the reader refuses any base address other than 0 rather than
- * producing garbage.
+ * The pad phase is indexed from the start of the Panorama stream, matching
+ * the reference decoder's memory-buffer index. A nonzero reader base selects
+ * that stream within its device; it does not change the keystream phase.
  *
  * One record is published, covering the whole file, named "archive.rar".  The
  * reference names it after the source file's base name; xxfclib devices carry
@@ -101,15 +99,13 @@ static bool xx_panorama_parse(Abstractformat *self, xx_panorama_context *context
     if (!self || !self->device || !context || (pd && xx_pd_is_stopped(pd))) {
         return false;
     }
-    /* The pad phase is the absolute file offset, so only a whole file makes
-     * sense.  An embedded Panorama stream is not representable. */
-    if (self->base_address != 0) return false;
-
     total = xx_io_total_size(self->device);
+    if (self->base_address < 0 || total < self->base_address) return false;
+    total -= self->base_address;
     if (total < XX_PANORAMA_MIN_SIZE || total > XX_PANORAMA_MAX_SIZE) {
         return false;
     }
-    if (!xx_panorama_read_at(self->device, 0, header, sizeof(header))) {
+    if (!xx_panorama_read_at(self->device, self->base_address, header, sizeof(header))) {
         return false;
     }
     if (!xx_panorama_seed_from_header(header, sizeof(header), &seed)) {
@@ -138,7 +134,7 @@ static bool xx_panorama_decode(Abstractformat *self, xx_io_device *destination, 
     input = (uint8_t *)xx_mem_alloc(size);
     output = (uint8_t *)xx_mem_alloc(size);
     if (!input || !output) goto cleanup;
-    if (!xx_panorama_read_at(self->device, 0, input, size)) goto cleanup;
+    if (!xx_panorama_read_at(self->device, self->base_address, input, size)) goto cleanup;
     if (pd && xx_pd_is_stopped(pd)) goto cleanup;
     /* The seed is already validated, so the _seed form is the right call: it
      * performs no second signature check. */
@@ -191,9 +187,9 @@ static bool xx_panorama_set_record(xx_archive_record *record, const xx_panorama 
     xx_archive_record_cleanup(record);
     xx_archive_record_init(record);
     /* There is no header: the first byte of the file is already payload. */
-    record->header_offset = 0;
+    record->header_offset = archive->format.base_address;
     record->header_size = 0;
-    record->data_offset = 0;
+    record->data_offset = archive->format.base_address;
     record->compressed_size = archive->archive_size;
     return xx_archive_record_set_original_name(record, XX_PANORAMA_MEMBER_NAME) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSED_SIZE, (uint64_t)archive->archive_size) &&

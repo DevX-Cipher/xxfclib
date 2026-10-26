@@ -41,8 +41,8 @@
 
 /* Volume ids at or above this are UBI's own bookkeeping volumes, not user
  * data. The layout volume, which carries the volume table, is the first. */
-#define XX_UBI_INTERNAL_VOL_START UINT32_C(0x7FFFF000)
-#define XX_UBI_LAYOUT_VOLUME_ID UINT32_C(0x7FFFF000)
+#define XX_UBI_INTERNAL_VOL_START UINT32_C(0x7FFFEFFF)
+#define XX_UBI_LAYOUT_VOLUME_ID UINT32_C(0x7FFFEFFF)
 
 /* Bounds. Every one of these is reached only by a hostile or corrupt image;
  * a real one stays far below. */

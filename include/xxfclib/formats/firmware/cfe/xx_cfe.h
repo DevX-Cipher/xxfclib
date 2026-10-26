@@ -5,7 +5,17 @@
 /** @file xx_cfe.h @brief Broadcom CFE (Common Firmware Environment)
  *  bootloader image, found by its "CFE1CFE1" seal. */
 
-/* This is NOT a container format and it has no header with lengths in it.
+/* Two independently recognized variants are supported.
+ *
+ * FLASH UPDATE: original Broadcom cfe_flashimage.h / mkflashimage.c.
+ * +0 CFE1[4], +4 flags BE32, +8 payload byte size BE32, +12 payload
+ * CRC BE32 (reflected polynomial 0xEDB88320, initial all ones, no final
+ * complement), +16 board name ASCIIZ[32], +48 major/minor/eco/misc bytes,
+ * +52 reserved[12]. The 64-byte envelope is followed by exactly the declared
+ * payload, and any remaining device bytes are an overlay. Validation does
+ * not establish bootability, CPU instruction correctness or board suitability.
+ *
+ * OPAQUE ROM: this variant has no header with lengths in it.
  * A CFE image is the raw boot ROM of a Broadcom router, cable modem or
  * set-top box: it starts with the CPU's reset vectors, and a little way in,
  * at a fixed offset from the start of the image, it carries the eight ASCII
@@ -64,8 +74,8 @@ typedef struct xx_cfe XCfe;
 
 struct xx_cfe {
     Abstractformat format;
-    int64_t seal_offset; /**< Absolute offset of "CFE1CFE1", or -1. */
-    int64_t image_size;  /**< base_address .. end of device, or -1. */
+    int64_t seal_offset; /**< Absolute offset of the ROM or update seal, or -1. */
+    int64_t image_size;  /**< Update envelope plus payload, or whole opaque ROM span; -1 on failure. */
 };
 
 XXFC_API void xx_cfe_init(xx_cfe *cfe, xx_io_device *dev, int64_t base_address);

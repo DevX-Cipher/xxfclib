@@ -7,7 +7,7 @@
     },
     {
       "path": "src/formats/adapters/xx_format_detector_adapters.c",
-      "sha256": "5a7474c169360747eadb9a705b158d77201bdee149427d6b59343a6516ba8838"
+      "sha256": "003326c8029b63c1e898e1e0e89e3416516a43ef0bc05717f4bb2e2297f1cfe5"
     },
     {
       "path": "src/formats/adapters/xx_reader_adapters_sources.cmake",
@@ -1355,11 +1355,11 @@
     },
     {
       "path": "src/formats/xx_format_reader_only_decls.inc",
-      "sha256": "e863183dfdb948385c6df593b0352fe7792c749745442eaed2fce2b8ecce2a9e"
+      "sha256": "6e52351d2c12ce0e41eb21c894a9c87a93509697d847abb65e3d669303561420"
     },
     {
       "path": "src/formats/xx_format_reader_only_rows.inc",
-      "sha256": "01b65e76a3c2c3f7b39c48a3da974b1e9e4e202d9f1be041bebdd78989f0d940"
+      "sha256": "61ec04e2264b22bf7a31e7d4573c4550baa2c463e4b7ea00ca216186da81c3d8"
     }
   ]
 }

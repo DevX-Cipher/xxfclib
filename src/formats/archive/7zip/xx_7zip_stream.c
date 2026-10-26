@@ -372,83 +372,406 @@ static inline bool xx_7zip_bcj2_stream_bit(xx_7zip_bcj2_stream_input *input, uin
     return true;
 }
 
+#if defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
+#include <emmintrin.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
+static inline size_t xx_7zip_bcj2_scan_and_copy(uint8_t *dst, const uint8_t *src, size_t len)
+{
+    size_t i = 0;
+    const __m128i v_e8 = _mm_set1_epi8((char)-24); /* 0xE8 */
+    const __m128i v_fe = _mm_set1_epi8((char)-2);  /* 0xFE */
+    const __m128i v_0f = _mm_set1_epi8((char)0x0F);
+
+    while (i + 32 <= len) {
+        __m128i d0 = _mm_loadu_si128((const __m128i *)(const void *)(src + i));
+        __m128i m0 = _mm_or_si128(_mm_cmpeq_epi8(_mm_and_si128(d0, v_fe), v_e8), _mm_cmpeq_epi8(d0, v_0f));
+        int mask0 = _mm_movemask_epi8(m0);
+        if (mask0 != 0) {
+            _mm_storeu_si128((__m128i *)(void *)(dst + i), d0);
+            unsigned long bit_idx;
+#if defined(_MSC_VER)
+            _BitScanForward(&bit_idx, (unsigned long)mask0);
+#else
+            bit_idx = (unsigned long)__builtin_ctz((unsigned int)mask0);
+#endif
+            return i + (size_t)bit_idx;
+        }
+
+        __m128i d1 = _mm_loadu_si128((const __m128i *)(const void *)(src + i + 16));
+        __m128i m1 = _mm_or_si128(_mm_cmpeq_epi8(_mm_and_si128(d1, v_fe), v_e8), _mm_cmpeq_epi8(d1, v_0f));
+        int mask1 = _mm_movemask_epi8(m1);
+        _mm_storeu_si128((__m128i *)(void *)(dst + i), d0);
+        _mm_storeu_si128((__m128i *)(void *)(dst + i + 16), d1);
+        if (mask1 != 0) {
+            unsigned long bit_idx;
+#if defined(_MSC_VER)
+            _BitScanForward(&bit_idx, (unsigned long)mask1);
+#else
+            bit_idx = (unsigned long)__builtin_ctz((unsigned int)mask1);
+#endif
+            return i + 16 + (size_t)bit_idx;
+        }
+        i += 32;
+    }
+    while (i + 16 <= len) {
+        __m128i d0 = _mm_loadu_si128((const __m128i *)(const void *)(src + i));
+        __m128i m0 = _mm_or_si128(_mm_cmpeq_epi8(_mm_and_si128(d0, v_fe), v_e8), _mm_cmpeq_epi8(d0, v_0f));
+        int mask = _mm_movemask_epi8(m0);
+        _mm_storeu_si128((__m128i *)(void *)(dst + i), d0);
+        if (mask != 0) {
+            unsigned long bit_idx;
+#if defined(_MSC_VER)
+            _BitScanForward(&bit_idx, (unsigned long)mask);
+#else
+            bit_idx = (unsigned long)__builtin_ctz((unsigned int)mask);
+#endif
+            return i + (size_t)bit_idx;
+        }
+        i += 16;
+    }
+    while (i < len) {
+        uint8_t b = src[i];
+        if (b == 0xE8U || b == 0xE9U || b == 0x0FU) return i;
+        dst[i] = b;
+        i++;
+    }
+    return len;
+}
+#else
+static inline size_t xx_7zip_bcj2_scan_and_copy(uint8_t *dst, const uint8_t *src, size_t len)
+{
+    size_t i = 0;
+    while (i < len) {
+        uint8_t b = src[i];
+        if (b == 0xE8U || b == 0xE9U || b == 0x0FU) return i;
+        dst[i] = b;
+        i++;
+    }
+    return len;
+}
+#endif
+
+#define XX_7ZIP_BCJ2_CHUNK (8192U * 1024U)
+
+typedef struct xx_bcj2_filter_device_s {
+    xx_io_device device;
+    xx_io_device *target;
+    uint8_t *out_buf;
+    size_t out_used;
+    uint64_t total_written;
+    uint64_t expected_size;
+
+    uint8_t *mem1;
+    uint8_t *mem2;
+    uint8_t *mem3;
+    const uint8_t *p1;
+    const uint8_t *p1_end;
+    const uint8_t *p2;
+    const uint8_t *p2_end;
+    const uint8_t *p3;
+    const uint8_t *p3_end;
+    size_t size1;
+    size_t size2;
+    size_t size3;
+
+    uint32_t range;
+    uint32_t code;
+    uint32_t ip;
+    uint8_t previous;
+    uint16_t probabilities[258];
+    bool error;
+    xx_pd_struct *pd;
+} xx_bcj2_filter_device;
+
+static void xx_bcj2_filter_cleanup(xx_bcj2_filter_device *f)
+{
+    if (!f) return;
+    if (f->mem1) { xx_mem_zero(f->mem1, f->size1 ? f->size1 : 1U); xx_mem_free(f->mem1); }
+    if (f->mem2) { xx_mem_zero(f->mem2, f->size2 ? f->size2 : 1U); xx_mem_free(f->mem2); }
+    if (f->mem3) { xx_mem_zero(f->mem3, f->size3 ? f->size3 : 1U); xx_mem_free(f->mem3); }
+    if (f->out_buf) { xx_mem_zero(f->out_buf, XX_7ZIP_BCJ2_CHUNK); xx_mem_free(f->out_buf); }
+    xx_mem_zero(f, sizeof(*f));
+}
+
+static bool xx_bcj2_filter_flush(xx_bcj2_filter_device *f)
+{
+    if (f->out_used == 0U) return true;
+    size_t done = 0U;
+    while (done < f->out_used) {
+        ssize_t written = xx_io_write(f->target, f->out_buf + done, f->out_used - done);
+        if (written <= 0 || (size_t)written > f->out_used - done) {
+            f->error = true;
+            return false;
+        }
+        done += (size_t)written;
+    }
+    f->total_written += f->out_used;
+    f->out_used = 0U;
+    return true;
+}
+
+static ssize_t xx_bcj2_filter_write_cb(xx_io_device *device, const void *buffer, size_t size)
+{
+    xx_bcj2_filter_device *f = (xx_bcj2_filter_device *)device->priv;
+    if (f->error || (f->pd && xx_pd_is_stopped(f->pd))) return -1;
+    const uint8_t *in0_ptr = (const uint8_t *)buffer;
+    const uint8_t *in0_limit = in0_ptr + size;
+
+    uint32_t range = f->range;
+    uint32_t code = f->code;
+    uint32_t ip = f->ip;
+    uint8_t previous = f->previous;
+    const uint8_t *p1 = f->p1, *p1_end = f->p1_end;
+    const uint8_t *p2 = f->p2, *p2_end = f->p2_end;
+    const uint8_t *p3 = f->p3, *p3_end = f->p3_end;
+    uint16_t *probabilities = f->probabilities;
+    uint8_t *out_buf = f->out_buf;
+    size_t out_used = f->out_used;
+
+    while (in0_ptr < in0_limit) {
+        if (XX_7ZIP_BCJ2_CHUNK - out_used < 64U) {
+            f->out_used = out_used;
+            if (!xx_bcj2_filter_flush(f)) return -1;
+            out_used = 0U;
+        }
+
+        if (previous != 0x0FU) {
+            size_t avail_in = (size_t)(in0_limit - in0_ptr);
+            size_t avail_out = (XX_7ZIP_BCJ2_CHUNK - 64U) > out_used ? ((XX_7ZIP_BCJ2_CHUNK - 64U) - out_used) : 0U;
+            size_t max_run = avail_in < avail_out ? avail_in : avail_out;
+            if (max_run > 0U) {
+                size_t copied = xx_7zip_bcj2_scan_and_copy(out_buf + out_used, in0_ptr, max_run);
+                if (copied) {
+                    out_used += copied;
+                    in0_ptr += copied;
+                    ip += (uint32_t)copied;
+                    previous = in0_ptr[-1];
+                    if (in0_ptr >= in0_limit || (XX_7ZIP_BCJ2_CHUNK - out_used < 64U)) continue;
+                }
+            }
+        }
+
+        uint8_t opcode = *in0_ptr++;
+        bool branch = (opcode == 0xE8U || opcode == 0xE9U || (previous == 0x0FU && (opcode & 0xF0U) == 0x80U));
+        out_buf[out_used++] = opcode;
+        ++ip;
+
+        if (branch) {
+            uint16_t *probability = opcode == 0xE8U ? &probabilities[2U + previous] : &probabilities[opcode == 0xE9U ? 1U : 0U];
+            if (range < (UINT32_C(1) << 24U)) {
+                if (p3 >= p3_end) { f->error = true; return -1; }
+                range <<= 8U;
+                code = (code << 8U) | (*p3++);
+            }
+            uint32_t bound = (range >> 11U) * (uint32_t)(*probability);
+            if (code < bound) {
+                range = bound;
+                *probability = (uint16_t)(*probability + ((2048U - *probability) >> 5U));
+                previous = opcode;
+            } else {
+                range -= bound;
+                code -= bound;
+                *probability = (uint16_t)(*probability - (*probability >> 5U));
+
+                const uint8_t *sel_ptr = (opcode == 0xE8U) ? p1 : p2;
+                const uint8_t *sel_end = (opcode == 0xE8U) ? p1_end : p2_end;
+                if (sel_ptr + 4U > sel_end) { f->error = true; return -1; }
+
+#if defined(_M_IX86) || defined(_M_X64)
+                uint32_t target = _byteswap_ulong(*(const uint32_t *)(const void *)sel_ptr);
+#elif (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+                uint32_t target = __builtin_bswap32(*(const uint32_t *)(const void *)sel_ptr);
+#else
+                uint32_t target = ((uint32_t)sel_ptr[0] << 24U) | ((uint32_t)sel_ptr[1] << 16U) |
+                                  ((uint32_t)sel_ptr[2] << 8U)  | (uint32_t)sel_ptr[3];
+#endif
+                if (opcode == 0xE8U) p1 += 4U; else p2 += 4U;
+
+                ip += 4U;
+                target -= ip;
+
+#if defined(_M_IX86) || defined(_M_X64) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+                *(uint32_t *)(void *)(out_buf + out_used) = target;
+                out_used += 4U;
+                previous = (uint8_t)(target >> 24U);
+#else
+                out_buf[out_used++] = (uint8_t)target;
+                out_buf[out_used++] = (uint8_t)(target >> 8U);
+                out_buf[out_used++] = (uint8_t)(target >> 16U);
+                out_buf[out_used++] = (uint8_t)(target >> 24U);
+                previous = (uint8_t)(target >> 24U);
+#endif
+                continue;
+            }
+        } else {
+            previous = opcode;
+        }
+    }
+
+    f->range = range;
+    f->code = code;
+    f->ip = ip;
+    f->previous = previous;
+    f->p1 = p1;
+    f->p2 = p2;
+    f->p3 = p3;
+    f->out_used = out_used;
+    return (ssize_t)size;
+}
+
+static int64_t xx_bcj2_filter_size_cb(xx_io_device *device)
+{
+    xx_bcj2_filter_device *f = (xx_bcj2_filter_device *)device->priv;
+    return f ? (int64_t)(f->total_written + f->out_used) : -1;
+}
+
+static bool xx_bcj2_filter_init(xx_bcj2_filter_device *f,
+                                xx_io_device *const secondary_sources[3], const uint64_t secondary_sizes[3],
+                                const uint8_t *properties, size_t properties_size,
+                                uint64_t expected_size, xx_io_device *destination, xx_pd_struct *pd)
+{
+    uint8_t first;
+    size_t i;
+    xx_mem_zero(f, sizeof(*f));
+    if (!secondary_sources || !secondary_sizes || !destination || (!properties && properties_size) ||
+        !xx_7zip_branch_properties_supported(properties_size) || expected_size > INT64_MAX ||
+        secondary_sizes[2] < 5U || (secondary_sizes[0] & 3U) || (secondary_sizes[1] & 3U) || xx_pd_is_stopped(pd))
+        return false;
+
+    if (secondary_sizes[0] > 64U * 1024U * 1024U || secondary_sizes[1] > 64U * 1024U * 1024U || secondary_sizes[2] > 64U * 1024U * 1024U)
+        return false;
+
+    f->size1 = (size_t)secondary_sizes[0];
+    f->size2 = (size_t)secondary_sizes[1];
+    f->size3 = (size_t)secondary_sizes[2];
+
+    f->mem1 = (uint8_t *)xx_mem_alloc(f->size1 ? f->size1 : 1U);
+    f->mem2 = (uint8_t *)xx_mem_alloc(f->size2 ? f->size2 : 1U);
+    f->mem3 = (uint8_t *)xx_mem_alloc(f->size3 ? f->size3 : 1U);
+    f->out_buf = (uint8_t *)xx_mem_alloc(XX_7ZIP_BCJ2_CHUNK);
+
+    if (!f->mem1 || !f->mem2 || !f->mem3 || !f->out_buf) {
+        xx_bcj2_filter_cleanup(f);
+        return false;
+    }
+
+    if (f->size1) {
+        if (xx_io_seek64(secondary_sources[0], 0, SEEK_SET) != 0 || !xx_7zip_stream_read_exact(secondary_sources[0], f->mem1, f->size1)) {
+            xx_bcj2_filter_cleanup(f);
+            return false;
+        }
+    }
+    if (f->size2) {
+        if (xx_io_seek64(secondary_sources[1], 0, SEEK_SET) != 0 || !xx_7zip_stream_read_exact(secondary_sources[1], f->mem2, f->size2)) {
+            xx_bcj2_filter_cleanup(f);
+            return false;
+        }
+    }
+    if (f->size3) {
+        if (xx_io_seek64(secondary_sources[2], 0, SEEK_SET) != 0 || !xx_7zip_stream_read_exact(secondary_sources[2], f->mem3, f->size3)) {
+            xx_bcj2_filter_cleanup(f);
+            return false;
+        }
+    }
+
+    f->p1 = f->mem1; f->p1_end = f->mem1 + f->size1;
+    f->p2 = f->mem2; f->p2_end = f->mem2 + f->size2;
+    f->p3 = f->mem3; f->p3_end = f->mem3 + f->size3;
+
+    f->ip = properties_size == 4U ? xx_data_get_u32(properties, 4, 0, false) : 0U;
+    for (i = 0U; i < 258U; ++i) f->probabilities[i] = 1024U;
+
+    first = *f->p3++;
+    if (first != 0U) {
+        xx_bcj2_filter_cleanup(f);
+        return false;
+    }
+    for (i = 0U; i < 4U; ++i) {
+        if (f->p3 >= f->p3_end) {
+            xx_bcj2_filter_cleanup(f);
+            return false;
+        }
+        f->code = (f->code << 8U) | (*f->p3++);
+    }
+    if (f->code == UINT32_MAX) {
+        xx_bcj2_filter_cleanup(f);
+        return false;
+    }
+    f->range = UINT32_MAX;
+
+    f->target = destination;
+    f->expected_size = expected_size;
+    f->pd = pd;
+    f->device.priv = f;
+    f->device.write = xx_bcj2_filter_write_cb;
+    f->device.total_size = xx_bcj2_filter_size_cb;
+    return true;
+}
+
+static bool xx_bcj2_filter_finish(xx_bcj2_filter_device *f)
+{
+    if (f->error) return false;
+    if (!xx_bcj2_filter_flush(f)) return false;
+    if (f->p1 != f->p1_end || f->p2 != f->p2_end || f->code != 0U || f->total_written != f->expected_size) return false;
+    if (f->pd && xx_pd_is_stopped(f->pd)) return false;
+    return true;
+}
+
 bool xx_7zip_stream_bcj2(xx_io_device *const sources[4], const uint64_t sizes[4], const uint8_t *properties, size_t properties_size, uint64_t expected_size,
                          xx_io_device *destination, xx_pd_struct *pd)
 {
-    xx_7zip_bcj2_stream_input input[4];
-    xx_7zip_stream_sink output;
-    uint16_t probabilities[258];
-    uint8_t *buffers = NULL, *out_buffer;
-    size_t i, used = 0U;
-    uint32_t ip, range = UINT32_MAX, code = 0U;
-    uint8_t previous = 0U, first;
+    xx_bcj2_filter_device filter;
+    xx_7zip_stream_window in0_window;
+    uint8_t *in0_buffer = NULL;
+    uint64_t in0_consumed = 0U;
     bool success = false;
-    if (!sources || !sizes || !destination || (!properties && properties_size) || !xx_7zip_branch_properties_supported(properties_size) || expected_size > INT64_MAX ||
-        sizes[3] < 5U || (sizes[1] & 3U) || (sizes[2] & 3U) || xx_pd_is_stopped(pd))
+
+    if (!sources || !sizes || !xx_bcj2_filter_init(&filter, &sources[1], &sizes[1], properties, properties_size, expected_size, destination, pd))
         return false;
-    xx_mem_zero(input, sizeof(input));
-    for (i = 0U; i < 4U; ++i)
-        if (!xx_7zip_stream_window_init(&input[i].window, sources[i], 0, sizes[i], pd)) return false;
-    /* Four independent bounded readers plus one bounded output buffer. The
-     * branch streams themselves reside in caller-owned spill devices. */
-    buffers = (uint8_t *)xx_mem_alloc(XX_7ZIP_STREAM_BUFFER * 5U);
-    if (!buffers) return false;
-    for (i = 0U; i < 4U; ++i) input[i].buffer = buffers + i * XX_7ZIP_STREAM_BUFFER;
-    out_buffer = buffers + 4U * XX_7ZIP_STREAM_BUFFER;
-    xx_7zip_stream_sink_init(&output, destination, expected_size, pd);
-    ip = properties_size == 4U ? xx_data_get_u32(properties, 4, 0, false) : 0U;
-    for (i = 0U; i < 258U; ++i) probabilities[i] = 1024U;
-    if (!xx_7zip_bcj2_stream_byte(&input[3], &first) || first != 0U) goto done;
-    for (i = 0U; i < 4U; ++i) {
-        uint8_t next;
-        if (!xx_7zip_bcj2_stream_byte(&input[3], &next)) goto done;
-        code = (code << 8U) | next;
+
+    in0_buffer = (uint8_t *)xx_mem_alloc(XX_7ZIP_BCJ2_CHUNK);
+    if (!in0_buffer || !xx_7zip_stream_window_init(&in0_window, sources[0], 0, sizes[0], pd)) goto done;
+
+    while (in0_consumed < sizes[0]) {
+        if (xx_pd_is_stopped(pd)) goto done;
+        size_t want_in = XX_7ZIP_BCJ2_CHUNK;
+        uint64_t in_left = sizes[0] - in0_consumed;
+        if ((uint64_t)want_in > in_left) want_in = (size_t)in_left;
+
+        if (!xx_7zip_stream_read_exact(&in0_window.device, in0_buffer, want_in)) goto done;
+        if (xx_io_write(&filter.device, in0_buffer, want_in) != (ssize_t)want_in) goto done;
+        in0_consumed += want_in;
     }
-    if (code == UINT32_MAX) goto done;
-    while (input[0].consumed < sizes[0]) {
-        uint8_t opcode;
-        bool branch;
-        if ((input[0].consumed & 4095U) == 0U && xx_pd_is_stopped(pd)) goto done;
-        /* Leave room for an opcode and its optional converted four-byte
-         * operand; flushing is independent of instruction boundaries. */
-        if (XX_7ZIP_STREAM_BUFFER - used < 5U) {
-            if (!xx_7zip_stream_write_exact(&output.device, out_buffer, used)) goto done;
-            used = 0U;
-        }
-        if (!xx_7zip_bcj2_stream_byte(&input[0], &opcode) || output.position + used >= expected_size) goto done;
-        branch = opcode == 0xE8U || opcode == 0xE9U || (previous == 0x0FU && (opcode & 0xF0U) == 0x80U);
-        out_buffer[used++] = opcode;
-        ++ip;
-        if (branch) {
-            uint16_t *probability = opcode == 0xE8U ? &probabilities[2U + previous] : &probabilities[opcode == 0xE9U ? 1U : 0U];
-            bool converted;
-            if (!xx_7zip_bcj2_stream_bit(&input[3], &range, &code, probability, &converted)) goto done;
-            if (converted) {
-                unsigned selected = opcode == 0xE8U ? 1U : 2U;
-                uint32_t target = 0U;
-                if (expected_size - output.position - used < 4U) goto done;
-                for (i = 0U; i < 4U; ++i) {
-                    uint8_t next;
-                    if (!xx_7zip_bcj2_stream_byte(&input[selected], &next)) goto done;
-                    target = (target << 8U) | next;
-                }
-                ip += 4U;
-                target -= ip;
-                out_buffer[used++] = (uint8_t)target;
-                out_buffer[used++] = (uint8_t)(target >> 8U);
-                out_buffer[used++] = (uint8_t)(target >> 16U);
-                out_buffer[used++] = (uint8_t)(target >> 24U);
-                previous = (uint8_t)(target >> 24U);
-                continue;
-            }
-        }
-        previous = opcode;
-    }
-    success = input[1].consumed == sizes[1] && input[2].consumed == sizes[2] && code == 0U && xx_7zip_stream_write_exact(&output.device, out_buffer, used) &&
-              output.position == expected_size && !xx_pd_is_stopped(pd);
+
+    success = xx_bcj2_filter_finish(&filter);
+
 done:
-    xx_mem_zero(buffers, XX_7ZIP_STREAM_BUFFER * 5U);
-    xx_mem_zero(probabilities, sizeof(probabilities));
-    xx_mem_free(buffers);
+    if (in0_buffer) { xx_mem_zero(in0_buffer, XX_7ZIP_BCJ2_CHUNK); xx_mem_free(in0_buffer); }
+    xx_bcj2_filter_cleanup(&filter);
     return success;
+}
+
+bool xx_7zip_stream_bcj2_streaming(xx_io_device *const secondary_sources[3], const uint64_t secondary_sizes[3],
+                                   const uint8_t *properties, size_t properties_size, uint64_t in0_size, uint64_t expected_size,
+                                   xx_io_device *u_source, int64_t u_source_offset, uint64_t u_compressed_size,
+                                   uint64_t u_method, const uint8_t *u_properties, size_t u_properties_size,
+                                   xx_io_device *destination, const uint8_t *password_utf16le, size_t password_size, xx_pd_struct *pd)
+{
+    xx_bcj2_filter_device filter;
+    bool ok;
+
+    if (!xx_bcj2_filter_init(&filter, secondary_sources, secondary_sizes, properties, properties_size, expected_size, destination, pd))
+        return false;
+
+    ok = xx_7zip_stream_decode(u_method, u_properties, u_properties_size,
+                               u_source, u_source_offset, u_compressed_size,
+                               in0_size, &filter.device, password_utf16le, password_size, pd);
+    if (ok) {
+        ok = xx_bcj2_filter_finish(&filter);
+    }
+    xx_bcj2_filter_cleanup(&filter);
+    return ok;
 }

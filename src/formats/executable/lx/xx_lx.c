@@ -22,9 +22,6 @@ void xx_lx_init(xx_lx *lx, xx_io_device *device, int64_t base_address)
     lx->format.check_is_valid = xx_lx_check_is_valid;
     lx->format.handle_base_info = xx_lx_handle_base_info;
     lx->format.get_format_size = xx_lx_get_format_size;
-    lx->format.get_number_of_imports = xx_lx_get_number_of_imports;
-    lx->format.get_number_of_exports = xx_lx_get_number_of_exports;
-    lx->format.get_number_of_resources = xx_lx_get_number_of_resources;
     lx->format.get_memory_map = xx_lx_get_memory_map;
     lx->format.destroy = xx_lx_vtable_destroy;
 }
@@ -61,21 +58,6 @@ bool xx_lx_handle_base_info(Abstractformat *format, xx_pd_struct *pd)
 int64_t xx_lx_get_format_size(Abstractformat *format, xx_pd_struct *pd)
 {
     return xx_linear_get_format_size_impl(format, pd, XX_LX_SIGNATURE);
-}
-
-uint64_t xx_lx_get_number_of_imports(Abstractformat *format, xx_pd_struct *pd)
-{
-    return xx_linear_get_import_count_impl(format, pd, XX_LX_SIGNATURE);
-}
-
-uint64_t xx_lx_get_number_of_exports(Abstractformat *format, xx_pd_struct *pd)
-{
-    return xx_linear_get_export_count_impl(format, pd, XX_LX_SIGNATURE);
-}
-
-uint64_t xx_lx_get_number_of_resources(Abstractformat *format, xx_pd_struct *pd)
-{
-    return xx_linear_get_resource_count_impl(format, pd, XX_LX_SIGNATURE);
 }
 
 bool xx_lx_get_memory_map(Abstractformat *format, xx_memory_map_mode_t mode, xx_memory_map *output, xx_pd_struct *pd)

@@ -25,6 +25,18 @@ typedef struct {
     uint32_t unwind_rva;
 } xx_pe_amd64_unwind_result;
 
+typedef enum {
+    XX_PE_GUARD_CF_VALID = 0,
+    XX_PE_GUARD_CF_OUT_OF_ORDER = 1,
+    XX_PE_GUARD_CF_NOT_EXECUTABLE = 2
+} xx_pe_guard_cf_status;
+
+typedef struct {
+    xx_pe_guard_cf_status status;
+    uint32_t entry_index;
+    uint32_t function_rva;
+} xx_pe_guard_cf_result;
+
 /* UNWIND_INFO flags, as the AMD64 exception data defines them. */
 #define XX_PE_AMD64_UNW_EHANDLER   0x01u
 #define XX_PE_AMD64_UNW_UHANDLER   0x02u
@@ -89,6 +101,23 @@ XXFC_API int xx_pe_inspect_amd64_functions(const xx_pe_inspection *pe, xx_io_dev
 XXFC_API int xx_pe_inspect_validate_amd64_unwind(const xx_pe_inspection *pe, xx_io_device *device,
                                                uint32_t directory_rva, uint32_t directory_size,
                                                xx_pe_amd64_unwind_result *result);
+
+/* Implements the Guard CF function-table checks in DIE's generic heuristic.
+ * Each entry begins with a little-endian function RVA and may contain up to
+ * fifteen bytes of GuardFlags-defined metadata. Equal RVAs are allowed; a
+ * descending RVA or an RVA outside file-backed executable code is reported.
+ *
+ * The table is streamed in entry-aligned chunks and neither the device cursor
+ * nor the inspection is changed. Returns 1 when validation completed, with
+ * the first failure in result. Returns 0 when native validation is unavailable
+ * (invalid input, table mapping, address precision, allocation or I/O); script
+ * callers must then use their existing validator. */
+XXFC_API int xx_pe_inspect_validate_guard_cf_function_table(const xx_pe_inspection *pe,
+                                                            xx_io_device *device,
+                                                            uint32_t table_rva,
+                                                            uint32_t entry_count,
+                                                            uint32_t entry_size,
+                                                            xx_pe_guard_cf_result *result);
 
 #ifdef __cplusplus
 }

@@ -45,7 +45,7 @@ static bool executable_carrier_arc_at(Abstractformat *f, pm_stream *s, int64_t b
             data = at + 45 + name;
             if (n != packed || !carrier_range(limit, data, n) || (flags == 0x11 && raw != n)) return false;
             if (flags == 0x11) {
-                if (n > 67108864 - checks || !sfx_carrier_crc(f, data, n, crc, pd)) return false;
+                if (n > 67108864 - checks || !sfx_carrier_crc(f, data, n, crc ^ UINT32_MAX, pd)) return false;
                 checks += n;
             }
             at = data + n;

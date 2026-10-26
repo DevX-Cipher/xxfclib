@@ -47,6 +47,10 @@ static xx_file_type_t xx_die_music_scan(xx_io_device *device, const char *expect
 
     if (!device || xx_io_size(device) <= 0) return XX_FILE_TYPE_UNKNOWN;
     xx_scan_options_init(&options);
+    /* This catalog contains Binary music rules, including filename-qualified
+     * ZIP/XML projects. Selecting the outer container class skips those rules.
+     * Keep their original signatures, filename guards and ordered passes. */
+    options.file_type = XX_FILE_TYPE_BINARY;
     if (db_load_builtin_music(&db, DB_MAIN)) {
         /* Keep ordinary signatures ahead of deep and heuristic rules. A
          * forced reader still gets all three passes when its family needs

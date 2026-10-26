@@ -64,19 +64,3 @@ invalid:
     return false;
 }
 
-uint64_t xx_pe_get_number_of_metadata(Abstractformat *format, xx_pd_struct *pd)
-{
-    xx_metadata_state *state = xx_format_create_metadata_reading(format, pd);
-    uint64_t count = 0;
-    bool failed;
-    if (!state) return 0;
-    while (xx_format_get_current_metadata(format, state)) {
-        ++count;
-        if (!xx_format_metadata_move_to_next(format, state, pd)) break;
-    }
-    failed = state->failed;
-    xx_format_free_metadata_reading(format, state);
-    if (failed) return 0;
-    format->number_of_metadata = count;
-    return count;
-}

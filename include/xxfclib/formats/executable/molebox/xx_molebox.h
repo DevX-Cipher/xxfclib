@@ -18,6 +18,20 @@ XXFC_API void xx_molebox_init(xx_molebox *, xx_io_device *, int64_t);
 XXFC_API xx_molebox *xx_molebox_create(xx_io_device *, int64_t);
 XXFC_API void xx_molebox_destroy(xx_molebox *);
 XXFC_API void xx_molebox_free(xx_molebox *);
+/** Physical metadata offsets are absolute device coordinates. Encrypted
+ * fields are not exposed as plaintext source members. catalog_offset is -1
+ * for a standalone package; catalog_size excludes its eight-byte footer. */
+typedef struct xx_molebox_physical_metadata {
+    uint32_t package_count;
+    int64_t package_offset, tree_offset, header_offset, catalog_offset;
+    uint32_t tree_size, catalog_size;
+    bool has_verified_prefix;
+} xx_molebox_physical_metadata;
+/** Validates native identity, prepares metadata when necessary and preserves
+ * the input cursor. Rejects foreign readers and out-of-range package indices.
+ * The complete physical package header occupies 48 encrypted bytes. */
+XXFC_API bool xx_molebox_get_physical_metadata(Abstractformat *, uint32_t package_index,
+                                              xx_molebox_physical_metadata *, xx_pd_struct *);
 /** Cursor-preserving EOF catalog-key probe; validate before detection. */
 XXFC_API bool xx_molebox_has_candidate_device(xx_io_device *, int64_t);
 /** Validate a header-encrypted standalone package with a supplied password or

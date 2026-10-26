@@ -2,7 +2,6 @@
  * SPDX-License-Identifier: MIT
  */
 #include "xxfclib/formats/executable/dotnet/xx_dotnet.h"
-#include "xx_dotnet_data.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/rt/xx_rt.h"
 
@@ -20,7 +19,6 @@ void xx_dotnet_init(xx_dotnet *reader, xx_io_device *device, int64_t base)
     reader->pe.format.handle_base_info = xx_dotnet_handle_base_info;
     reader->pe.format.get_format_size = xx_dotnet_get_format_size;
     reader->pe.format.destroy = dotnet_destroy_format;
-    xx_dotnet_setup_data_struct_callbacks(reader);
 }
 
 xx_dotnet *xx_dotnet_create(xx_io_device *device, int64_t base)

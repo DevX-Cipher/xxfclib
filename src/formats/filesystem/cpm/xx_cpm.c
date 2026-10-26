@@ -545,6 +545,27 @@ xx_archive_record_state *xx_cpm_create_archive_records_reading(Abstractformat *s
     state->current_index = v->count ? 0 : -1;
     return state;
 }
+bool xx_cpm_get_directory_slot(Abstractformat *self, const xx_archive_record_state *state, uint32_t index, xx_cpm_directory_slot *out)
+{
+    const cpm_view *v;
+    xx_cpm_directory_slot slot;
+    uint64_t physical;
+    if (!self || !state || !out || !self->device || self->file_type != CPM_TYPE || CPM_TYPE == XX_FILE_TYPE_UNKNOWN ||
+        self->create_archive_records_reading != xx_cpm_create_archive_records_reading ||
+        self->free_archive_records_reading != xx_cpm_free_archive_records_reading || state->format != self ||
+        state->free_internal != cpm_view_free || !(v = (const cpm_view *)state->internal_state) ||
+        v->device != self->device || v->base != self->base_address || v->base < 0 || index >= v->slots)
+        return false;
+    physical = cpm_physical(v, v->heap + (uint64_t)index * 32U);
+    if (physical > v->bytes || 32U > v->bytes - physical || physical > (uint64_t)(INT64_MAX - v->base)) return false;
+    slot.offset = v->base + (int64_t)physical;
+    slot.entry_count = v->slots;
+    slot.allocation_pointer_size = v->pointer_count == 16U ? 1U : 2U;
+    slot.version = v->geometry.version;
+    slot.length_mode = v->geometry.length_mode;
+    *out = slot;
+    return true;
+}
 const xx_archive_record *xx_cpm_get_current_archive_record(Abstractformat *self, xx_archive_record_state *state)
 {
     return self && state && state->format == self && state->has_record ? &state->current_record : NULL;

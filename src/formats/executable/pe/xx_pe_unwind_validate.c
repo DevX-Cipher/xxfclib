@@ -65,6 +65,31 @@ static int unwind_file_backed(const unwind_context *context, uint64_t rva,
     return 0;
 }
 
+/* Mirrors isVirtualAddressRangeFileBacked(imageBase + rva, 1,
+ * IMAGE_SCN_MEM_EXECUTE). Non-executable sections are skipped, while a
+ * translation mismatch in the first executable section that contains the RVA
+ * fails immediately instead of falling through to an overlapping section. */
+static int guard_cf_function_file_backed(const unwind_context *context, uint32_t rva)
+{
+    int i;
+    for (i = 0; i < context->pe->nSectionCount; i++) {
+        const xx_pe_inspect_section *section = context->pe->pSections + i;
+        uint64_t section_rva = section->nVirtualAddress;
+        uint64_t relative;
+        uint64_t raw_offset;
+        uint64_t address;
+        if ((section->nCharacteristics & UINT32_C(0x20000000)) == 0 || rva < section_rva) continue;
+        relative = (uint64_t)rva - section_rva;
+        if (relative >= section->nSizeOfRawData) continue;
+        raw_offset = (uint64_t)section->nPointerToRawData + relative;
+        if (raw_offset >= context->file_size) return 0;
+        address = context->pe->map.module_address + rva;
+        return xx_memory_map_address_to_offset_ex(&context->pe->map, address,
+                                                  XX_MEMORY_MAP_LOOKUP_LAST_PHYSICAL) == (int64_t)raw_offset;
+    }
+    return 0;
+}
+
 static size_t unwind_find_range(const unwind_mapped_range *ranges, size_t count,
                                 uint64_t begin, uint64_t end)
 {
@@ -378,5 +403,84 @@ int xx_pe_inspect_validate_amd64_unwind(const xx_pe_inspection *pe, xx_io_device
 cleanup:
     xx_rt_free(buffer);
     xx_rt_free(ranges);
+    return completed;
+}
+
+int xx_pe_inspect_validate_guard_cf_function_table(const xx_pe_inspection *pe,
+                                                   xx_io_device *device,
+                                                   uint32_t table_rva,
+                                                   uint32_t entry_count,
+                                                   uint32_t entry_size,
+                                                   xx_pe_guard_cf_result *result)
+{
+    enum { GUARD_CF_BUFFER_LIMIT = 49152 };
+    unwind_context context;
+    unsigned char *buffer = NULL;
+    uint64_t table_size;
+    uint32_t entries_per_chunk;
+    uint32_t entry_index = 0;
+    uint32_t previous_rva = 0;
+    int have_previous = 0;
+    int64_t table_offset;
+    int64_t file_size;
+    int completed = 0;
+
+    if (!result) return 0;
+    xx_rt_memset(result, 0, sizeof(*result));
+    if (!pe || !device || !entry_count || entry_size < 4 || entry_size > 19 ||
+        pe->nSectionCount < 0 || (pe->nSectionCount && !pe->pSections) ||
+        (pe->map.record_count && !pe->map.records)) return 0;
+    /* The script performs these operations as exact JavaScript Numbers. Let
+     * it retain control for theoretical images whose VAs cannot be represented
+     * exactly instead of changing the verdict with native integer arithmetic. */
+    if (pe->map.module_address > UINT64_C(9007199254740991) - UINT32_MAX) return 0;
+    file_size = xx_io_total_size(device);
+    if (file_size < 0 || (uint64_t)file_size > UINT64_C(9007199254740991)) return 0;
+    table_size = (uint64_t)entry_count * entry_size;
+    context.pe = pe;
+    context.device = device;
+    context.file_size = (uint64_t)file_size;
+    if (!unwind_file_backed(&context, table_rva, table_size, &table_offset)) return 0;
+
+    entries_per_chunk = GUARD_CF_BUFFER_LIMIT / entry_size;
+    if (!entries_per_chunk) return 0;
+    buffer = (unsigned char *)xx_rt_malloc((size_t)entries_per_chunk * entry_size);
+    if (!buffer) return 0;
+
+    while (entry_index < entry_count) {
+        uint32_t chunk_entries = entry_count - entry_index;
+        uint32_t local_index;
+        size_t chunk_size;
+        if (chunk_entries > entries_per_chunk) chunk_entries = entries_per_chunk;
+        chunk_size = (size_t)chunk_entries * entry_size;
+        if (!xx_io_read_at(device,
+                           table_offset + (int64_t)((uint64_t)entry_index * entry_size),
+                           buffer, chunk_size)) goto cleanup;
+        for (local_index = 0; local_index < chunk_entries; local_index++) {
+            uint32_t function_rva = unwind_u32(buffer + (size_t)local_index * entry_size);
+            uint32_t absolute_index = entry_index + local_index;
+            if (have_previous && function_rva < previous_rva) {
+                result->status = XX_PE_GUARD_CF_OUT_OF_ORDER;
+                result->entry_index = absolute_index;
+                result->function_rva = function_rva;
+                completed = 1;
+                goto cleanup;
+            }
+            if (!guard_cf_function_file_backed(&context, function_rva)) {
+                result->status = XX_PE_GUARD_CF_NOT_EXECUTABLE;
+                result->entry_index = absolute_index;
+                result->function_rva = function_rva;
+                completed = 1;
+                goto cleanup;
+            }
+            previous_rva = function_rva;
+            have_previous = 1;
+        }
+        entry_index += chunk_entries;
+    }
+    completed = 1;
+
+cleanup:
+    xx_rt_free(buffer);
     return completed;
 }

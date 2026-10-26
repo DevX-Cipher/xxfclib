@@ -271,6 +271,10 @@ static int should_execute(DBSignature *pRecord, XFileType fileType, int bIsCliAs
         return 0;
     }
 
+    if (!db_signature_matches_tag_filters(pRecord, pOptions->include_tags, pOptions->exclude_tags)) {
+        return 0;
+    }
+
     if (pRecord->databaseType == DB_MAIN) {
         return 1;
     }

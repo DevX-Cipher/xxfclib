@@ -370,7 +370,12 @@ static bool pm_unpack(Abstractformat *f, xx_archive_record_state *st, xx_pd_stru
         v = xx_format_resolve_extra_parameter(f, &st->options, XX_META_ID_OPT_OVERWRITE);
         overwrite = v && xx_var_get_bool(v);
         if ((!overwrite && xx_io_file_exists_a(path)) || (pd && xx_pd_is_stopped(pd))) goto done;
-        output = pm_stage(path, &stage);
+        if (overwrite) {
+            output = xx_io_file_open(path, "wb");
+            stage = NULL;
+        } else {
+            output = pm_stage(path, &stage);
+        }
         if (!output) goto done;
     }
     if (m->directory) {
@@ -446,6 +451,8 @@ done:
     if (stage) {
         if (!result) (void)xx_io_file_remove_a(stage);
         xx_str_free(stage);
+    } else if (!result && path && overwrite) {
+        (void)xx_io_file_remove_a(path);
     }
     if (path) {
         xx_str_free(path);

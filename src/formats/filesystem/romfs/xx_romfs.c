@@ -114,13 +114,14 @@ static bool xx_romfs_range_within(int64_t total_size, int64_t offset, int64_t si
     return (total_size >= 0) && (offset >= 0) && (size >= 0) && (offset <= total_size) && (size <= total_size - offset);
 }
 
-/* Round up to the next 16-byte boundary, refusing to overflow. */
-static bool xx_romfs_align(int64_t value, int64_t *result)
+/* Wire alignment is relative to the ROMFS image, including embedded images.
+ * Keep the absolute result representable before adding the base back. */
+static bool xx_romfs_align(int64_t base, int64_t value, int64_t *result)
 {
-    if (!result || value < 0 || value > INT64_MAX - (XX_ROMFS_ALIGNMENT - 1)) {
+    if (!result || base < 0 || value < base || value > INT64_MAX - (XX_ROMFS_ALIGNMENT - 1)) {
         return false;
     }
-    *result = (value + (XX_ROMFS_ALIGNMENT - 1)) & ~(int64_t)(XX_ROMFS_ALIGNMENT - 1);
+    *result = base + ((value - base + (XX_ROMFS_ALIGNMENT - 1)) & ~(int64_t)(XX_ROMFS_ALIGNMENT - 1));
     return true;
 }
 
@@ -381,7 +382,7 @@ static bool xx_romfs_resolve_hardlink(Abstractformat *self, const xx_romfs_priva
             xx_str_free(name);
             return false;
         }
-        if (!xx_romfs_plausible_name(name, xx_str_len(name)) || !xx_romfs_align(name_end, &data_offset)) {
+        if (!xx_romfs_plausible_name(name, xx_str_len(name)) || !xx_romfs_align(self->base_address, name_end, &data_offset)) {
             xx_str_free(name);
             return false;
         }
@@ -433,7 +434,7 @@ static bool xx_romfs_walk(Abstractformat *self, xx_romfs_private *parsed, int64_
         if (!xx_romfs_read_name(self->device, offset + XX_ROMFS_FILE_HEADER_SIZE, parsed->archive_end, &name, &name_end)) {
             return false;
         }
-        if (!xx_romfs_plausible_name(name, xx_str_len(name)) || !xx_romfs_align(name_end, &data_offset)) {
+        if (!xx_romfs_plausible_name(name, xx_str_len(name)) || !xx_romfs_align(self->base_address, name_end, &data_offset)) {
             xx_str_free(name);
             return false;
         }
@@ -570,7 +571,7 @@ static bool xx_romfs_parse(Abstractformat *self, xx_romfs_private *parsed, xx_pd
     }
     xx_str_free(volume_name);
     volume_name = NULL;
-    if (!xx_romfs_align(volume_name_end, &root_offset) || !xx_romfs_range_within(parsed->archive_end, root_offset, XX_ROMFS_FILE_HEADER_SIZE) ||
+    if (!xx_romfs_align(self->base_address, volume_name_end, &root_offset) || !xx_romfs_range_within(parsed->archive_end, root_offset, XX_ROMFS_FILE_HEADER_SIZE) ||
         !xx_romfs_walk(self, parsed, root_offset, "", 0U, pd) || parsed->count == 0U || (pd && xx_pd_is_stopped(pd))) {
         goto fail;
     }

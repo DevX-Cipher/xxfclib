@@ -114,8 +114,12 @@ static bool lua_proto(lua_scan *q, unsigned depth)
         return false;
     }
     q->instructions += code;
-    for (i = 0; i < code; ++i)
-        if ((xx_data_get_u32(q->b + q->p + (uint64_t)i * 4, 4, 0, false) & 63) > 37) return false;
+    for (i = 0; i < code; ++i) {
+        uint32_t word = xx_data_get_u32(q->b + q->p + (uint64_t)i * 4, 4, 0, false);
+        if ((word & 63) > 37) return false;
+        /* Lua5.1 SETLIST C=0 uses the following full word as a block index. */
+        if ((word & 63) == 34 && ((word >> 14) & 511) == 0 && ++i >= code) return false;
+    }
     q->p += (uint64_t)code * 4;
     if (!lua_count(q, &constants, 65536)) {
         return false;

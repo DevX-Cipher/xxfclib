@@ -228,8 +228,21 @@ XX_FORMAT_READER_PROBE(leveldb_sstable, XX_FILE_TYPE_LEVELDB_SSTABLE,
     (header_size >= 48))
 XX_FORMAT_READER_PROBE(tex_tfm, XX_FILE_TYPE_TEX_TFM,
     (total_size >= 52 && header_size >= 24U && total_size == ((uint32_t)header[0]*256U + header[1])*4U && ((uint32_t)header[2]*256U + header[3]) >= 2U))
+/* A VLW font needs a 24-byte header, at least one 28-byte glyph,
+ * two UTF name lengths and one smoothing byte. Empty bitmaps/names are valid,
+ * making 57 bytes the true minimum. The native reader validates every glyph,
+ * bitmap and modified-UTF string, and requires the exact end of the file. */
 XX_FORMAT_READER_PROBE(processing_vlw, XX_FILE_TYPE_PROCESSING_VLW,
-    (total_size >= 62 && header_size >= 24U && header[4] == 0U && header[5] == 0U && header[6] == 0U && header[7] == 11U && header[0] == 0U && header[1] == 0U))
+    (total_size >= 57 && header_size >= 24U &&
+     xx_data_get_u32(header, header_size, 0U, true) > 0U &&
+     xx_data_get_u32(header, header_size, 0U, true) <= 4092U &&
+     (uint64_t)total_size >= UINT64_C(29) + UINT64_C(28) * xx_data_get_u32(header, header_size, 0U, true) &&
+     xx_data_get_u32(header, header_size, 4U, true) == 11U &&
+     xx_data_get_u32(header, header_size, 8U, true) > 0U &&
+     xx_data_get_u32(header, header_size, 8U, true) <= 4096U &&
+     xx_data_get_u32(header, header_size, 12U, true) == 0U &&
+     xx_data_get_u32(header, header_size, 16U, true) <= 65536U &&
+     xx_data_get_u32(header, header_size, 20U, true) <= 65536U))
 XX_FORMAT_READER_PROBE(phylo_newick, XX_FILE_TYPE_PHYLO_NEWICK,
     ((header_size>=6 && (header[0]=='(' || header[0]=='['))))
 XX_FORMAT_READER_PROBE(python_marshal, XX_FILE_TYPE_PYTHON_MARSHAL,
@@ -366,6 +379,10 @@ XX_FORMAT_READER_PROBE(mtv_image, XX_FILE_TYPE_MTV_IMAGE,
     (total_size >= 7 && header_size >= 5 && header[0]>='1' && header[0]<='9'))
 XX_FORMAT_READER_PROBE(nokia_ota_bitmap, XX_FILE_TYPE_NOKIA_OTA_BITMAP,
     (total_size >= 5 && header_size >= 5 && ((header[0]==0 && header[1] && header[2] && header[3]==1)||(header_size>=6 && header[0]==16 && (header[1]||header[2]) && header[1]<=32 && (header[3]||header[4]) && header[3]<=15 && header[5]==1))))
+/* The sprite format has no magic signature; use its existing bounded header
+ * prefilter, then the registered native validator before selecting its type. */
+XX_FORMAT_READER_PROBE(risc_os_sprite, XX_FILE_TYPE_RISC_OS_SPRITE,
+    (xx_risc_os_sprite_prefilter(header, header_size, total_size)))
 XX_FORMAT_READER_PROBE(apple_pict, XX_FILE_TYPE_APPLE_PICT,
     (total_size >= 124 && ((header_size>=14 && !xx_rt_memcmp(header+10,"\x00\x11\x02\xff",4))||(header_size>=526 && total_size>=636 && !xx_rt_memcmp(header,"\0\0\0\0\0\0\0\0\0\0\0\0\0\0",14) && !xx_rt_memcmp(header+522,"\x00\x11\x02\xff",4)))))
 XX_FORMAT_READER_PROBE(iges_model, XX_FILE_TYPE_IGES_MODEL,
@@ -398,3 +415,17 @@ XX_FORMAT_READER_PROBE(orca_input, XX_FILE_TYPE_ORCA_INPUT,
     ((header_size>=8 && (header[0]==35 || header[0]==33 || header[0]==36 || header[0]==38 || header[0]==37 || header[0]==32 || (header[0]>=65 && header[0]<=122)))))
 XX_FORMAT_READER_PROBE(demon_input, XX_FILE_TYPE_DEMON_INPUT,
     ((header_size>=8 && (header[0]==35 || header[0]==33 || header[0]==36 || header[0]==38 || header[0]==37 || header[0]==32 || (header[0]>=65 && header[0]<=122)))))
+
+/* Signature-light cartridge formats are last-resort candidates. Each bounded
+ * prefilter is followed by the complete registered native reader validation. */
+XX_FORMAT_READER_PROBE(msx_rom, XX_FILE_TYPE_MSX_ROM,
+    (header_size >= 8U && total_size >= 8 && total_size <= 1048576 &&
+     ((header[0] == 'A' && header[1] == 'B' && total_size >= 8192 &&
+       (total_size & 8191) == 0 && (total_size & (total_size - 1)) == 0) ||
+      (header[0] == 0xfeU && xx_data_get_u16(header, header_size, 3, false) >= xx_data_get_u16(header, header_size, 1, false) &&
+       (uint64_t)total_size == 8U + (uint64_t)xx_data_get_u16(header, header_size, 3, false) - xx_data_get_u16(header, header_size, 1, false)))))
+XX_FORMAT_READER_PROBE(tic80, XX_FILE_TYPE_TIC80,
+    (header_size >= 4U && total_size > 255 && total_size <= 10485760 && header[3] == 0 &&
+     ((header[0] & 31U) >= 1U && (header[0] & 31U) <= 18U &&
+      (header[0] & 31U) != 7U && (header[0] & 31U) != 8U && (header[0] & 31U) != 11U) &&
+     (uint64_t)xx_data_get_u16(header, header_size, 1, false) <= (uint64_t)total_size - 4U))

@@ -44,33 +44,18 @@ static XXFC_MAYBE_UNUSED bool sfx_carrier_embedded(Abstractformat *f, pm_stream 
                                                    sfx_carrier_close close, const char *label, xx_pd_struct *pd)
 {
     int64_t limit = pm_available(f), at;
-    size_t n, i, capacity = xx_get_file_buffer_size(), completed = 0;
+    size_t n, i, capacity = xx_get_file_buffer_size();
     unsigned candidates = 0;
-    uint8_t *scan;
     if (low < 0 || low >= limit || !siglen || siglen > 32) {
         return false;
     }
     n = limit - low > 16777216 ? 16777216U : (size_t)(limit - low);
     if (capacity > n) capacity = n;
-    scan = (uint8_t *)xx_mem_alloc(capacity);
-    if (!scan) return false;
-    /* Retain the complete original scan-range I/O check before candidates. */
-    while (completed < n) {
-        size_t take = n - completed > capacity ? capacity : n - completed;
-        if (carrier_stop(pd) || !pm_read(f, low + (int64_t)completed, scan, take)) {
-            xx_mem_free(scan);
-            return false;
-        }
-        completed += take;
-    }
-    xx_mem_free(scan);
-    scan = NULL;
     for (i = 0; i + siglen <= n; ++i) {
         Abstractformat *reader;
         int64_t size;
         bool valid;
         if ((i & 4095U) == 0 && carrier_stop(pd)) {
-            xx_mem_free(scan);
             return false;
         }
         {
@@ -85,7 +70,6 @@ static XXFC_MAYBE_UNUSED bool sfx_carrier_embedded(Abstractformat *f, pm_stream 
         if (at < low) continue;
         reader = open(f->device, f->base_address + at);
         if (!reader) {
-            xx_mem_free(scan);
             return false;
         }
         valid = xx_format_handle_base_info(reader, pd);
@@ -125,14 +109,12 @@ static XXFC_MAYBE_UNUSED bool sfx_carrier_embedded(Abstractformat *f, pm_stream 
         }
         if (valid && size > 0 && carrier_range(limit, at, (uint64_t)size)) {
             close(reader);
-            xx_mem_free(scan);
             if (!pm_add(f, s, label, at, size)) return false;
             s->size = at + size;
             return true;
         }
         close(reader);
     }
-    xx_mem_free(scan);
     return false;
 }
 static XXFC_MAYBE_UNUSED bool sfx_carrier_crc(Abstractformat *f, int64_t at, int64_t bytes, uint32_t expected, xx_pd_struct *pd)

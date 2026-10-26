@@ -59,7 +59,8 @@ static bool pm_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
     if (!pm_read(f, 0, h, 20) || xx_rt_memcmp(h, "FLYT", 4) || !bom(h + 4, &be) || g16(h + 6, be) != 20) return false;
     version = g32(h + 8, be);
     total = g32(h + 12, be);
-    count = g32(h + 16, be);
+    count = g16(h + 16, be);
+    if (g16(h + 18, be)) return false;
     if (!(version == 0x8040000) || total < 20 || total > (uint64_t)pm_available(f) || !count || count > 4096) return false;
     for (i = 0; i < count; ++i) {
         uint32_t n, j;

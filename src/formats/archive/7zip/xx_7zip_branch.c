@@ -7,25 +7,7 @@
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/data/xx_data.h"
 
-typedef struct xx_7zip_bcj2_decoder_s {
-    const uint8_t *main_data;
-    const uint8_t *call_data;
-    const uint8_t *jump_data;
-    const uint8_t *range_data;
-    size_t main_size;
-    size_t call_size;
-    size_t jump_size;
-    size_t range_size;
-    size_t main_pos;
-    size_t call_pos;
-    size_t jump_pos;
-    size_t range_pos;
-    uint32_t range;
-    uint32_t code;
-    uint32_t ip;
-    uint16_t probabilities[258];
-    uint8_t previous;
-} xx_7zip_bcj2_decoder;
+
 
 bool xx_7zip_branch_properties_supported(size_t properties_size)
 {
@@ -374,103 +356,196 @@ size_t xx_7zip_branch_process(xx_7zip_branch_state *state, uint8_t *data, size_t
     return processed;
 }
 
-static bool xx_7zip_bcj2_read_range_byte(xx_7zip_bcj2_decoder *decoder, uint8_t *value)
-{
-    if (!decoder || !value || decoder->range_pos >= decoder->range_size) return false;
-    *value = decoder->range_data[decoder->range_pos++];
-    return true;
-}
+#if defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
+#include <emmintrin.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
-static bool xx_7zip_bcj2_bit(xx_7zip_bcj2_decoder *decoder, uint16_t *probability, bool *bit)
+static inline size_t xx_7zip_bcj2_scan_and_copy(uint8_t *dst, const uint8_t *src, size_t len)
 {
-    uint32_t bound;
-    uint8_t next;
-    if (!decoder || !probability || !bit) return false;
-    if (decoder->range < UINT32_C(1) << 24U) {
-        if (!xx_7zip_bcj2_read_range_byte(decoder, &next)) return false;
-        decoder->range <<= 8U;
-        decoder->code = (decoder->code << 8U) | next;
+    size_t i = 0;
+    const __m128i v_e8 = _mm_set1_epi8((char)-24); /* 0xE8 */
+    const __m128i v_fe = _mm_set1_epi8((char)-2);  /* 0xFE */
+    const __m128i v_0f = _mm_set1_epi8((char)0x0F);
+
+    while (i + 32 <= len) {
+        __m128i d0 = _mm_loadu_si128((const __m128i *)(const void *)(src + i));
+        __m128i m0 = _mm_or_si128(_mm_cmpeq_epi8(_mm_and_si128(d0, v_fe), v_e8), _mm_cmpeq_epi8(d0, v_0f));
+        int mask0 = _mm_movemask_epi8(m0);
+        if (mask0 != 0) {
+            _mm_storeu_si128((__m128i *)(void *)(dst + i), d0);
+            unsigned long bit_idx;
+#if defined(_MSC_VER)
+            _BitScanForward(&bit_idx, (unsigned long)mask0);
+#else
+            bit_idx = (unsigned long)__builtin_ctz((unsigned int)mask0);
+#endif
+            return i + (size_t)bit_idx;
+        }
+
+        __m128i d1 = _mm_loadu_si128((const __m128i *)(const void *)(src + i + 16));
+        __m128i m1 = _mm_or_si128(_mm_cmpeq_epi8(_mm_and_si128(d1, v_fe), v_e8), _mm_cmpeq_epi8(d1, v_0f));
+        int mask1 = _mm_movemask_epi8(m1);
+        _mm_storeu_si128((__m128i *)(void *)(dst + i), d0);
+        _mm_storeu_si128((__m128i *)(void *)(dst + i + 16), d1);
+        if (mask1 != 0) {
+            unsigned long bit_idx;
+#if defined(_MSC_VER)
+            _BitScanForward(&bit_idx, (unsigned long)mask1);
+#else
+            bit_idx = (unsigned long)__builtin_ctz((unsigned int)mask1);
+#endif
+            return i + 16 + (size_t)bit_idx;
+        }
+        i += 32;
     }
-    bound = (decoder->range >> 11U) * *probability;
-    if (decoder->code < bound) {
-        decoder->range = bound;
-        *probability = (uint16_t)(*probability + ((2048U - *probability) >> 5U));
-        *bit = false;
-    } else {
-        decoder->range -= bound;
-        decoder->code -= bound;
-        *probability = (uint16_t)(*probability - (*probability >> 5U));
-        *bit = true;
+    while (i + 16 <= len) {
+        __m128i d0 = _mm_loadu_si128((const __m128i *)(const void *)(src + i));
+        __m128i m0 = _mm_or_si128(_mm_cmpeq_epi8(_mm_and_si128(d0, v_fe), v_e8), _mm_cmpeq_epi8(d0, v_0f));
+        int mask = _mm_movemask_epi8(m0);
+        _mm_storeu_si128((__m128i *)(void *)(dst + i), d0);
+        if (mask != 0) {
+            unsigned long bit_idx;
+#if defined(_MSC_VER)
+            _BitScanForward(&bit_idx, (unsigned long)mask);
+#else
+            bit_idx = (unsigned long)__builtin_ctz((unsigned int)mask);
+#endif
+            return i + (size_t)bit_idx;
+        }
+        i += 16;
     }
-    return true;
+    while (i < len) {
+        uint8_t b = src[i];
+        if (b == 0xE8U || b == 0xE9U || b == 0x0FU) return i;
+        dst[i] = b;
+        i++;
+    }
+    return len;
 }
+#else
+static inline size_t xx_7zip_bcj2_scan_and_copy(uint8_t *dst, const uint8_t *src, size_t len)
+{
+    size_t i = 0;
+    while (i < len) {
+        uint8_t b = src[i];
+        if (b == 0xE8U || b == 0xE9U || b == 0x0FU) return i;
+        dst[i] = b;
+        i++;
+    }
+    return len;
+}
+#endif
 
 bool xx_7zip_bcj2_decode(const uint8_t *const inputs[4], const size_t input_sizes[4], const uint8_t *properties, size_t properties_size, uint8_t *output,
                          size_t output_size)
 {
-    xx_7zip_bcj2_decoder decoder;
+    const uint8_t *main_data, *call_data, *jump_data, *range_data;
+    size_t main_size, call_size, jump_size, range_size;
+    size_t main_pos = 0U, call_pos = 0U, jump_pos = 0U, range_pos = 0U;
     size_t output_pos = 0U;
-    size_t i;
-    uint8_t first;
+    uint32_t range = UINT32_MAX, code = 0U, ip;
+    uint16_t probabilities[258];
+    uint8_t previous = 0U, first;
+
     if (!inputs || !input_sizes || (!properties && properties_size) || (!output && output_size) || (!inputs[0] && input_sizes[0]) || (!inputs[1] && input_sizes[1]) ||
         (!inputs[2] && input_sizes[2]) || (!inputs[3] && input_sizes[3]) || !xx_7zip_branch_properties_supported(properties_size) || input_sizes[3] < 5U ||
         (input_sizes[1] & 3U) != 0U || (input_sizes[2] & 3U) != 0U)
         return false;
-    xx_mem_zero(&decoder, sizeof(decoder));
-    decoder.main_data = inputs[0];
-    decoder.main_size = input_sizes[0];
-    decoder.call_data = inputs[1];
-    decoder.call_size = input_sizes[1];
-    decoder.jump_data = inputs[2];
-    decoder.jump_size = input_sizes[2];
-    decoder.range_data = inputs[3];
-    decoder.range_size = input_sizes[3];
-    decoder.ip = xx_7zip_branch_start_ip(properties, properties_size);
-    for (i = 0U; i < 258U; ++i) decoder.probabilities[i] = 1024U;
-    if (!xx_7zip_bcj2_read_range_byte(&decoder, &first) || first != 0U) return false;
-    for (i = 0U; i < 4U; ++i) {
-        uint8_t next;
-        if (!xx_7zip_bcj2_read_range_byte(&decoder, &next)) return false;
-        decoder.code = (decoder.code << 8U) | next;
+
+    main_data = inputs[0]; main_size = input_sizes[0];
+    call_data = inputs[1]; call_size = input_sizes[1];
+    jump_data = inputs[2]; jump_size = input_sizes[2];
+    range_data = inputs[3]; range_size = input_sizes[3];
+
+    ip = xx_7zip_branch_start_ip(properties, properties_size);
+    for (size_t i = 0U; i < 258U; ++i) probabilities[i] = 1024U;
+
+    first = range_data[range_pos++];
+    if (first != 0U) return false;
+    for (size_t i = 0U; i < 4U; ++i) {
+        code = (code << 8U) | range_data[range_pos++];
     }
-    if (decoder.code == UINT32_MAX) return false;
-    decoder.range = UINT32_MAX;
-    while (decoder.main_pos < decoder.main_size) {
-        uint8_t opcode = decoder.main_data[decoder.main_pos++];
-        bool branch = opcode == 0xE8U || opcode == 0xE9U || (decoder.previous == 0x0FU && (opcode & 0xF0U) == 0x80U);
-        if (output_pos >= output_size) return false;
-        output[output_pos++] = opcode;
-        ++decoder.ip;
-        if (branch) {
-            uint16_t *probability = opcode == 0xE8U ? &decoder.probabilities[2U + decoder.previous] : &decoder.probabilities[opcode == 0xE9U ? 1U : 0U];
-            bool converted;
-            if (!xx_7zip_bcj2_bit(&decoder, probability, &converted)) return false;
-            if (converted) {
-                const uint8_t *target;
-                size_t *target_pos;
-                size_t target_size;
-                uint32_t value;
-                if (opcode == 0xE8U) {
-                    target = decoder.call_data;
-                    target_pos = &decoder.call_pos;
-                    target_size = decoder.call_size;
-                } else {
-                    target = decoder.jump_data;
-                    target_pos = &decoder.jump_pos;
-                    target_size = decoder.jump_size;
+    if (code == UINT32_MAX) return false;
+
+    while (main_pos < main_size) {
+        if (previous != 0x0FU) {
+            size_t avail_in = main_size - main_pos;
+            size_t avail_out = output_size - output_pos;
+            size_t max_run = avail_in < avail_out ? avail_in : avail_out;
+
+            if (max_run > 0) {
+                size_t copied = xx_7zip_bcj2_scan_and_copy(output + output_pos, main_data + main_pos, max_run);
+                if (copied) {
+                    output_pos += copied;
+                    main_pos += copied;
+                    ip += (uint32_t)copied;
+                    previous = main_data[main_pos - 1];
+                    if (main_pos >= main_size || output_pos >= output_size) continue;
                 }
-                if (*target_pos > target_size || target_size - *target_pos < 4U || output_size - output_pos < 4U) return false;
-                value = xx_data_get_u32(target + *target_pos, 4, 0, true);
-                *target_pos += 4U;
-                decoder.ip += 4U;
-                value -= decoder.ip;
-                xx_data_set_u32(output + output_pos, 4, 0, value, false);
-                output_pos += 4U;
-                decoder.previous = (uint8_t)(value >> 24U);
-                continue;
             }
         }
-        decoder.previous = opcode;
+
+        uint8_t opcode = main_data[main_pos++];
+        bool branch = opcode == 0xE8U || opcode == 0xE9U || (previous == 0x0FU && (opcode & 0xF0U) == 0x80U);
+        if (output_pos >= output_size) return false;
+        output[output_pos++] = opcode;
+        ++ip;
+
+        if (branch) {
+            uint16_t *probability = opcode == 0xE8U ? &probabilities[2U + previous] : &probabilities[opcode == 0xE9U ? 1U : 0U];
+            uint32_t bound;
+            if (range < (UINT32_C(1) << 24U)) {
+                if (range_pos >= range_size) return false;
+                range <<= 8U;
+                code = (code << 8U) | range_data[range_pos++];
+            }
+            bound = (range >> 11U) * (uint32_t)(*probability);
+            if (code < bound) {
+                range = bound;
+                *probability = (uint16_t)(*probability + ((2048U - *probability) >> 5U));
+                previous = opcode;
+            } else {
+                range -= bound;
+                code -= bound;
+                *probability = (uint16_t)(*probability - (*probability >> 5U));
+
+                const uint8_t *sel_ptr = (opcode == 0xE8U) ? (call_data + call_pos) : (jump_data + jump_pos);
+                size_t *target_pos = (opcode == 0xE8U) ? &call_pos : &jump_pos;
+                size_t target_size = (opcode == 0xE8U) ? call_size : jump_size;
+
+                if (*target_pos > target_size || target_size - *target_pos < 4U || output_size - output_pos < 4U) return false;
+
+#if defined(_M_IX86) || defined(_M_X64)
+                uint32_t target = _byteswap_ulong(*(const uint32_t *)(const void *)sel_ptr);
+#elif (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+                uint32_t target = __builtin_bswap32(*(const uint32_t *)(const void *)sel_ptr);
+#else
+                uint32_t target = ((uint32_t)sel_ptr[0] << 24U) | ((uint32_t)sel_ptr[1] << 16U) |
+                                  ((uint32_t)sel_ptr[2] << 8U)  | (uint32_t)sel_ptr[3];
+#endif
+                *target_pos += 4U;
+                ip += 4U;
+                target -= ip;
+
+#if defined(_M_IX86) || defined(_M_X64) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+                *(uint32_t *)(void *)(output + output_pos) = target;
+                output_pos += 4U;
+                previous = (uint8_t)(target >> 24U);
+#else
+                output[output_pos++] = (uint8_t)target;
+                output[output_pos++] = (uint8_t)(target >> 8U);
+                output[output_pos++] = (uint8_t)(target >> 16U);
+                output[output_pos++] = (uint8_t)(target >> 24U);
+                previous = (uint8_t)(target >> 24U);
+#endif
+                continue;
+            }
+        } else {
+            previous = opcode;
+        }
     }
-    return output_pos == output_size && decoder.call_pos == decoder.call_size && decoder.jump_pos == decoder.jump_size && decoder.code == 0U;
+    return output_pos == output_size && call_pos == call_size && jump_pos == jump_size && code == 0U;
 }
+

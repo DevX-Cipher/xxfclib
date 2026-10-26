@@ -426,3 +426,15 @@ uint64_t xx_elf_get_number_of_symbols(Abstractformat *format, xx_pd_struct *pd)
     format->number_of_symbols = count;
     return count;
 }
+
+const StreamSymbols *xx_elf_get_stream_symbols(void)
+{
+    static const StreamSymbols stream = {
+        .get_number_of_symbols = xx_elf_get_number_of_symbols,
+        .create_symbols_reading = xx_elf_create_symbols_reading,
+        .get_current_symbol = xx_elf_get_current_symbol,
+        .symbol_move_to_next = xx_elf_symbol_move_to_next,
+        .free_symbols_reading = xx_elf_free_symbols_reading
+    };
+    return &stream;
+}

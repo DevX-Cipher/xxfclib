@@ -129,7 +129,7 @@ static bool xx_handle_probe_format(Abstractformat *format, xx_file_type_t type, 
      * bounded carrier/UPX pack-header marker (including COM/SYS loaders). */
     if (type == XX_FILE_TYPE_UPX && (!format || !xx_upx_has_marker_device(format->device, NULL))) return true;
     if (xx_handle_can_unpack(format) && xx_format_is_valid(format, NULL)) {
-        bool parsed = xx_format_handle_base_info(format, NULL);
+        bool parsed = (type == XX_FILE_TYPE_WISE_INSTALLATION_SYSTEM) ? true : xx_format_handle_base_info(format, NULL);
         /* A CRC-authenticated 7z encoded-header grammar can identify AES
          * encryption before a password is supplied. Retain that reader so
          * callers can apply their password before opening its directory. */
@@ -241,8 +241,9 @@ xx_list_t *xx_format_get_unpack_handle_types_device(xx_io_device *dev, bool deep
         const xx_unpack_handle_row *row = &handle_rows[i];
         int signature;
         if (row->carrier || !xx_handle_auto_candidate(row->file_type)) continue;
+
         signature = xx_handle_signature(row->file_type, dev);
-        if (signature != 1 && !(executable && xx_handle_has_carrier_reader(row->file_type))) continue;
+        if (signature != 1 && (!executable || !xx_handle_has_carrier_reader(row->file_type))) continue;
         if (xx_io_seek64(dev, saved, SEEK_SET) != 0 || !xx_handle_probe(dev, row->file_type, types)) goto failed;
     }
 

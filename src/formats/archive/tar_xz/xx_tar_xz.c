@@ -3,6 +3,7 @@
  */
 
 #include "xxfclib/formats/archive/tar_xz/xx_tar_xz.h"
+#include "xx_tar_xz_datastructs_internal.h"
 
 #include "../tar_common/xx_tar_common.h"
 #include "xxfclib/algo/crc/xx_crc.h"
@@ -176,7 +177,7 @@ static bool xx_tar_xz_encode(Abstractformat *outer, const xx_list_s *options, xx
     return true;
 }
 
-static xx_tar_common *xx_tar_xz_common(xx_tar_xz *tar_xz, bool create)
+xx_tar_common *xx_tar_xz_common(xx_tar_xz *tar_xz, bool create)
 {
     xx_tar_common *common;
     if (!tar_xz) return NULL;
@@ -202,7 +203,7 @@ static void xx_tar_xz_sync(xx_tar_xz *tar_xz, const xx_tar_common *common)
 /* One pass, forward: each Block is decoded once, into the cache, and
  * checked on the way, then the Index and Footer against them; no scan of
  * the whole file for the Index first. */
-static bool xx_tar_xz_decode(Abstractformat *outer, xx_io_device *destination, int64_t *compressed_size, xx_pd_struct *pd)
+bool xx_tar_xz_decode(Abstractformat *outer, xx_io_device *destination, int64_t *compressed_size, xx_pd_struct *pd)
 {
     bool cut = false;
     uint64_t checked = 0U;
@@ -246,16 +247,6 @@ void xx_tar_xz_init(xx_tar_xz *tar_xz, xx_io_device *dev, int64_t base_address)
     tar_xz->format.pack_archive_record = xx_tar_xz_pack_archive_record;
     tar_xz->format.finalize_archive_records_writing = xx_tar_xz_finalize_archive_records_writing;
     tar_xz->format.free_archive_records_writing = xx_tar_xz_free_archive_records_writing;
-    tar_xz->format.data_struct_id_to_string = xx_tar_xz_data_struct_id_to_string;
-    tar_xz->format.data_struct_string_to_id = xx_tar_xz_data_struct_string_to_id;
-    tar_xz->format.create_data_structs_reading = xx_tar_xz_create_data_structs_reading;
-    tar_xz->format.get_current_data_struct = xx_tar_xz_get_current_data_struct;
-    tar_xz->format.data_struct_move_to_next = xx_tar_xz_data_struct_move_to_next;
-    tar_xz->format.free_data_structs_reading = xx_tar_xz_free_data_structs_reading;
-    tar_xz->format.create_data_struct_records_reading = xx_tar_xz_create_data_struct_records_reading;
-    tar_xz->format.get_current_data_struct_record = xx_tar_xz_get_current_data_struct_record;
-    tar_xz->format.data_struct_record_move_to_next = xx_tar_xz_data_struct_record_move_to_next;
-    tar_xz->format.free_data_struct_records_reading = xx_tar_xz_free_data_struct_records_reading;
     tar_xz->format.destroy = xx_tar_xz_vtable_destroy;
     tar_xz->compressed_size = -1;
 }
@@ -411,69 +402,6 @@ bool xx_tar_xz_finalize_archive_records_writing(Abstractformat *self, xx_archive
 void xx_tar_xz_free_archive_records_writing(Abstractformat *self, xx_archive_write_state *state)
 {
     xx_tar_common_free_archive_records_writing(self, state);
-}
-
-const char *xx_tar_xz_data_struct_id_to_string(Abstractformat *self, uint32_t id)
-{
-    xx_tar_common *common = xx_tar_xz_common((xx_tar_xz *)self, true);
-    return common ? xx_tar_common_data_struct_id_to_string(common, id) : "UNKNOWN";
-}
-
-uint32_t xx_tar_xz_data_struct_string_to_id(Abstractformat *self, const char *name)
-{
-    xx_tar_common *common = xx_tar_xz_common((xx_tar_xz *)self, true);
-    return common ? xx_tar_common_data_struct_string_to_id(common, name) : XX_TAR_XZ_DS_UNKNOWN;
-}
-
-xx_data_struct_state *xx_tar_xz_create_data_structs_reading(Abstractformat *self, xx_pd_struct *pd)
-{
-    xx_tar_common *common = xx_tar_xz_common((xx_tar_xz *)self, true);
-    if (!self || !common) return NULL;
-    return xx_tar_common_create_data_structs_reading(common, self, xx_tar_xz_decode, pd);
-}
-
-const xx_data_struct *xx_tar_xz_get_current_data_struct(Abstractformat *self, xx_data_struct_state *state)
-{
-    xx_tar_common *common = xx_tar_xz_common((xx_tar_xz *)self, false);
-    return common ? xx_tar_common_get_current_data_struct(common, state) : NULL;
-}
-
-bool xx_tar_xz_data_struct_move_to_next(Abstractformat *self, xx_data_struct_state *state, xx_pd_struct *pd)
-{
-    xx_tar_common *common = xx_tar_xz_common((xx_tar_xz *)self, false);
-    return common && xx_tar_common_data_struct_move_to_next(common, state, pd);
-}
-
-void xx_tar_xz_free_data_structs_reading(Abstractformat *self, xx_data_struct_state *state)
-{
-    xx_tar_common *common = xx_tar_xz_common((xx_tar_xz *)self, false);
-    if (common) xx_tar_common_free_data_structs_reading(common, state);
-}
-
-xx_data_struct_record_state *xx_tar_xz_create_data_struct_records_reading(Abstractformat *self, const xx_data_struct *ds, xx_pd_struct *pd)
-{
-    xx_tar_common *common = xx_tar_xz_common((xx_tar_xz *)self, false);
-    return common ? xx_tar_common_create_data_struct_records_reading(common, ds, pd) : NULL;
-}
-
-const xx_data_struct_record *xx_tar_xz_get_current_data_struct_record(Abstractformat *self, xx_data_struct_record_state *state)
-{
-    xx_tar_common *common = xx_tar_xz_common((xx_tar_xz *)self, false);
-    return common ? xx_tar_common_get_current_data_struct_record(common, state) : NULL;
-}
-
-bool xx_tar_xz_data_struct_record_move_to_next(Abstractformat *self, xx_data_struct_record_state *state, xx_pd_struct *pd)
-{
-    xx_tar_common *common = xx_tar_xz_common((xx_tar_xz *)self, false);
-    return common && xx_tar_common_data_struct_record_move_to_next(common, state, pd);
-}
-
-void xx_tar_xz_free_data_struct_records_reading(Abstractformat *self, xx_data_struct_record_state *state)
-{
-    xx_tar_common *common = xx_tar_xz_common((xx_tar_xz *)self, false);
-    if (common) {
-        xx_tar_common_free_data_struct_records_reading(common, state);
-    }
 }
 
 uint64_t xx_tar_xz_get_number_of_records(const xx_tar_xz *tar_xz)

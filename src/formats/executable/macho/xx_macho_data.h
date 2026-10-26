@@ -5,8 +5,9 @@
 #ifndef XXFCLIB_MACHO_DATA_INTERNAL_H
 #define XXFCLIB_MACHO_DATA_INTERNAL_H
 
+#include "xxfclib/formats/xx_format_streams.h"
 #include "xxfclib/formats/executable/macho/xx_macho.h"
 
-void xx_macho_setup_data_struct_callbacks(xx_macho *macho);
+const StreamDataStructs *xx_macho_get_stream_datastructs(void);
 
 #endif /* XXFCLIB_MACHO_DATA_INTERNAL_H */

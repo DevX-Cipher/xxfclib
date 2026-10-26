@@ -4,7 +4,6 @@
 
 #include "xxfclib/formats/executable/macho/xx_macho.h"
 
-#include "xx_macho_data.h"
 
 #include "xxfclib/data/xx_data.h"
 #include "xxfclib/memory/xx_memory.h"
@@ -317,7 +316,6 @@ void xx_macho_init(xx_macho *macho, xx_io_device *device, int64_t base_address)
     macho->format.handle_base_info = xx_macho_handle_base_info;
     macho->format.get_format_size = xx_macho_get_format_size;
     macho->format.get_memory_map = xx_macho_get_memory_map;
-    xx_macho_setup_data_struct_callbacks(macho);
     macho->format.destroy = xx_macho_vtable_destroy;
 }
 

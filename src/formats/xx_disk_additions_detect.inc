@@ -12,9 +12,9 @@ static bool xx_disk_addition_candidate(uint32_t type,const uint8_t *first512,siz
  case XX_FILE_TYPE_COPYTAPE:return first_size>=9U&&(!xx_rt_memcmp(p,"CPTP:BLK ",9)||!xx_rt_memcmp(p,"CPTP:MRK\n",9)||!xx_rt_memcmp(p,"CPTP:EOT\n",9));
  case XX_FILE_TYPE_WC_DISK_IMAGE:return first_size>=32U&&!xx_rt_memcmp(p,"WC DISK IMAGE\x1a\x1a\0",16)&&p[16]<=1U&&p[17]>=1U&&p[17]<=2U&&p[18]>=1U&&p[18]<=18U&&p[19]>=1U&&p[19]<=80U;
  case XX_FILE_TYPE_DRI_DISKCOPY:
-  /* Signature is in the final415-byte footer. Its strict factory reads only
+  /* Signature is in the final419-byte footer. Its strict factory reads only
    * that footer; all documented BPBs imply a multiple128-byte sector body. */
-  return source_total>=543U&&(source_total-415U)%128U==0;
+  return source_total>=547U&&(source_total-419U)%128U==0;
  case XX_FILE_TYPE_MAXI_DISK:
   if(first_size<8U||p[1]>11U||!p[2]||p[2]>2U||!p[3]||p[3]>90U||p[4]>7U||!p[5]||p[5]>64U) {return false; } return source_total==8U+(uint64_t)p[2]*p[3]*p[5]*(128U<<p[4]);
  case XX_FILE_TYPE_RAY_DIM:return first_size>=84U&&!xx_rt_memcmp(p,"Disk IMage VER ",15)&&p[80]>=1U&&p[80]<=5U&&p[82]>=1U&&p[82]<=64U&&p[83]<=2U;

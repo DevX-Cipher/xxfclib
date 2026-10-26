@@ -87,9 +87,9 @@ static bool graphics_text_parse(Abstractformat *f, pm_stream *s, const uint8_t *
                         return false;
                 } else {
                     int32_t used[2];
-                    unsigned fields = kind == 6 ? 12 : 8;
+                    unsigned fields = kind == 6 ? 12 : 4;
                     for (j = 0; j < (int32_t)fields; ++j) {
-                        if (j >= 10) {
+                        if (kind == 6 && (j == 9 || j == 11)) {
                             if (!component_text_number_36_digits(&q, &value)) return false;
                         } else {
                             if (!component_text_integer(&q, &v)) return false;

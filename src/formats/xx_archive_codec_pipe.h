@@ -17,6 +17,10 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#if defined(__APPLE__) && !defined(XXFC_NO_EXTERNAL_HELPERS)
+#include <mach-o/dyld.h>
+#include <stdlib.h>
+#endif
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <signal.h>
@@ -209,6 +213,41 @@ static void af_close(af_process *p)
     }
 #endif
 }
+/* Locate only a sibling of the actual executable. Do not search the current
+ * directory or PATH for implicit helpers. Explicit helper paths retain their
+ * existing behavior in af_start(). */
+#if !defined(_WIN32) && !defined(XXFC_NO_EXTERNAL_HELPERS)
+static bool af_sibling_path(char *path, size_t capacity)
+{
+    static const char name[] = "xfu_archive_codec_helper";
+    size_t n;
+    if (!path || !capacity) return false;
+    path[0] = 0;
+#ifdef __APPLE__
+    char executable[4096];
+    uint32_t size = (uint32_t)sizeof(executable);
+    char *resolved;
+    if (_NSGetExecutablePath(executable, &size) != 0) return false;
+    /* dyld may return a symlink or relative spelling. Canonicalize before
+     * selecting the sibling, matching Linux's /proc/self/exe semantics. */
+    resolved = realpath(executable, NULL);
+    if (!resolved) return false;
+    n = xx_rt_strlen(resolved);
+    if (n >= capacity) { free(resolved); return false; }
+    xx_rt_memcpy(path, resolved, n + 1U);
+    free(resolved);
+#else
+    ssize_t length = readlink("/proc/self/exe", path, capacity - 1U);
+    if (length <= 0 || (size_t)length >= capacity - 1U) { path[0] = 0; return false; }
+    n = (size_t)length;
+    path[n] = 0;
+#endif
+    while (n && path[n - 1U] != '/') --n;
+    if (!n || sizeof(name) > capacity - n) { path[0] = 0; return false; }
+    xx_rt_memcpy(path + n, name, sizeof(name));
+    return true;
+}
+#endif
 static bool af_start(af_process *p, const char *helper, uint64_t memory)
 {
 #ifdef XXFC_NO_EXTERNAL_HELPERS
@@ -341,23 +380,26 @@ done:
 #else
     int in[2] = {-1, -1}, out[2] = {-1, -1};
     char path[4096];
+#ifdef __APPLE__
+    char memory_argument[32];
+    if (memory < 65536U || memory > UINT64_C(1024) * 1024U * 1024U ||
+        xx_rt_snprintf(memory_argument, sizeof(memory_argument), "%llu", (unsigned long long)memory) <= 0) return false;
+#endif
     pid_t pid;
     p->input = p->output = -1;
     if (!helper) {
-        ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
-        if (n <= 0 || n >= (ssize_t)sizeof(path) - 32) return false;
-        while (n && path[n - 1] != '/') --n;
-        if (!n) return false;
-        xx_rt_memcpy(path + n, "xfu_archive_codec_helper", sizeof("xfu_archive_codec_helper"));
+        if (!af_sibling_path(path, sizeof(path))) return false;
         helper = path;
     }
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, in) || socketpair(AF_UNIX, SOCK_STREAM, 0, out)) goto failed;
     pid = fork();
     if (pid < 0) goto failed;
     if (!pid) {
+#ifndef __APPLE__
         struct rlimit limit;
         limit.rlim_cur = limit.rlim_max = (rlim_t)(memory + 32U * 1024U * 1024U);
         if (setrlimit(RLIMIT_AS, &limit)) _exit(126);
+#endif
         dup2(in[0], STDIN_FILENO);
         dup2(out[1], STDOUT_FILENO);
         dup2(out[1], STDERR_FILENO);
@@ -365,7 +407,14 @@ done:
         close(in[1]);
         close(out[0]);
         close(out[1]);
+#ifdef __APPLE__
+        /* Inherited dyld/parent mappings can exceed the worker allowance.
+         * A compatible helper installs its bound after exec and acknowledges
+         * it before the parent sends any archive bytes. */
+        execl(helper, helper, "--afc1-memory-limit", memory_argument, (char *)NULL);
+#else
         execl(helper, helper, (char *)NULL);
+#endif
         _exit(127);
     }
     close(in[0]);
@@ -374,6 +423,13 @@ done:
     p->output = out[0];
     p->process = pid;
     fcntl(p->input, F_SETFL, fcntl(p->input, F_GETFL) | O_NONBLOCK);
+#ifdef __APPLE__
+    {
+        uint8_t ready[12];
+        if (!af_input(p, ready, sizeof(ready)) || xx_rt_memcmp(ready, "AFL1", 4) ||
+            xx_data_get_u64(ready + 4, 8, 0, false) != memory) return false;
+    }
+#endif
     return true;
 failed:
     if (in[0] >= 0) close(in[0]);
@@ -418,7 +474,7 @@ static XXFC_MAYBE_UNUSED bool af_decode(ac_blob *b, unsigned kind, uint8_t *out,
 #endif
     if (!af_live(&p)) goto done;
     if (!af_start(&p, NULL, worker)) {
-        p.status = AF_UNAVAILABLE;
+        if (p.status != AF_TIMEOUT && p.status != AF_CANCELLED) p.status = AF_UNAVAILABLE;
         goto done;
     }
     xx_rt_memcpy(h, "AFC1", 4);

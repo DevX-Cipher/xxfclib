@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT
- * Independently implemented from https://spider.wadsworth.org/spider_doc/spider/docs/image_doc.html */
+ * Independently implemented from https://spider-em.github.io/SPIDER/docs/image_doc.html */
 #include "xxfclib/formats/science/microscopy_spider/xx_microscopy_spider.h"
 #include "../../common/xx_memory_blob.h"
 
@@ -17,7 +17,7 @@ static bool pm_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
               scientific_number_float32_uint(xx_data_get_u32(h + 16, 4, 0, be), &form) && scientific_number_float32_uint(xx_data_get_u32(h + 44, 4, 0, be), &x));
     BLOB_NEED(scientific_number_float32_uint(xx_data_get_u32(h + 48, 4, 0, be), &records) && scientific_number_float32_uint(xx_data_get_u32(h + 84, 4, 0, be), &header) &&
               scientific_number_float32_uint(xx_data_get_u32(h + 88, 4, 0, be), &row));
-    BLOB_NEED(z && y && x && records && header >= 108 && header <= 1048576 && row == x * 4 && records * row == header && (form == 1 ? z == 1 : form == 3) &&
+    BLOB_NEED(z && y && x && records && header >= 1024 && header <= 1048576 && row == x * 4 && records * row == header && (form == 1 ? z == 1 : form == 3) &&
               xx_data_get_u32(h + 92, 4, 0, be) == 0 && xx_data_get_u32(h + 104, 4, 0, be) == 0);
     BLOB_NEED(blob_load(f, &b, pd) && binary_mul(x, y, &total) && binary_mul(total, z, &total) && binary_mul(total, 4, &total) && b.n == header + total &&
               blob_floats(&b, 0, header, 4, be) && blob_floats(&b, header, total, 4, be));

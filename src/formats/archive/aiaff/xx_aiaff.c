@@ -9,7 +9,8 @@
  * the Unix `ar` reader -- that one accepts only "!<arch>\n" / "!<thin>\n" and
  * the 60-byte ar_hdr, none of which appears here.
  *
- * Every numeric field is decimal ASCII, blank padded, and an all-blank field
+ * Numeric fields use decimal ASCII except ar_mode (octal), blank padded.
+ * An all-blank field
  * is a legitimate zero -- there is not a single binary integer in the
  * container.
  *
@@ -30,7 +31,7 @@
  *   0x24 (36)   ar_date     mtime, seconds since the epoch
  *   0x30 (48)   ar_uid
  *   0x3C (60)   ar_gid
- *   0x48 (72)   ar_mode
+ *   0x48 (72)   ar_mode     file type/permissions, octal ASCII
  *   0x54 (84)   ar_namlen   name length, 4 bytes decimal
  *   0x58 (88)   the name itself, ar_namlen bytes
  *
@@ -249,6 +250,8 @@ static xx_aiaff_stream *xx_aiaff_parse(Abstractformat *self, xx_pd_struct *pd)
     int64_t last;
     int64_t offset;
     size_t steps = 0U;
+    int64_t cycle_anchor;
+    size_t cycle_power = 1U, cycle_length = 0U;
 
     if (!self || !self->device || self->base_address < 0) return NULL;
     total = xx_io_total_size(self->device);
@@ -279,6 +282,7 @@ static xx_aiaff_stream *xx_aiaff_parse(Abstractformat *self, xx_pd_struct *pd)
     xx_mem_zero(stream, sizeof(*stream));
 
     offset = first;
+    cycle_anchor = first;
     while (offset > 0) {
         xx_aiaff_member member;
         uint8_t *name_field = NULL;
@@ -289,12 +293,14 @@ static xx_aiaff_stream *xx_aiaff_parse(Abstractformat *self, xx_pd_struct *pd)
         int64_t date;
         int64_t name_length;
         int64_t data_offset;
+        int64_t name_end;
+        int64_t name_suffix;
         int64_t index;
         size_t usable;
 
         if (pd && xx_pd_is_stopped(pd)) goto fail;
-        if (++steps > (size_t)XX_AIAFF_MAX_STEPS) break;
-        if (stream->count >= (size_t)XX_AIAFF_MAX_MEMBERS) break;
+        if (++steps > (size_t)XX_AIAFF_MAX_STEPS) goto fail;
+        if (stream->count >= (size_t)XX_AIAFF_MAX_MEMBERS) goto fail;
         if (!xx_aiaff_range_within(span, offset, XX_AIAFF_MEMBER_HEADER) || !xx_aiaff_read_at(self, self->base_address + offset, entry, sizeof(entry))) {
             goto fail;
         }
@@ -309,7 +315,10 @@ static xx_aiaff_stream *xx_aiaff_parse(Abstractformat *self, xx_pd_struct *pd)
 
         /* Payload starts after the name, which is padded to an even length,
          * and after the two-byte terminator. */
-        data_offset = offset + XX_AIAFF_MEMBER_HEADER + name_length + ((name_length & 1) ? 1 : 0) + 2;
+        name_end = offset + XX_AIAFF_MEMBER_HEADER + name_length;
+        name_suffix = (name_length & 1) + 2;
+        if (name_suffix > span - name_end) goto fail;
+        data_offset = name_end + name_suffix;
         if (!xx_aiaff_range_within(span, data_offset, size)) goto fail;
         if (!xx_aiaff_read_at(self, self->base_address + data_offset - 2, terminator, sizeof(terminator)) || terminator[0] != 0x60U || terminator[1] != 0x0AU) {
             goto fail;
@@ -359,12 +368,16 @@ static xx_aiaff_stream *xx_aiaff_parse(Abstractformat *self, xx_pd_struct *pd)
          * after it is metadata or free space. */
         if ((last > 0) && (offset == last)) break;
         if (next == 0) break;
-        /* The chain has no length field, so nothing in the container itself
-         * stops a next-offset that points backwards or at the member just
-         * parsed: that is an endless walk, not an archive. Requiring the
-         * chain to move strictly forward is what makes termination a property
-         * of the parser rather than of the input. */
-        if (next <= offset) goto fail;
+        /* IBM Small ar is a linked list: physical offsets need not increase.
+         * Brent's cycle check bounds repeated links with constant memory. The
+         * existing work/member limits reject incomplete traversals above budget. */
+        ++cycle_length;
+        if (next == cycle_anchor) goto fail;
+        if (cycle_length == cycle_power) {
+            cycle_anchor = next;
+            cycle_length = 0U;
+            if (cycle_power <= (size_t)XX_AIAFF_MAX_STEPS / 2U) cycle_power *= 2U;
+        }
         offset = next;
     }
 

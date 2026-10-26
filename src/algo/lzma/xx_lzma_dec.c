@@ -274,6 +274,7 @@ static bool lzma_decode_block(lzma_range_dec *rd, lzma_decoder *dec, int64_t unc
 {
     CLzmaDec *p = &dec->dec;
     int64_t total_out = 0;
+    bool finished_with_mark = false;
 
     while (uncomp_size < 0 || total_out < uncomp_size) {
         if (rd->error || out->error || (pd && xx_pd_is_stopped(pd))) return false;
@@ -293,23 +294,19 @@ static bool lzma_decode_block(lzma_range_dec *rd, lzma_decoder *dec, int64_t unc
             }
         }
 
-        if (rd->ibuf_pos >= rd->ibuf_len) {
-            if (!rd_refill(rd)) {
-                if (uncomp_size < 0) {
-                    SizeT in_size = 0;
-                    ELzmaStatus status;
-                    (void)LzmaDec_DecodeToDic(p, dic_limit, p->tempBuf, &in_size, LZMA_FINISH_END, &status);
-                }
-                break;
-            }
-        }
+        /* Even at input EOF the SDK can retain a match or range-coder bytes.
+         * Let it finish those using an empty input span, then check its status.
+         * Input exhaustion alone does not terminate an unknown-size stream. */
+        if (rd->ibuf_pos >= rd->ibuf_len && !rd_refill(rd) && rd->error) return false;
 
         SizeT in_size = rd->ibuf_len - rd->ibuf_pos;
         ELzmaStatus status;
         SizeT cur_dic_pos = p->dicPos;
-        ELzmaFinishMode finish_mode = (uncomp_size < 0) ? LZMA_FINISH_END : LZMA_FINISH_ANY;
-
-        SRes res = LzmaDec_DecodeToDic(p, dic_limit, rd->ibuf + rd->ibuf_pos, &in_size, finish_mode, &status);
+        /* dic_limit bounds one dictionary span, not the whole stream. END
+         * would wrongly require an end marker at every ring-buffer boundary.
+         * Known-size streams may omit the marker; unknown-size streams must
+         * explicitly report FINISHED_WITH_MARK below. */
+        SRes res = LzmaDec_DecodeToDic(p, dic_limit, rd->ibuf + rd->ibuf_pos, &in_size, LZMA_FINISH_ANY, &status);
         rd->ibuf_pos += in_size;
 
         size_t produced = p->dicPos - cur_dic_pos;
@@ -323,18 +320,19 @@ static bool lzma_decode_block(lzma_range_dec *rd, lzma_decoder *dec, int64_t unc
         }
 
         if (res != SZ_OK) return false;
-        if (status == LZMA_STATUS_FINISHED_WITH_MARK) break;
+        if (status == LZMA_STATUS_FINISHED_WITH_MARK) {
+            finished_with_mark = true;
+            break;
+        }
         if (uncomp_size >= 0 && total_out >= uncomp_size) break;
         if (status == LZMA_STATUS_MAYBE_FINISHED_WITHOUT_MARK && (uncomp_size >= 0 && total_out == uncomp_size)) break;
-        if (in_size == 0 && produced == 0) {
-            if (rd->ibuf_pos >= rd->ibuf_len && rd->eof) break;
-        }
+        if (in_size == 0 && produced == 0) return false;
     }
 
     if (!lzma_dict_flush(dec, out)) return false;
     rd->range = p->range;
     rd->code = p->code;
-    return !rd->error && !out->error;
+    return !rd->error && !out->error && (uncomp_size >= 0 || finished_with_mark);
 }
 
 /* =========================================================================

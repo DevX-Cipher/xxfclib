@@ -37,7 +37,7 @@ static bool fox_sqz_room(Abstractformat *f, pm_stream *s, uint64_t extra, bool a
     if (used > budget || (uint64_t)capacity * sizeof(pm_member) > budget - used) return false;
     used += (uint64_t)capacity * sizeof(pm_member);
     for (i = 0; i < s->count; ++i) {
-        uint64_t n = s->items[i].memory ? (uint64_t)s->items[i].size : 0;
+        uint64_t n = s->items[i].memory ? (s->items[i].size ? (uint64_t)s->items[i].size : 1U) : 0;
         if (s->items[i].password) n += xx_rt_strlen(s->items[i].password) + 1U;
         if (n > budget - used) return false;
         used += n;
@@ -114,6 +114,104 @@ static void fox_sqz_fox_xor(uint8_t *p, size_t n, const uint8_t *key, size_t key
     if (keysize)
         for (i = 0; i < n; ++i) p[i] ^= key[i % keysize];
 }
+/* Both layouts frame compressed bodies with signed block sizes. The older
+ * 44/34-byte layout has no evidence of a preinitialized DCL dictionary. */
+static bool fox_sqz_blocks(uint8_t *packed, size_t packed_size, uint8_t *plain, size_t plain_size,
+                           unsigned method, const uint8_t *key, size_t keysize, bool zero_history, xx_pd_struct *pd)
+{
+    size_t in = 0, out = 0;
+    if (method != 1U && method != 4U) return false;
+    while (in < packed_size) {
+        unsigned word;
+        size_t n, wrote = 0, expected = plain_size - out, consumed = 0, measured = 0;
+        bool valid;
+        if ((pd && xx_pd_is_stopped(pd)) || packed_size - in < 2U) return false;
+        word = fox_sqz_u16(packed + in);
+        in += 2U;
+        if (!word) return in == packed_size && out == plain_size;
+        n = (word & 0x8000U) ? 0x10000U - word : word;
+        if (n > 16384U || n > packed_size - in) return false;
+        fox_sqz_fox_xor(packed + in, n, key, keysize);
+        if (word & 0x8000U) {
+            if (n > expected) return false;
+            xx_mem_copy(plain + out, packed + in, n);
+            wrote = n;
+        } else if (method == 1U) {
+            if (expected > 16384U) expected = 16384U;
+            if (!fox_sqz_rdc_block(packed + in, n, plain + out, expected, &wrote, true, pd) || wrote != expected) return false;
+        } else {
+            if (expected > 8192U) expected = 8192U;
+            valid = zero_history ? xx_dcl_scan_memory_zero_history(packed + in, n, expected, &consumed, &measured)
+                                 : xx_dcl_scan_memory(packed + in, n, expected, &consumed, &measured);
+            if (!valid || consumed != n || measured != expected) return false;
+            valid = zero_history ? xx_dcl_decode_memory_zero_history(packed + in, n, plain + out, expected, &wrote)
+                                 : xx_dcl_decode_memory(packed + in, n, plain + out, expected, &wrote);
+            if (!valid || wrote != expected) return false;
+        }
+        in += n;
+        out += wrote;
+    }
+    return false;
+}
+
+/* Older unkeyed method-4 archives: 44-byte header, count plus last-member
+ * pointer, and fixed 34-byte member headers. 0x00fe marks a member here; it
+ * is not the modern layout's end record. Unknown words remain opaque. */
+static bool fox_sqz_legacy(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
+{
+    uint8_t h[44];
+    uint16_t count;
+    uint32_t last;
+    unsigned index;
+    int64_t at = 44, size = pm_available(f);
+    const xx_var *limit = xx_format_resolve_extra_parameter(f, NULL, XX_META_ID_OPT_MAX_MEMBER_SIZE);
+    uint64_t max_member = limit ? xx_var_get_u64(limit) : UINT64_MAX;
+    if (!pm_read(f, 0, h, sizeof(h)) || xx_mem_compare(h, "FOXSQZ COMPRESSED FILE\0\x1a", 24) || h[24] ||
+        fox_sqz_u16(h + 32) != 4U) return false;
+    count = fox_sqz_u16(h + 30);
+    last = fox_sqz_u32(h + 40);
+    if (!count || size < 80 || count > (uint64_t)(size - 44) / 36U || last < 44U || last > (uint64_t)(size - 36)) return false;
+    for (index = 0; index < count; ++index) {
+        uint8_t *packed, *plain;
+        uint32_t packed_size, plain_size;
+        uint16_t crc;
+        size_t n;
+        char name[13];
+        int64_t start = at;
+        if ((pd && xx_pd_is_stopped(pd)) || (index + 1U == count ? start != last : start >= last) ||
+            !fox_sqz_take(f, &at, 34U, h) || fox_sqz_u16(h) != 0xfeU || h[32] != 2U || h[33] != 2U) return false;
+        packed_size = fox_sqz_u32(h + 3);
+        plain_size = fox_sqz_u32(h + 7);
+        crc = fox_sqz_u16(h + 11);
+        /* Fixed DOS leaf names must terminate in their 13-byte field. */
+        for (n = 0; n < sizeof(name) && h[19U + n]; ++n) {
+            unsigned c = h[19U + n];
+            if (c < 32U || c > 126U || c == '/' || c == '\\' || c == ':' || c == '<' || c == '>' ||
+                c == '"' || c == '|' || c == '?' || c == '*') return false;
+            name[n] = (char)c;
+        }
+        if (!n || n == sizeof(name) || h[19U + n - 1U] == '.' || h[19U + n - 1U] == ' ') return false;
+        name[n] = 0;
+        if (packed_size < 2U || packed_size > (uint64_t)(size - at) || plain_size > max_member ||
+            !fox_sqz_room(f, s, (uint64_t)packed_size + (plain_size ? plain_size : 1U) + 32768U, true)) return false;
+        start = at;
+        packed = (uint8_t *)xx_mem_alloc(packed_size);
+        plain = (uint8_t *)xx_mem_alloc(plain_size ? plain_size : 1U);
+        if (!packed || !plain || !fox_sqz_take(f, &at, packed_size, packed) ||
+            !fox_sqz_blocks(packed, packed_size, plain, plain_size, 4U, NULL, 0, false, pd) ||
+            xx_crc16(XX_CRC_TYPE_CRC16_ARC, plain, plain_size) != crc) {
+            xx_mem_free(packed);
+            xx_mem_free(plain);
+            return false;
+        }
+        xx_mem_free(packed);
+        if (!fox_sqz_owned(f, s, name, plain, plain_size, start, packed_size)) return false;
+        s->items[s->count - 1U].compression_method = 4U;
+    }
+    if (at != size) return false;
+    s->size = size;
+    return true;
+}
 static bool fox_sqz_fox_keyed(Abstractformat *f, pm_stream *s, xx_pd_struct *pd, uint8_t *key, char *credential)
 {
     uint8_t h[46];
@@ -122,6 +220,13 @@ static bool fox_sqz_fox_keyed(Abstractformat *f, pm_stream *s, xx_pd_struct *pd,
     int64_t at = 46, size = pm_available(f);
     uint64_t retained = 0;
     if (!pm_read(f, 0, h, 46) || xx_mem_compare(h, "FOXSQZ COMPRESSED FILE\0\x1a", 24)) return false;
+    if (!h[24] && fox_sqz_u16(h + 44) == 0xfeU) {
+        uint8_t marker[2];
+        /* Preserve modern headers with opaque bytes 44..45 equal to FE 00.
+         * Their actual first member/end marker is still at byte 46. */
+        if (!pm_read(f, 46, marker, sizeof(marker))) return false;
+        if (fox_sqz_u16(marker) != 0xebU && fox_sqz_u16(marker) != 0xfeU) return fox_sqz_legacy(f, s, pd);
+    }
     method = fox_sqz_u16(h + 32);
     if (h[24]) {
         unsigned extra = fox_sqz_u16(h + 36), i;
@@ -190,50 +295,12 @@ static bool fox_sqz_fox_keyed(Abstractformat *f, pm_stream *s, xx_pd_struct *pd,
             }
             out = plain_size;
         } else {
-            bool valid = method == 1U || method == 4U, ended = false;
-            while (valid && in < packed_size) {
-                unsigned word;
-                size_t n, wrote = 0, expected, consumed = 0;
-                if ((pd && xx_pd_is_stopped(pd)) || packed_size - in < 2U) {
-                    valid = false;
-                    break;
-                }
-                word = fox_sqz_u16(packed + in);
-                in += 2;
-                if (!word) {
-                    ended = true;
-                    break;
-                }
-                n = (word & 0x8000U) ? 0x10000U - word : word;
-                if (n > 16384U || n > packed_size - in) {
-                    valid = false;
-                    break;
-                }
-                fox_sqz_fox_xor(packed + in, n, key, keysize);
-                expected = plain_size - out;
-                if (word & 0x8000U) {
-                    if (n > expected) valid = false;
-                    else {
-                        xx_mem_copy(plain + out, packed + in, n);
-                        wrote = n;
-                    }
-                } else if (method == 1U) {
-                    if (expected > 16384U) expected = 16384U;
-                    valid = fox_sqz_rdc_block(packed + in, n, plain + out, expected, &wrote, true, pd) && wrote == expected;
-                } else {
-                    size_t measured = 0;
-                    if (expected > 8192U) expected = 8192U;
-                    valid = xx_dcl_scan_memory_zero_history(packed + in, n, expected, &consumed, &measured) && consumed == n && measured == expected &&
-                            xx_dcl_decode_memory_zero_history(packed + in, n, plain + out, expected, &wrote) && wrote == expected;
-                }
-                in += n;
-                out += wrote;
-            }
-            if (!valid || !ended || in != packed_size || out != plain_size) {
+            if (!fox_sqz_blocks(packed, packed_size, plain, plain_size, method, key, keysize, true, pd)) {
                 xx_mem_free(packed);
                 xx_mem_free(plain);
                 return false;
             }
+            out = plain_size;
         }
         xx_mem_free(packed);
         if (out != plain_size || xx_crc16(XX_CRC_TYPE_CRC16_ARC, plain, out) != crc) {

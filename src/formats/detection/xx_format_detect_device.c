@@ -55,8 +55,10 @@
 #include "xxfclib/formats/archive/xz/xx_xz.h"
 #else
 #include "xx_format_additional.h"
+#include "xxfclib/formats/game/goldsrc_bsp/xx_goldsrc_bsp.h"
 #include "xxfclib/formats/executable/bflt/xx_bflt.h"
 #include "xxfclib/formats/executable/cgc/xx_cgc.h"
+#include "xxfclib/formats/executable/mub/xx_mub.h"
 #include "xxfclib/formats/executable/pebble/xx_pebble.h"
 #include "xxfclib/formats/executable/hp_som/xx_hp_som.h"
 #include "xxfclib/formats/executable/xcoff/xx_xcoff.h"
@@ -68,12 +70,16 @@
 #include "xxfclib/formats/executable/omf/xx_omf.h"
 #include "xxfclib/formats/executable/xtac/xx_xtac.h"
 #include "xxfclib/formats/firmware/gns1/xx_gns1.h"
+#include "xxfclib/formats/firmware/bios_firmware/xx_bios_firmware.h"
 #include "xxfclib/formats/executable/menuet/xx_menuet.h"
 #include "xxfclib/formats/executable/plan9_exec/xx_plan9_exec.h"
 #include "xxfclib/formats/game/sega_sms_rom/xx_sega_sms_rom.h"
 #include "xxfclib/formats/document/ue2_documents/xx_ue2_documents.h"
 #include "xxfclib/formats/game/ue2_games/xx_ue2_games.h"
 #include "xxfclib/formats/archive/chromium_pak/xx_chromium_pak.h"
+#include "xxfclib/formats/archive/lzma86/xx_lzma86.h"
+#include "xxfclib/formats/document/cfbf/xx_cfbf.h"
+#include "xxfclib/formats/document/hxs/xx_hxs.h"
 #include "xxfclib/formats/image/windows_thumbnail_cache/xx_windows_thumbnail_cache.h"
 #include "xxfclib/formats/executable/enigma_virtual_box/xx_enigma_virtual_box.h"
 #include "xxfclib/formats/installer/bitrock/xx_bitrock.h"
@@ -581,6 +587,7 @@
 #include "xxfclib/formats/image/mtv_image/xx_mtv_image.h"
 #include "xxfclib/formats/image/nokia_ota_bitmap/xx_nokia_ota_bitmap.h"
 #include "xxfclib/formats/image/apple_pict/xx_apple_pict.h"
+#include "xxfclib/formats/image/risc_os_sprite/xx_risc_os_sprite.h"
 #include "xxfclib/formats/image/wordperfect_wpg/xx_wordperfect_wpg.h"
 #include "xxfclib/formats/science/nasa_vicar/xx_nasa_vicar.h"
 #include "xxfclib/formats/image/khoros_viff/xx_khoros_viff.h"
@@ -1335,6 +1342,8 @@
 #include "xxfclib/formats/game/nintendo_rarc/xx_nintendo_rarc.h"
 #include "xxfclib/formats/other/android_ab/xx_android_ab.h"
 #include "xxfclib/formats/game/nes_rom/xx_nes_rom.h"
+#include "xxfclib/formats/game/msx_rom/xx_msx_rom.h"
+#include "xxfclib/formats/game/tic80/xx_tic80.h"
 #include "xxfclib/formats/game/lynx_lnx/xx_lynx_lnx.h"
 #include "xxfclib/formats/game/commodore_crt/xx_commodore_crt.h"
 #include "xxfclib/formats/firmware/uf2/xx_uf2.h"
@@ -1883,6 +1892,8 @@ XX_FORMAT_READER_ADAPTER(XX_FORMAT_INLINE_ALLOWED, xx_format_is_tar_lzma_device,
 
 XX_FORMAT_READER_ADAPTER(XX_FORMAT_INLINE_ALLOWED, xx_format_is_lzma_device, xx_lzma, device, lzma, result, XX_FORMAT_REQUIRE_DEVICE, handle_base_info)
 
+XX_FORMAT_READER_ADAPTER(XX_FORMAT_INLINE_ALLOWED, xx_format_is_lzma86_device, xx_lzma86, device, lzma86, result, XX_FORMAT_REQUIRE_DEVICE, check_is_valid)
+
 XX_FORMAT_READER_ADAPTER(XX_FORMAT_INLINE_ALLOWED, xx_format_is_tar_lzop_device, xx_tar_lzop, device, tar_lzop, result, XX_FORMAT_REQUIRE_DEVICE, handle_base_info)
 
 XX_FORMAT_READER_ADAPTER(XX_FORMAT_INLINE_ALLOWED, xx_format_is_tarx1_device, xx_tarx1, device, tarx1, result, XX_FORMAT_REQUIRE_DEVICE, handle_base_info)
@@ -2243,6 +2254,8 @@ XX_FORMAT_READER_ADAPTER(XX_FORMAT_INLINE_ALLOWED, xx_format_is_recognita_device
 XX_FORMAT_READER_ADAPTER(XX_FORMAT_INLINE_ALLOWED, xx_format_is_jasc_device, xx_jasc, device, value, result, XX_FORMAT_REQUIRE_DEVICE, check_is_valid)
 
 XX_FORMAT_READER_ADAPTER(XX_FORMAT_INLINE_ALLOWED, xx_format_is_binder_device, xx_binder, device, value, result, XX_FORMAT_REQUIRE_DEVICE, check_is_valid)
+
+XX_FORMAT_READER_ADAPTER(XX_FORMAT_INLINE_ALLOWED, xx_format_is_cfbf_device, xx_cfbf, device, value, result, XX_FORMAT_REQUIRE_DEVICE, check_is_valid)
 
 XX_FORMAT_READER_ADAPTER(XX_FORMAT_INLINE_ALLOWED, xx_format_is_csidos_device, xx_csidos, device, value, result, XX_FORMAT_REQUIRE_DEVICE, check_is_valid)
 
@@ -2676,6 +2689,22 @@ xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev)
             (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
             return signature_type;
         }
+        /* Protocol request lines can contain colons and resemble MIME headers.
+         * Require the specific native grammar before the broad document probe. */
+        if (magic_size >= 8 && (!xx_rt_memcmp(magic, "MESSAGE ", 8) || !xx_rt_memcmp(magic, "OPTIONS ", 8))) {
+            xx_sip_message *reader = xx_sip_message_create(dev, 0);
+            bool valid = reader && xx_sip_message_check_is_valid((Abstractformat *)reader, NULL);
+            xx_sip_message_free(reader);
+            (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+            if (valid) return XX_FILE_TYPE_SIP_MESSAGE;
+        }
+        if ((magic_size >= 8 && !xx_rt_memcmp(magic, "OPTIONS ", 8)) || (magic_size >= 9 && !xx_rt_memcmp(magic, "DESCRIBE ", 9))) {
+            xx_rtsp_message *reader = xx_rtsp_message_create(dev, 0);
+            bool valid = reader && xx_rtsp_message_check_is_valid((Abstractformat *)reader, NULL);
+            xx_rtsp_message_free(reader);
+            (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+            if (valid) return XX_FILE_TYPE_RTSP_MESSAGE;
+        }
         xx_file_type_t document = xx_ue2_documents_detect_device(dev);
         (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
         if (document != XX_FILE_TYPE_UNKNOWN) return document;
@@ -2693,7 +2722,14 @@ xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev)
         }
         if (magic_size >= 16 && !xx_rt_memcmp(magic, "\x30\x26\xb2\x75\x8e\x66\xcf\x11\xa6\xd9\x00\xaa\x00\x62\xce\x6c", 16)) return XX_FILE_TYPE_ASF;
         if (magic_size >= 8 && !xx_rt_memcmp(magic + 4, "\x57\x90\x75\x36", 4)) return XX_FILE_TYPE_AUDIBLE_AA;
-        if (magic_size >= 12 && !xx_rt_memcmp(magic, "ITOLITLS", 8) && magic[8] == 1 && !magic[9] && !magic[10] && !magic[11]) return XX_FILE_TYPE_MICROSOFT_LIT;
+        if (magic_size >= 12 && !xx_rt_memcmp(magic, "ITOLITLS", 8) && magic[8] == 1 && !magic[9] && !magic[10] && !magic[11]) {
+            /* HXS shares LIT's transport prefix. Require its native GUID,
+             * section bounds, post-header and directory validation before
+             * selecting the more specific Help 2 container. */
+            bool hxs = xx_hxs_fast_detect(dev, 0, false);
+            (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+            return hxs ? XX_FILE_TYPE_HXS : XX_FILE_TYPE_MICROSOFT_LIT;
+        }
         if (xx_pyc_check_magic(magic, magic_size)) return XX_FILE_TYPE_PYC;
         if (magic_size >= 8 && !xx_rt_memcmp(magic, "%PDF-", 5) && magic[5] >= '0' && magic[5] <= '9' && magic[6] == '.' && magic[7] >= '0' && magic[7] <= '9')
             return XX_FILE_TYPE_PDF;
@@ -2918,7 +2954,12 @@ xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev)
     if (magic_size >= 13U && !xx_rt_memcmp(magic, "emaxutil v1.1", 13U)) XX_PROBE_HXC(emax_disk, EMAX_DISK);
     if (magic_size >= 7U && !xx_rt_memcmp(magic, "VTrucco", 7U)) XX_PROBE_HXC(vtr_disk, VTR_DISK);
     if (magic_size >= 5U && !xx_rt_memcmp(magic, "TRKY2", 5U)) XX_PROBE_HXC(speccydos_sdd, SPECCYDOS_SDD);
-    if ((total_size == 35 * 6656 || total_size == 40 * 6656) && (magic[0] & 0x80U)) XX_PROBE_HXC(apple_nib, APPLE_NIB);
+    /* Match both native authenticated nibble-capture geometries. Every track
+     * still requires valid GCR address/data framing and checksums. */
+    if (magic_size && (magic[0] & 0x80U) &&
+        ((total_size >= 35 * 6656 && total_size <= 50 * 6656 && total_size % 6656 == 0) ||
+         (total_size >= 35 * 6384 && total_size <= 40 * 6384 && total_size % 6384 == 0)))
+        XX_PROBE_HXC(apple_nib, APPLE_NIB);
     if (total_size == 40 * 3253 || total_size == 80 * 3253 || total_size == 40 * 6872 || total_size == 80 * 6872) XX_PROBE_HXC(ti99_pc99, TI99_PC99);
     if (total_size >= 25000 && total_size <= 8500000 && total_size % 25000 == 0) XX_PROBE_HXC(fei, FEI);
     {
@@ -3058,7 +3099,7 @@ xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev)
     bool is_lzdiet = magic_size >= 6 && xx_rt_memcmp(magic, "lZdIeT", 6U) == 0;
     bool is_lzpis2 = magic_size >= 6 && xx_rt_memcmp(magic, "LZPIS2", 6U) == 0;
     bool is_zie = total_size >= 0x118 && magic_size >= 4U && xx_rt_memcmp(magic, "PIT2", 4U) == 0;
-    bool is_xeditpack = magic_size >= 16 && magic[0x0] == 0x00U && magic[0x1] == 0x01U && magic[0x2] == 0x40U && (magic[3] == 0xc6U || magic[3] == 0xe5U);
+    bool is_xeditpack = total_size >= 9 && magic_size >= 4 && magic[0x0] == 0x00U && magic[0x1] == 0x01U && magic[0x2] == 0x40U && (magic[3] == 0xc6U || magic[3] == 0xe5U);
     bool is_wpk = magic_size >= 0x0c && ((magic[0x0] == 0x03U && magic[0x1] == 0x24U && magic[0x2] == 0x01U && magic[0x3] == 0x01U) ||
                                          (magic[0x0] == 0x03U && magic[0x1] == 0x24U && magic[0x2] == 0x33U && magic[0x3] == 0x01U));
     bool is_wintersoft =
@@ -3122,7 +3163,9 @@ xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev)
     /* Past the 64-byte window or magicless: qnx6's superblock is at
      * 0x2000, btrfs's at 0x10000, dmg's koly trailer in the LAST 512
      * bytes, csman/dlob/vxworks/uefi_capsule need structural probes. */
-    bool is_qnx6 = total_size > 0x3000;
+    bool is_qnx6 = total_size > 0x3000 || (magic_size >= 4U &&
+                    (xx_data_get_u32(magic, magic_size, 0, false) == UINT32_C(0x68191122) ||
+                     xx_data_get_u32(magic, magic_size, 0, true) == UINT32_C(0x68191122)));
     bool is_btrfs = total_size > 0x11000;
     bool is_dmg = total_size >= 512;
     bool is_applesingle = (magic_size >= 4U && magic[0] == 0x00U && magic[1] == 0x05U && magic[2] == 0x16U && (magic[3] == 0x00U || magic[3] == 0x07U));
@@ -3137,7 +3180,8 @@ xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev)
     bool is_shar = ((magic_size >= 9U && xx_rt_memcmp(magic, "#!/bin/sh", 9U) == 0) || (magic_size >= 10U && xx_rt_memcmp(magic, "#! /bin/sh", 10U) == 0) ||
                     (magic_size >= 25U && xx_rt_memcmp(magic, "# This is a shell archive", 25U) == 0));
     bool is_shell_wrapper = (magic_size >= 9U && xx_rt_memcmp(magic, "#!/bin/sh", 9U) == 0) || (magic_size >= 11U && xx_rt_memcmp(magic, "#!/bin/bash", 11U) == 0);
-    bool is_rnc = (magic_size >= 18U && magic[0] == 'R' && magic[1] == 'N' && magic[2] == 'C' && (magic[3] == 1U || magic[3] == 2U));
+    bool is_rnc = (magic_size >= 18U && magic[0] == 'R' && magic[1] == 'N' && magic[2] == 'C' && (magic[3] == 1U || magic[3] == 2U)) ||
+                  (magic_size >= 26U && xx_rt_memcmp(magic, "BULLFROGRNC", 11U) == 0 && (magic[11] == 1U || magic[11] == 2U));
     bool is_ibmpack = (magic_size >= 4U && magic[0] == 0xa5U && magic[1] == 0x96U &&
                        ((magic[2] == 0xfeU && magic[3] == 0xffU) || (magic[2] == 0xffU && magic[3] == 0xffU) || (magic[2] == 0x14U && magic[3] == 0x0aU) ||
                         (magic[2] == 0x00U && magic[3] == 0x14U)));
@@ -3194,7 +3238,7 @@ xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev)
     bool is_teledisk =
         (magic_size >= 5U && ((magic[0] == 'T' && magic[1] == 'D') || (magic[0] == 't' && magic[1] == 'd')) && magic[2] == 0U && magic[4] >= 10U && magic[4] <= 21U);
     bool is_hfe = (magic_size >= 9U && xx_rt_memcmp(magic, "HXCPICFE", 8U) == 0 && magic[8] == 0U);
-    bool is_fdi = (magic_size >= 4U && xx_rt_memcmp(magic, "FDI", 3U) == 0 && magic[3] == 0U);
+    bool is_fdi = (magic_size >= 4U && xx_rt_memcmp(magic, "FDI", 3U) == 0 && magic[3] <= 1U);
     bool is_twoimg = (magic_size >= 4U && xx_rt_memcmp(magic, "2IMG", 4U) == 0);
     bool is_imd = (magic_size >= 4U && xx_rt_memcmp(magic, "IMD ", 4U) == 0);
     bool is_diskdupe = (magic_size >= 21U && xx_rt_memcmp(magic, "MSD Image Version 1 \x1A", 21U) == 0);
@@ -3398,12 +3442,12 @@ xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev)
     bool is_udf = xx_udf_device_has_recognition_sequence(dev, 0);
     bool is_terse = magic_size >= 16;
     bool is_stk = magic_size >= 16;
-    bool is_pcommos2 = magic_size >= 16;
+    bool is_pcommos2 = magic_size >= 4U && magic[0] >= 0xe1U;
     bool is_jbf = magic_size >= 16 && magic[0x0] == 0xe4U && magic[0x1] == 0x63U && magic[0x2] == 0x31U && magic[0x3] == 0x30U && magic[0x4] == 0xb3U &&
                   magic[0x5] == 0x70U && magic[0x6] == 0xb4U && magic[0x7] == 0x5cU;
     bool is_ibmspack = magic_size >= 8 && magic[0] == 0x53U;
     bool is_gtu = magic_size >= 16;
-    bool is_glu = magic_size >= 16;
+    bool is_glu = magic_size >= 8U;
     bool is_ztc = magic_size >= 0x16 && magic[0x0] == 0xd6U && magic[0x1] == 0xbbU && magic[0x2] == 0xabU && magic[0x3] == 0x01U;
     bool is_netwarepacked = magic_size >= 0x20 && xx_rt_memcmp(magic, "Packed File ", 12U) == 0 && magic[24] == 0x1aU;
     bool is_zpak = magic_size >= 6 && (xx_rt_memcmp(magic, "zpak", 4U) == 0 || xx_rt_memcmp(magic, "zpk2", 4U) == 0);
@@ -3414,7 +3458,7 @@ xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev)
     bool is_npack = magic_size >= 8 && xx_rt_memcmp(magic, "MSTSM", 5U) == 0;
     bool is_mi10 = magic_size >= 16 && xx_rt_memcmp(magic, "MI10", 4U) == 0;
     bool is_lzwd = magic_size >= 11 && magic[0x4] == 0xfcU && magic[0x5] == 0x4cU && magic[0x6] == 0x5aU && magic[0x7] == 0x57U;
-    bool is_lzhcxp = magic_size >= 8 && xx_rt_memcmp(magic, "LZ", 2U) == 0 && magic[2] != 0U && magic[3] == 0U;
+    bool is_lzhcxp = magic_size >= 6 && xx_rt_memcmp(magic, "LZ", 2U) == 0 && magic[2] != 0U && magic[3] == 0U;
     bool is_kboom = magic_size >= 8 && magic[0x0] == 0xa8U && magic[0x1] == 0x4dU && magic[0x2] == 0x50U && magic[0x3] == 0xa8U;
     bool is_hzl = magic_size >= 12 && xx_rt_memcmp(magic, "!HZL", 4U) == 0 && magic[8] == '.';
     bool is_ha = magic_size >= 0x15 && xx_rt_memcmp(magic, "HA", 2U) == 0;
@@ -5312,6 +5356,13 @@ xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev)
         }
         (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
     }
+    /* LZMA86 has no magic: require its header grammar and the native bounded
+     * trial decoder. Keep ordinary LZMA/TAR_LZMA precedence above. */
+    if (xx_lzma86_has_header(magic, magic_size)) {
+        bool valid_lzma86 = xx_format_is_lzma86_device(dev);
+        (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+        if (valid_lzma86) return XX_FILE_TYPE_LZMA86;
+    }
     if (is_lzop) {
         bool is_tar_lzop = xx_format_is_tar_lzop_device(dev);
         (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
@@ -6547,7 +6598,7 @@ xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev)
     if (is_cpx) {
         if (xx_format_is_cpx_device(dev)) {
             (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
-            return XX_FILE_TYPE_CPX;
+            return magic[0] == 0x2cU ? XX_FILE_TYPE_CPX4 : XX_FILE_TYPE_CPX;
         }
         (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
     }
@@ -7064,6 +7115,13 @@ xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev)
         return XX_FILE_TYPE_BINDER;
     }
     (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+    /* Binder uses the same container signature and retains its more specific
+     * identity. General CFBF still requires the native FAT/directory checks. */
+    if (magic_size >= 8 && xx_rt_memcmp(magic, "\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", 8) == 0) {
+        bool valid_cfbf = xx_format_is_cfbf_device(dev);
+        (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+        if (valid_cfbf) return XX_FILE_TYPE_CFBF;
+    }
     if (xx_format_is_csidos_device(dev)) {
         (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
         return XX_FILE_TYPE_CSIDOS;
@@ -7237,6 +7295,72 @@ xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev)
         if (music_type != XX_FILE_TYPE_UNKNOWN) return music_type;
     }
 #endif
+    /* Version 1 encrypted Apple images identify their trailer, not their
+     * prefix. Keep this bounded native check after stronger concrete formats. */
+    if (total_size >= 1276) {
+        uint8_t tail[8];
+        bool candidate = xx_io_seek64(dev, total_size - 8, SEEK_SET) == 0 &&
+                         xx_format_read_probe_exact(dev, tail, sizeof(tail)) &&
+                         xx_rt_memcmp(tail, "cdsaencr", sizeof(tail)) == 0;
+        (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+        if (candidate && xx_format_is_encrypted_apple_disk_image_device(dev)) {
+            (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+            return XX_FILE_TYPE_ENCRYPTED_APPLE_DISK_IMAGE;
+        }
+        (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+    }
+    /* YAFFS has no magic. A plausible first object header only schedules the
+     * complete native geometry/tag/tree validation; it is not identification. */
+    if (total_size >= 512 && magic_size >= 10 && magic[8] == 0xFFU && magic[9] == 0xFFU) {
+        uint32_t le_type = xx_data_get_u32(magic, magic_size, 0, false);
+        uint32_t be_type = xx_data_get_u32(magic, magic_size, 0, true);
+        bool little = (le_type == 1 || le_type == 2 || le_type == 3 || le_type == 5) &&
+                      xx_data_get_u32(magic, magic_size, 4, false) == 1;
+        bool big = (be_type == 1 || be_type == 2 || be_type == 3 || be_type == 5) &&
+                   xx_data_get_u32(magic, magic_size, 4, true) == 1;
+        if ((little || big) && xx_format_is_yaffs_device(dev)) {
+            (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+            return XX_FILE_TYPE_YAFFS;
+        }
+        (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+    }
+    /* MUB also accepts the historical 7-Zip little-endian container magic.
+     * Keep existing Java/FAT detectors above; validate the entire bounded
+     * slice table before accepting this weaker physical container view. */
+    if (magic_size >= 8U &&
+        ((magic[0] == 0xCAU && magic[1] == 0xFEU && magic[2] == 0xBAU && (magic[3] == 0xBEU || magic[3] == 0xBFU)) ||
+         (magic[0] == 0xB9U && magic[1] == 0xFAU && magic[2] == 0xF1U && magic[3] == 0x0EU))) {
+        xx_mub reader;
+        bool valid;
+        xx_mub_init(&reader, dev, 0);
+        valid = xx_mub_check_is_valid(&reader.format, NULL);
+        xx_mub_destroy(&reader);
+        (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+        if (valid) return XX_FILE_TYPE_MUB;
+    }
+    /* BIOS has only a reset-vector heuristic. Keep its bounded native probe
+     * after concrete signatures and all stronger fallback formats. */
+    if (total_size > UINT16_MAX) {
+        xx_bios_firmware reader;
+        bool valid;
+        xx_bios_firmware_init(&reader, dev, 0);
+        valid = xx_bios_firmware_check_is_valid(&reader.format, NULL);
+        xx_bios_firmware_destroy(&reader);
+        (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+        if (valid) return XX_FILE_TYPE_BIOS_FIRMWARE;
+    }
+    /* GoldSrc has only a version word, so keep it after all existing
+     * probes. Identification requires its complete bounded lump directory,
+     * fixed-record sizes, world model and texture-directory validation. */
+    if (total_size >= 124 && magic_size >= 4U && xx_data_get_u32(magic, magic_size, 0, false) == 30U) {
+        xx_goldsrc_bsp reader;
+        bool valid;
+        xx_goldsrc_bsp_init(&reader, dev, 0);
+        valid = xx_goldsrc_bsp_check_is_valid(&reader.format, NULL);
+        xx_goldsrc_bsp_destroy(&reader);
+        (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+        if (valid) return XX_FILE_TYPE_GOLDSRC_BSP;
+    }
     return XX_FILE_TYPE_BINARY;
 #endif /* XXFC_FORMAT_DETECTION_LZMA_XZ_ONLY */
 }

@@ -6,7 +6,7 @@
  * module that format has; the reasoning and the limitations are spelled out
  * in xx_cfe.h.
  *
- * This reader is DETECTION ONLY on purpose.  It publishes no archive records:
+ * The opaque ROM variant is DETECTION ONLY on purpose.  It publishes no archive records:
  * binwalk extracts nothing from a CFE image, and nothing in one says where
  * the loader ends and an NVRAM block or the next flash partition begins.
  */
@@ -23,6 +23,10 @@
 
 #include "../../image/bmp/xx_component_archive_impl.h"
 #include "xxfclib/data/xx_data.h"
+#include "xxfclib/algo/crc/xx_crc.h"
+
+/* Original flash-update envelopes are also accepted after bounded size and
+ * payload-CRC validation; the old ROM seal behavior remains available. */
 
 /* Registration placeholder.  xxfc_defs.h is shared and is not edited from
  * here, so the alias macro defined next to the enumerator is tested instead;
@@ -62,6 +66,38 @@ static bool xx_cfe_read_at(xx_io_device *device, int64_t offset, void *data, siz
     return true;
 }
 
+/* Original Broadcom cfe_flashimage.h / mkflashimage.c / ui_flash.c.
+ * The 64-byte update envelope is distinct from the legacy opaque ROM seal.
+ * Size and CRC are always big-endian, regardless of the payload CPU flags.
+ * The reflected CRC accumulator starts at all ones and is NOT complemented.
+ */
+static uint32_t xx_cfe_be32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+static bool xx_cfe_parse_flash(Abstractformat *self, xx_cfe_parsed *parsed, int64_t span, xx_pd_struct *pd)
+{
+    uint8_t h[64], block[8192];
+    uint32_t size, crc = 0;
+    uint64_t done = 0;
+    bool terminated = false;
+    if (span < 64 || !xx_cfe_read_at(self->device, self->base_address, h, sizeof(h)) || xx_rt_memcmp(h, "CFE1", 4)) return false;
+    size = xx_cfe_be32(h + 8);
+    if (!size || (uint64_t)size > (uint64_t)span - 64) return false;
+    for (unsigned i = 16; i < 48; ++i) if (!h[i]) terminated = true;
+    if (!terminated) return false; /* Original writer and board-name comparison require ASCIIZ. */
+    while (done < size) {
+        size_t n = (uint64_t)size - done > sizeof(block) ? sizeof(block) : (size_t)((uint64_t)size - done);
+        if (xx_pd_is_stopped(pd) || !xx_cfe_read_at(self->device, self->base_address + 64 + (int64_t)done, block, n)) return false;
+        crc = xx_crc32_calc(crc, block, n);
+        done += n;
+    }
+    if (xx_pd_is_stopped(pd) || ~crc != xx_cfe_be32(h + 12)) return false;
+    parsed->seal_offset = self->base_address;
+    parsed->image_size = 64 + (int64_t)size;
+    return true;
+}
+
 /* --------------------------------------------------------------- parse -- */
 
 /*
@@ -93,6 +129,8 @@ static bool xx_cfe_parse(Abstractformat *self, xx_cfe_parsed *parsed, xx_pd_stru
     /* base_address <= input_size, so base_address + 28 cannot overflow once
      * span is known to cover the whole seal. */
     if (span < (int64_t)XX_CFE_MIN_SIZE) return false;
+    if (xx_cfe_parse_flash(self, parsed, span, pd)) return true;
+    if (xx_pd_is_stopped(pd)) return false;
     if (!xx_cfe_read_at(self->device, self->base_address + (int64_t)XX_CFE_MAGIC_OFFSET, seal, sizeof(seal)) ||
         xx_rt_memcmp(seal, XX_CFE_MAGIC, XX_CFE_MAGIC_SIZE) != 0) {
         return false;
@@ -158,10 +196,14 @@ bool xx_cfe_check_is_valid(Abstractformat *self, xx_pd_struct *pd)
 {
     xx_cfe_parsed parsed;
 
-    return xx_cfe_parse(self, &parsed, pd);
+    if (!self || !self->device) return false;
+    int64_t saved = xx_io_tell(self->device);
+    if (saved < 0) return false;
+    bool valid = xx_cfe_parse(self, &parsed, pd);
+    return xx_io_seek64(self->device, saved, SEEK_SET) == 0 && valid;
 }
 
-bool xx_cfe_handle_base_info(Abstractformat *self, xx_pd_struct *pd)
+static bool xx_cfe_handle_base_info_inner(Abstractformat *self, xx_pd_struct *pd)
 {
     xx_cfe *cfe = (xx_cfe *)self;
     xx_cfe_parsed parsed;
@@ -176,18 +218,31 @@ bool xx_cfe_handle_base_info(Abstractformat *self, xx_pd_struct *pd)
     }
     cfe->seal_offset = parsed.seal_offset;
     cfe->image_size = parsed.image_size;
-    /* binwalk reports size 0 and its scanner extends that to end of data,
-     * so the image is the whole remaining device.  This is a statement about
-     * what was handed to the reader, not a length recovered from the file -
-     * which is also why there is no overlay. */
+    /* Update envelopes have an authenticated size; opaque ROM keeps the
+     * historical whole-device extent. Trailing bytes are an overlay. */
     self->format_size = parsed.image_size;
-    self->overlay_offset = -1;
-    self->overlay_size = 0;
+    self->endian = parsed.seal_offset == self->base_address ? XX_ENDIAN_BIG : XX_ENDIAN_UNKNOWN;
+    self->overlay_size = parsed.input_size - self->base_address - parsed.image_size;
+    self->overlay_offset = self->overlay_size ? self->base_address + parsed.image_size : -1;
     self->number_of_archive_records = 0U;
     if (!xx_components_finish(self, pd)) return false;
     self->is_valid = true;
     self->base_info_handled = true;
     return true;
+}
+
+bool xx_cfe_handle_base_info(Abstractformat *self, xx_pd_struct *pd)
+{
+    if (!self || !self->device) return false;
+    int64_t saved = xx_io_tell(self->device);
+    if (saved < 0) return false;
+    bool valid = xx_cfe_handle_base_info_inner(self, pd);
+    if (xx_io_seek64(self->device, saved, SEEK_SET) != 0) {
+        self->is_valid = false;
+        self->base_info_handled = false;
+        return false;
+    }
+    return valid;
 }
 
 int64_t xx_cfe_get_format_size(Abstractformat *self, xx_pd_struct *pd)
@@ -214,5 +269,9 @@ int64_t xx_cfe_get_image_size(const xx_cfe *cfe)
 static bool xx_components_build(Abstractformat *f, xx_component_stream *s, xx_pd_struct *pd)
 {
     (void)pd;
+    if (f->check_is_valid == xx_cfe_check_is_valid && ((xx_cfe *)f)->seal_offset == f->base_address) {
+        return f->format_size >= 64 && xx_component_add(f, s, 0, 64, "flash-update-header") &&
+               (f->format_size == 64 || xx_component_add(f, s, 64, f->format_size - 64, "firmware-payload"));
+    }
     return xx_component_add(f, s, 0, 28, "reset-and-api-vectors") && (f->format_size == 36 || xx_component_add(f, s, 36, f->format_size - 36, "firmware-body"));
 }

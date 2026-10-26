@@ -37,7 +37,7 @@
  * vol_id and concatenating them in lnum order. That reassembly is this
  * reader's whole job.
  *
- * Volume names live in the "layout volume", vol_id 0x7FFFF000, whose LEB 0 and
+ * Volume names live in the "layout volume", vol_id 0x7FFFEFFF, whose LEB 0 and
  * LEB 1 each hold 128 ubi_vtbl_record entries of 172 bytes:
  *     +0   u32  reserved_pebs
  *     +12  u8   vol_type

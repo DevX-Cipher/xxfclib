@@ -25,6 +25,15 @@ XXFC_API bool xx_sfx_tgcf_handle_base_info(Abstractformat *, xx_pd_struct *);
 #ifdef __cplusplus
 }
 #endif
+/* Authenticated physical payload coordinates in the original device. Outputs are
+ * unchanged on failure; only a matching native reader is accepted. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+XXFC_API bool xx_sfx_tgcf_get_payload_span(Abstractformat *, int64_t *, int64_t *, xx_pd_struct *);
+#ifdef __cplusplus
+}
+#endif
 /* BEGIN GENERATED ABSTRACT EXTRACTOR */
 #ifdef __cplusplus
 extern "C" {

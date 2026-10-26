@@ -497,6 +497,7 @@ static bool cpio_parse_record(Abstractformat *format, int64_t relative_offset,
     int64_t next_relative;
     uint64_t name_size = 0U;
     uint64_t data_size = 0U;
+    uint64_t extra_header_size = 0U;
     uint64_t value;
     uint64_t expected_check = 0U;
     bool has_check = false;
@@ -573,7 +574,7 @@ static bool cpio_parse_record(Abstractformat *format, int64_t relative_offset,
         member->rdev = (uint32_t)value;
         if (!cpio_parse_hex(header + 69U, 16U, &value)) return false;
         member->mtime = value;
-        if (!cpio_parse_hex(header + 86U, 4U, &name_size) || !cpio_parse_hex(header + 90U, 4U, &value) || !cpio_parse_hex(header + 94U, 4U, &value) ||
+        if (!cpio_parse_hex(header + 86U, 4U, &name_size) || !cpio_parse_hex(header + 90U, 4U, &value) || !cpio_parse_hex(header + 94U, 4U, &extra_header_size) ||
             !cpio_parse_hex(header + 99U, 16U, &data_size))
             return false;
     } else {
@@ -604,7 +605,7 @@ static bool cpio_parse_record(Abstractformat *format, int64_t relative_offset,
         xx_mem_free(member->name);
         member->name = decoded;
     }
-    data_relative = name_end;
+    if (!cpio_add_i64(name_end, (int64_t)extra_header_size, &data_relative) || data_relative > total_size - format->base_address) goto fail;
     if (padded && !cpio_align_i64(data_relative, 4U, &data_relative)) {
         goto fail;
     }

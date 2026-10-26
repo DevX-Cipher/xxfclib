@@ -3,6 +3,7 @@
  */
 
 #include "xxfclib/formats/archive/tar_zstd/xx_tar_zstd.h"
+#include "xx_tar_zstd_datastructs_internal.h"
 
 #include "../tar_common/xx_tar_common.h"
 #include "../../../algo/zstd/xx_zstd_dec.h"
@@ -233,7 +234,7 @@ static bool xx_tar_zstd_write_all(xx_io_device *device, const uint8_t *data, siz
     return true;
 }
 
-static xx_tar_common *xx_tar_zstd_common(xx_tar_zstd *tar_zstd,
+xx_tar_common *xx_tar_zstd_common(xx_tar_zstd *tar_zstd,
                                          bool create) {
     xx_tar_common *common;
     if (!tar_zstd) return NULL;
@@ -256,7 +257,7 @@ static void xx_tar_zstd_sync(xx_tar_zstd *tar_zstd,
     tar_zstd->compressed_size = common->compressed_size;
 }
 
-static bool xx_tar_zstd_decode(Abstractformat *outer,
+bool xx_tar_zstd_decode(Abstractformat *outer,
                                xx_io_device *destination,
                                int64_t *compressed_size,
                                xx_pd_struct *pd) {
@@ -409,26 +410,6 @@ void xx_tar_zstd_init(xx_tar_zstd *tar_zstd, xx_io_device *dev,
         xx_tar_zstd_finalize_archive_records_writing;
     tar_zstd->format.free_archive_records_writing =
         xx_tar_zstd_free_archive_records_writing;
-    tar_zstd->format.data_struct_id_to_string =
-        xx_tar_zstd_data_struct_id_to_string;
-    tar_zstd->format.data_struct_string_to_id =
-        xx_tar_zstd_data_struct_string_to_id;
-    tar_zstd->format.create_data_structs_reading =
-        xx_tar_zstd_create_data_structs_reading;
-    tar_zstd->format.get_current_data_struct =
-        xx_tar_zstd_get_current_data_struct;
-    tar_zstd->format.data_struct_move_to_next =
-        xx_tar_zstd_data_struct_move_to_next;
-    tar_zstd->format.free_data_structs_reading =
-        xx_tar_zstd_free_data_structs_reading;
-    tar_zstd->format.create_data_struct_records_reading =
-        xx_tar_zstd_create_data_struct_records_reading;
-    tar_zstd->format.get_current_data_struct_record =
-        xx_tar_zstd_get_current_data_struct_record;
-    tar_zstd->format.data_struct_record_move_to_next =
-        xx_tar_zstd_data_struct_record_move_to_next;
-    tar_zstd->format.free_data_struct_records_reading =
-        xx_tar_zstd_free_data_struct_records_reading;
     tar_zstd->format.destroy = xx_tar_zstd_vtable_destroy;
     tar_zstd->compressed_size = -1;
 }
@@ -595,81 +576,6 @@ bool xx_tar_zstd_finalize_archive_records_writing(
 void xx_tar_zstd_free_archive_records_writing(
     Abstractformat *self, xx_archive_write_state *state) {
     xx_tar_common_free_archive_records_writing(self, state);
-}
-
-const char *xx_tar_zstd_data_struct_id_to_string(Abstractformat *self,
-                                                  uint32_t id) {
-    xx_tar_common *common = xx_tar_zstd_common((xx_tar_zstd *)self, true);
-    return common ? xx_tar_common_data_struct_id_to_string(common, id)
-                  : "UNKNOWN";
-}
-
-uint32_t xx_tar_zstd_data_struct_string_to_id(Abstractformat *self,
-                                               const char *name) {
-    xx_tar_common *common = xx_tar_zstd_common((xx_tar_zstd *)self, true);
-    return common ? xx_tar_common_data_struct_string_to_id(common, name)
-                  : XX_TAR_ZSTD_DS_UNKNOWN;
-}
-
-xx_data_struct_state *xx_tar_zstd_create_data_structs_reading(
-    Abstractformat *self, xx_pd_struct *pd) {
-    xx_tar_common *common = xx_tar_zstd_common((xx_tar_zstd *)self, true);
-    if (!self || !common) return NULL;
-    return xx_tar_common_create_data_structs_reading(
-        common, self, xx_tar_zstd_decode, pd);
-}
-
-const xx_data_struct *xx_tar_zstd_get_current_data_struct(
-    Abstractformat *self, xx_data_struct_state *state) {
-    xx_tar_common *common = xx_tar_zstd_common((xx_tar_zstd *)self, false);
-    return common ? xx_tar_common_get_current_data_struct(common, state)
-                  : NULL;
-}
-
-bool xx_tar_zstd_data_struct_move_to_next(Abstractformat *self,
-                                           xx_data_struct_state *state,
-                                           xx_pd_struct *pd) {
-    xx_tar_common *common = xx_tar_zstd_common((xx_tar_zstd *)self, false);
-    return common && xx_tar_common_data_struct_move_to_next(common, state,
-                                                              pd);
-}
-
-void xx_tar_zstd_free_data_structs_reading(Abstractformat *self,
-                                            xx_data_struct_state *state) {
-    xx_tar_common *common = xx_tar_zstd_common((xx_tar_zstd *)self, false);
-    if (common) xx_tar_common_free_data_structs_reading(common, state);
-}
-
-xx_data_struct_record_state *
-xx_tar_zstd_create_data_struct_records_reading(
-    Abstractformat *self, const xx_data_struct *data_struct,
-    xx_pd_struct *pd) {
-    xx_tar_common *common = xx_tar_zstd_common((xx_tar_zstd *)self, false);
-    return common ? xx_tar_common_create_data_struct_records_reading(
-                        common, data_struct, pd)
-                  : NULL;
-}
-
-const xx_data_struct_record *xx_tar_zstd_get_current_data_struct_record(
-    Abstractformat *self, xx_data_struct_record_state *state) {
-    xx_tar_common *common = xx_tar_zstd_common((xx_tar_zstd *)self, false);
-    return common
-               ? xx_tar_common_get_current_data_struct_record(common, state)
-               : NULL;
-}
-
-bool xx_tar_zstd_data_struct_record_move_to_next(
-    Abstractformat *self, xx_data_struct_record_state *state,
-    xx_pd_struct *pd) {
-    xx_tar_common *common = xx_tar_zstd_common((xx_tar_zstd *)self, false);
-    return common && xx_tar_common_data_struct_record_move_to_next(
-                         common, state, pd);
-}
-
-void xx_tar_zstd_free_data_struct_records_reading(
-    Abstractformat *self, xx_data_struct_record_state *state) {
-    xx_tar_common *common = xx_tar_zstd_common((xx_tar_zstd *)self, false);
-    if (common) xx_tar_common_free_data_struct_records_reading(common, state);
 }
 
 uint64_t xx_tar_zstd_get_number_of_records(const xx_tar_zstd *tar_zstd) {

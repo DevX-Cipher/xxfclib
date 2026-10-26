@@ -105,6 +105,9 @@ typedef struct xx_xtac_s {
     bool has_entry;
 } xx_xtac;
 
+/** Optional stream providers, available when their build module is enabled. */
+XXFC_API const StreamSymbols *xx_xtac_get_stream_symbols(void);
+
 XXFC_API void xx_xtac_init(xx_xtac *reader, xx_io_device *device, int64_t base_address);
 XXFC_API xx_xtac *xx_xtac_create(xx_io_device *device, int64_t base_address);
 XXFC_API void xx_xtac_destroy(xx_xtac *reader);

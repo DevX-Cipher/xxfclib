@@ -116,7 +116,7 @@ typedef struct xx_fat_geometry_s {
     int64_t base;
     int64_t total_size;  /**< Size of the backing device. */
     int64_t volume_end;  /**< base + volume_size. */
-    int64_t fat_offset;  /**< Byte offset of FAT #0. */
+    int64_t fat_offset;  /**< Byte offset of the active FAT. */
     int64_t fat_bytes;   /**< Byte length of one FAT. */
     int64_t root_offset; /**< FAT12/16 fixed root directory, else -1. */
     int64_t root_bytes;  /**< FAT12/16 fixed root directory length, else 0. */
@@ -136,9 +136,10 @@ typedef struct xx_fat_geometry_s {
     uint32_t boot_kind;     /**< xx_fat_boot_kind. */
     bool truncated;         /**< The image ends before volume_end. */
     uint8_t media;
+    bool mirroring_disabled;
 } xx_fat_geometry;
 
-/* One-sector window over FAT #0. A FAT12 entry can straddle the sector
+/* One-sector window over the active FAT. A FAT12 entry can straddle the sector
  * boundary, so the FAT is addressed a byte at a time through this cache rather
  * than by reading two or three bytes at a computed offset. */
 typedef struct xx_fat_fatcache_s {
@@ -1618,6 +1619,7 @@ typedef struct xx_fat_bpb_s {
     uint32_t total_sectors32;
     uint32_t fat_size16;
     uint32_t fat_size32;
+    uint16_t extended_flags;
     uint32_t root_cluster;
     uint8_t media;
 } xx_fat_bpb;
@@ -1634,6 +1636,7 @@ static void xx_fat_bpb_decode(const uint8_t *boot, xx_fat_bpb *bpb)
     bpb->fat_size16 = xx_data_get_u16(boot, XX_FAT_BOOT_SIZE, 22U, false);
     bpb->total_sectors32 = xx_data_get_u32(boot, XX_FAT_BOOT_SIZE, 32U, false);
     bpb->fat_size32 = xx_data_get_u32(boot, XX_FAT_BOOT_SIZE, 36U, false);
+    bpb->extended_flags = xx_data_get_u16(boot, XX_FAT_BOOT_SIZE, 40U, false);
     bpb->root_cluster = xx_data_get_u32(boot, XX_FAT_BOOT_SIZE, 44U, false);
 }
 
@@ -1664,6 +1667,7 @@ static bool xx_fat_layout(xx_fat_geometry *geometry, const xx_fat_bpb *bpb)
     geometry->root_entry_count = bpb->root_entry_count;
     geometry->media = bpb->media;
     geometry->truncated = false;
+    geometry->mirroring_disabled = false;
 
     if (geometry->bytes_per_sector != 512U && geometry->bytes_per_sector != 1024U && geometry->bytes_per_sector != 2048U && geometry->bytes_per_sector != 4096U) {
         return false;
@@ -1780,6 +1784,15 @@ static bool xx_fat_layout(xx_fat_geometry *geometry, const xx_fat_bpb *bpb)
         geometry->root_bytes = 0;
     } else if (!xx_fat_range_within(geometry->total_size, geometry->root_offset, geometry->root_bytes)) {
         return false;
+    }
+    /* FAT32 with mirroring disabled uses the low-nibble active FAT index.
+     * Compute the heap from FAT #0 first: selecting a copy never moves data. */
+    if (geometry->kind == XX_FAT_KIND_FAT32 && (bpb->extended_flags & 0x80U)) {
+        uint32_t active = bpb->extended_flags & 0x0FU;
+        if (active >= geometry->num_fats ||
+            !xx_fat_add(geometry->fat_offset, (uint64_t)active * (uint64_t)geometry->fat_bytes, &geometry->fat_offset) ||
+            !xx_fat_range_within(geometry->total_size, geometry->fat_offset, geometry->fat_bytes)) return false;
+        geometry->mirroring_disabled = true;
     }
     /* Cluster 2 must exist; the last cluster is bounds-checked per access. */
     return xx_fat_range_within(geometry->total_size, geometry->data_offset, (int64_t)geometry->bytes_per_cluster);
@@ -1909,7 +1922,7 @@ static bool xx_fat_confirm(Abstractformat *self, const xx_fat_geometry *geometry
         return false;
     }
     id_ok = xx_fat_fat_id_ok(first, geometry->kind);
-    if (geometry->num_fats >= 2U) {
+    if (geometry->num_fats >= 2U && !geometry->mirroring_disabled) {
         int64_t second_offset;
         /* The second copy can lie past the end of a truncated image; it then
          * simply does not count as corroboration. */
@@ -2047,6 +2060,7 @@ static bool xx_fat_read_geometry(Abstractformat *self, xx_fat_geometry *geometry
     geometry->volume_end = -1;
     geometry->root_offset = -1;
     geometry->truncated = false;
+    geometry->mirroring_disabled = false;
     return xx_fat_static_geometry(self, geometry, boot);
 }
 

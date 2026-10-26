@@ -3,6 +3,7 @@
  */
 
 #include "xxfclib/rt/xx_rt.h"
+#include "xx_xz_datastructs_internal.h"
 #include "xxfclib/global/xx_global.h"
 #include "xxfclib/formats/archive/xz/xx_xz.h"
 #include "xx_xz_defs.h"
@@ -21,34 +22,6 @@
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
-
-typedef struct xx_xz_block_s {
-    int64_t header_offset;
-    int64_t header_size;
-    int64_t data_offset;
-    int64_t compressed_size;
-    int64_t padding_offset;
-    int64_t padding_size;
-    int64_t check_offset;
-    int64_t check_size;
-    uint64_t uncompressed_size;
-    uint64_t unpadded_size;
-    uint8_t flags;
-    uint8_t filter_count;
-    uint8_t lzma2_property;
-    uint16_t delta_distance;
-    uint64_t bcj_method;
-    uint8_t bcj_properties[4];
-    uint8_t bcj_properties_size;
-    bool delta_after_bcj;
-    /* Reversible filters before LZMA2 in a multi-filter Block. */
-    uint8_t chain_kind[3]; /* 1 = BCJ, 2 = Delta */
-    uint16_t chain_distance[3];
-    uint64_t chain_method[3];
-    uint8_t chain_properties[3][4];
-    uint8_t chain_property_size[3];
-    bool extractable;
-} xx_xz_block;
 
 /* Filter chains are decoded as a whole block so branch filters see one
  * continuous address space. Keep the two temporary buffers bounded. */
@@ -70,51 +43,17 @@ static uint64_t xx_xz_bcj_method(uint64_t id, uint32_t *alignment)
     }
 }
 
-typedef struct xx_xz_stream_s {
-    int64_t header_offset;
-    int64_t index_offset;
-    int64_t index_size;
-    int64_t footer_offset;
-    int64_t stream_end;
-    int64_t padding_offset;
-    int64_t padding_size;
-    size_t first_block;
-    size_t block_count;
-    uint8_t check_type;
-} xx_xz_stream;
-
-typedef struct xx_xz_private_s {
-    xx_xz_stream *streams;
-    size_t stream_count;
-    xx_xz_block *blocks;
-    size_t block_count;
-    int64_t format_end;
-    uint64_t uncompressed_size;
-    uint64_t compressed_data_size;
-    bool can_extract;
-} xx_xz_private;
-
 typedef struct xx_xz_candidate_s {
     xx_xz_stream stream;
     xx_xz_block *blocks;
     size_t block_count;
 } xx_xz_candidate;
 
-typedef struct xx_xz_ds_stream_s {
-    xx_data_struct *items;
-    size_t count;
-} xx_xz_ds_stream;
-
-typedef struct xx_xz_record_stream_s {
-    const xx_data_struct_field_desc *fields;
-    size_t count;
-} xx_xz_record_stream;
-
 #include "../../xx_single_stream_writer.h"
 
 static void xx_xz_vtable_destroy(Abstractformat *self);
 
-static bool xx_xz_vli(const uint8_t *data, size_t limit, size_t *cursor, uint64_t *value)
+bool xx_xz_vli(const uint8_t *data, size_t limit, size_t *cursor, uint64_t *value)
 {
     uint64_t result = 0U;
     size_t i;
@@ -140,7 +79,7 @@ static size_t xx_xz_check_size(uint8_t check_type)
     return (size_t)4U << ((check_type - 1U) / 3U);
 }
 
-static bool xx_xz_crc32_cancellable(const uint8_t *data, size_t size, xx_pd_struct *pd, uint32_t *result)
+bool xx_xz_crc32_cancellable(const uint8_t *data, size_t size, xx_pd_struct *pd, uint32_t *result)
 {
     const size_t capacity = xx_get_file_buffer_size();
     size_t position = 0U;
@@ -914,16 +853,6 @@ void xx_xz_init(xx_xz *xz, xx_io_device *dev, int64_t base_address)
     xz->format.unpack_current_archive_record = xx_xz_unpack_current_archive_record;
     xz->format.archive_record_move_to_next = xx_xz_archive_record_move_to_next;
     xz->format.free_archive_records_reading = xx_xz_free_archive_records_reading;
-    xz->format.data_struct_id_to_string = xx_xz_data_struct_id_to_string;
-    xz->format.data_struct_string_to_id = xx_xz_data_struct_string_to_id;
-    xz->format.create_data_structs_reading = xx_xz_create_data_structs_reading;
-    xz->format.get_current_data_struct = xx_xz_get_current_data_struct;
-    xz->format.data_struct_move_to_next = xx_xz_data_struct_move_to_next;
-    xz->format.free_data_structs_reading = xx_xz_free_data_structs_reading;
-    xz->format.create_data_struct_records_reading = xx_xz_create_data_struct_records_reading;
-    xz->format.get_current_data_struct_record = xx_xz_get_current_data_struct_record;
-    xz->format.data_struct_record_move_to_next = xx_xz_data_struct_record_move_to_next;
-    xz->format.free_data_struct_records_reading = xx_xz_free_data_struct_records_reading;
     xz->format.create_archive_records_writing = xx_xz_create_archive_records_writing;
     xz->format.pack_archive_record = xx_xz_pack_archive_record;
     xz->format.finalize_archive_records_writing = xx_xz_finalize_archive_records_writing;
@@ -1542,237 +1471,6 @@ void xx_xz_free_archive_records_reading(Abstractformat *self, xx_archive_record_
 {
     (void)self;
     xx_archive_record_state_free(state);
-}
-
-typedef struct xx_xz_ds_name_s {
-    xx_xz_data_struct_id_t id;
-    const char *name;
-} xx_xz_ds_name;
-
-static const xx_xz_ds_name g_xx_xz_ds_names[] = {
-    {XX_XZ_DS_UNKNOWN, "UNKNOWN"},       {XX_XZ_DS_STREAM_HEADER, "STREAM_HEADER"}, {XX_XZ_DS_BLOCK_HEADER, "BLOCK_HEADER"},
-    {XX_XZ_DS_BLOCK_DATA, "BLOCK_DATA"}, {XX_XZ_DS_BLOCK_PADDING, "BLOCK_PADDING"}, {XX_XZ_DS_BLOCK_CHECK, "BLOCK_CHECK"},
-    {XX_XZ_DS_INDEX, "INDEX"},           {XX_XZ_DS_STREAM_FOOTER, "STREAM_FOOTER"}, {XX_XZ_DS_STREAM_PADDING, "STREAM_PADDING"}};
-
-const char *xx_xz_data_struct_id_to_string(Abstractformat *self, uint32_t id)
-{
-    (void)self;
-    for (size_t i = 0U; i < sizeof(g_xx_xz_ds_names) / sizeof(g_xx_xz_ds_names[0]); ++i) {
-        if ((uint32_t)g_xx_xz_ds_names[i].id == id) return g_xx_xz_ds_names[i].name;
-    }
-    return "UNKNOWN";
-}
-
-uint32_t xx_xz_data_struct_string_to_id(Abstractformat *self, const char *name)
-{
-    (void)self;
-    if (name) {
-        for (size_t i = 0U; i < sizeof(g_xx_xz_ds_names) / sizeof(g_xx_xz_ds_names[0]); ++i) {
-            if (xx_str_cmp(name, g_xx_xz_ds_names[i].name) == 0) return (uint32_t)g_xx_xz_ds_names[i].id;
-        }
-    }
-    return (uint32_t)XX_XZ_DS_UNKNOWN;
-}
-
-static void xx_xz_ds_stream_free(void *pointer)
-{
-    xx_xz_ds_stream *stream = (xx_xz_ds_stream *)pointer;
-    if (!stream) return;
-    if (stream->items) xx_mem_free(stream->items);
-    xx_mem_free(stream);
-}
-
-static void xx_xz_set_ds(xx_data_struct *item, uint32_t id, int64_t offset, int64_t size, xx_data_struct_type_t type, bool is_mapped)
-{
-    item->id = id;
-    item->offset = offset;
-    item->address = is_mapped ? offset : -1;
-    item->entry_size = size;
-    item->total_size = size;
-    item->count = 1U;
-    item->type = type;
-}
-
-xx_data_struct_state *xx_xz_create_data_structs_reading(Abstractformat *self, xx_pd_struct *pd)
-{
-    xx_xz_private *priv;
-    xx_data_struct_state *state;
-    xx_xz_ds_stream *stream;
-    size_t capacity;
-    if (!self || !self->device || (!self->base_info_handled && !xx_format_handle_base_info(self, pd)) || !(priv = (xx_xz_private *)((xx_xz *)self)->internal) ||
-        priv->stream_count > (SIZE_MAX - priv->block_count * 4U) / 4U) {
-        return NULL;
-    }
-    capacity = priv->stream_count * 4U + priv->block_count * 4U;
-    if (capacity > SIZE_MAX / sizeof(xx_data_struct)) return NULL;
-    state = (xx_data_struct_state *)xx_mem_alloc(sizeof(*state));
-    stream = (xx_xz_ds_stream *)xx_mem_calloc(1U, sizeof(*stream));
-    if (!state || !stream) {
-        if (state) xx_mem_free(state);
-        if (stream) xx_mem_free(stream);
-        return NULL;
-    }
-    xx_data_struct_state_init(state, self);
-    stream->items = (xx_data_struct *)xx_mem_alloc((capacity ? capacity : 1U) * sizeof(*stream->items));
-    if (!stream->items) {
-        xx_mem_free(stream);
-        xx_data_struct_state_free(state);
-        return NULL;
-    }
-    for (size_t s = 0U; s < priv->stream_count; ++s) {
-        const xx_xz_stream *xz_stream = &priv->streams[s];
-        xx_xz_set_ds(&stream->items[stream->count++], XX_XZ_DS_STREAM_HEADER, xz_stream->header_offset, XX_XZ_STREAM_HEADER_SIZE, XX_DATA_STRUCT_TYPE_STRUCT,
-                     self->is_mapped);
-        for (size_t b = 0U; b < xz_stream->block_count; ++b) {
-            const xx_xz_block *block = &priv->blocks[xz_stream->first_block + b];
-            xx_xz_set_ds(&stream->items[stream->count++], XX_XZ_DS_BLOCK_HEADER, block->header_offset, block->header_size, XX_DATA_STRUCT_TYPE_STRUCT, self->is_mapped);
-            if (block->compressed_size != 0) {
-                xx_xz_set_ds(&stream->items[stream->count++], XX_XZ_DS_BLOCK_DATA, block->data_offset, block->compressed_size, XX_DATA_STRUCT_TYPE_RAW_DATA,
-                             self->is_mapped);
-            }
-            if (block->padding_size != 0) {
-                xx_xz_set_ds(&stream->items[stream->count++], XX_XZ_DS_BLOCK_PADDING, block->padding_offset, block->padding_size, XX_DATA_STRUCT_TYPE_RAW_DATA,
-                             self->is_mapped);
-            }
-            if (block->check_size != 0) {
-                xx_xz_set_ds(&stream->items[stream->count++], XX_XZ_DS_BLOCK_CHECK, block->check_offset, block->check_size, XX_DATA_STRUCT_TYPE_STRUCT, self->is_mapped);
-            }
-        }
-        xx_xz_set_ds(&stream->items[stream->count++], XX_XZ_DS_INDEX, xz_stream->index_offset, xz_stream->index_size, XX_DATA_STRUCT_TYPE_STRUCT, self->is_mapped);
-        xx_xz_set_ds(&stream->items[stream->count++], XX_XZ_DS_STREAM_FOOTER, xz_stream->footer_offset, XX_XZ_STREAM_FOOTER_SIZE, XX_DATA_STRUCT_TYPE_FOOTER,
-                     self->is_mapped);
-        if (xz_stream->padding_size != 0) {
-            xx_xz_set_ds(&stream->items[stream->count++], XX_XZ_DS_STREAM_PADDING, xz_stream->padding_offset, xz_stream->padding_size, XX_DATA_STRUCT_TYPE_RAW_DATA,
-                         self->is_mapped);
-        }
-    }
-    state->internal_state = stream;
-    state->free_internal = xx_xz_ds_stream_free;
-    state->total_structs = (int64_t)stream->count;
-    state->current_index = 0;
-    state->has_struct = stream->count != 0U;
-    if (state->has_struct) state->current_struct = stream->items[0];
-    return state;
-}
-
-const xx_data_struct *xx_xz_get_current_data_struct(Abstractformat *self, xx_data_struct_state *state)
-{
-    return self && state && state->format == self && state->has_struct ? &state->current_struct : NULL;
-}
-
-bool xx_xz_data_struct_move_to_next(Abstractformat *self, xx_data_struct_state *state, xx_pd_struct *pd)
-{
-    xx_xz_ds_stream *stream;
-    int64_t next;
-    if (!self || !state || state->format != self || !state->has_struct || !state->internal_state || (pd && xx_pd_is_stopped(pd))) return false;
-    stream = (xx_xz_ds_stream *)state->internal_state;
-    next = state->current_index + 1;
-    if (next < 0 || (size_t)next >= stream->count) {
-        state->has_struct = false;
-        return false;
-    }
-    state->current_index = next;
-    state->current_struct = stream->items[next];
-    return true;
-}
-
-void xx_xz_free_data_structs_reading(Abstractformat *self, xx_data_struct_state *state)
-{
-    (void)self;
-    xx_data_struct_state_free(state);
-}
-
-static const xx_data_struct_field_desc g_xz_stream_header_fields[] = {{L"magic", L"uint8[6]", 0, 6, XX_DATA_STRUCT_RECORD_PROPERTY_ID},
-                                                                      {L"stream_flags", L"uint16", 6, 2, XX_DATA_STRUCT_RECORD_PROPERTY_FLAGS},
-                                                                      {L"header_crc32", L"uint32", 8, 4, XX_DATA_STRUCT_RECORD_PROPERTY_NONE}};
-
-static const xx_data_struct_field_desc g_xz_block_header_fields[] = {{L"header_size", L"uint8", 0, 1, XX_DATA_STRUCT_RECORD_PROPERTY_SIZE},
-                                                                     {L"block_flags", L"uint8", 1, 1, XX_DATA_STRUCT_RECORD_PROPERTY_FLAGS}};
-
-static const xx_data_struct_field_desc g_xz_index_fields[] = {{L"indicator", L"uint8", 0, 1, XX_DATA_STRUCT_RECORD_PROPERTY_ID}};
-
-static const xx_data_struct_field_desc g_xz_footer_fields[] = {{L"footer_crc32", L"uint32", 0, 4, XX_DATA_STRUCT_RECORD_PROPERTY_NONE},
-                                                               {L"backward_size", L"uint32", 4, 4, XX_DATA_STRUCT_RECORD_PROPERTY_SIZE},
-                                                               {L"stream_flags", L"uint16", 8, 2, XX_DATA_STRUCT_RECORD_PROPERTY_FLAGS},
-                                                               {L"magic", L"uint16", 10, 2, XX_DATA_STRUCT_RECORD_PROPERTY_ID}};
-
-static void xx_xz_record_stream_free(void *pointer)
-{
-    if (pointer) xx_mem_free(pointer);
-}
-
-xx_data_struct_record_state *xx_xz_create_data_struct_records_reading(Abstractformat *self, const xx_data_struct *ds, xx_pd_struct *pd)
-{
-    xx_data_struct_record_state *state;
-    xx_xz_record_stream *stream;
-    const xx_data_struct_field_desc *fields;
-    size_t count;
-    (void)pd;
-    if (!self || !self->device || !ds) return NULL;
-    if (ds->id == XX_XZ_DS_STREAM_HEADER) {
-        fields = g_xz_stream_header_fields;
-        count = sizeof(g_xz_stream_header_fields) / sizeof(g_xz_stream_header_fields[0]);
-    } else if (ds->id == XX_XZ_DS_BLOCK_HEADER) {
-        fields = g_xz_block_header_fields;
-        count = sizeof(g_xz_block_header_fields) / sizeof(g_xz_block_header_fields[0]);
-    } else if (ds->id == XX_XZ_DS_INDEX) {
-        fields = g_xz_index_fields;
-        count = sizeof(g_xz_index_fields) / sizeof(g_xz_index_fields[0]);
-    } else if (ds->id == XX_XZ_DS_STREAM_FOOTER) {
-        fields = g_xz_footer_fields;
-        count = sizeof(g_xz_footer_fields) / sizeof(g_xz_footer_fields[0]);
-    } else {
-        return NULL;
-    }
-    state = (xx_data_struct_record_state *)xx_mem_alloc(sizeof(*state));
-    stream = (xx_xz_record_stream *)xx_mem_alloc(sizeof(*stream));
-    if (!state || !stream) {
-        if (state) xx_mem_free(state);
-        if (stream) xx_mem_free(stream);
-        return NULL;
-    }
-    xx_data_struct_record_state_init(state, self, ds);
-    stream->fields = fields;
-    stream->count = count;
-    state->internal_state = stream;
-    state->free_internal = xx_xz_record_stream_free;
-    state->total_records = (int64_t)count;
-    if (count != 0U && xx_data_struct_record_populate(&state->current_record, self->device, ds->offset, &fields[0], false)) {
-        state->has_record = true;
-        state->current_index = 0;
-    }
-    return state;
-}
-
-const xx_data_struct_record *xx_xz_get_current_data_struct_record(Abstractformat *self, xx_data_struct_record_state *state)
-{
-    return self && state && state->format == self && state->has_record ? &state->current_record : NULL;
-}
-
-bool xx_xz_data_struct_record_move_to_next(Abstractformat *self, xx_data_struct_record_state *state, xx_pd_struct *pd)
-{
-    xx_xz_record_stream *stream;
-    int64_t next;
-    if (!self || !state || state->format != self || !state->has_record || !state->internal_state || (pd && xx_pd_is_stopped(pd))) return false;
-    stream = (xx_xz_record_stream *)state->internal_state;
-    next = state->current_index + 1;
-    if (next < 0 || (size_t)next >= stream->count) {
-        state->has_record = false;
-        return false;
-    }
-    xx_data_struct_record_cleanup(&state->current_record);
-    if (!xx_data_struct_record_populate(&state->current_record, self->device, state->parent_struct.offset, &stream->fields[next], false)) {
-        state->has_record = false;
-        return false;
-    }
-    state->current_index = next;
-    return true;
-}
-
-void xx_xz_free_data_struct_records_reading(Abstractformat *self, xx_data_struct_record_state *state)
-{
-    (void)self;
-    xx_data_struct_record_state_free(state);
 }
 
 uint64_t xx_xz_get_number_of_blocks(const xx_xz *xz)

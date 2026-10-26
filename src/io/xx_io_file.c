@@ -226,6 +226,17 @@ xx_io_device *xx_io_file_open(const char *path, const char *mode)
     return xx_io_file_wrap(xx_io_platform_file_open(path, mode), path, mode);
 }
 
+xx_io_device *xx_io_file_open_w(const wchar_t *path, const char *mode)
+{
+    if (!path || !mode) return NULL;
+    return xx_io_file_wrap(xx_io_platform_file_open_w(path, mode), NULL, mode);
+}
+
+xx_io_device *io_file_open_w(const wchar_t *path, const char *mode)
+{
+    return xx_io_file_open_w(path, mode);
+}
+
 xx_io_device *xx_io_temp_open(void)
 {
     if (xx_io_memory_only_active()) return xx_io_memory_temp_open();

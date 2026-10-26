@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-/* xx_cfe_extractor.c - raw-data search for Microsoft CFE.
+/* xx_cfe_extractor.c - raw-data search for Broadcom CFE.
  *
  * Candidates are nominated by a fixed signature; the reader validates the
  * structure and the detector must confirm the type before a find is returned.
@@ -14,7 +14,10 @@
 
 static const uint8_t k_anchor0[] = {0x43, 0x46, 0x45, 0x31, 0x43, 0x46, 0x45, 0x31};
 
+static const uint8_t k_flash_anchor[] = {0x43, 0x46, 0x45, 0x31};
+
 static const xx_format_search_anchor k_anchors[] = {
+    {k_flash_anchor, sizeof(k_flash_anchor), 0U},
     {k_anchor0, sizeof(k_anchor0), 28U},
 };
 

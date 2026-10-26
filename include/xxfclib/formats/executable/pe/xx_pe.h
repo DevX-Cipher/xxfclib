@@ -229,6 +229,13 @@ typedef struct xx_pe_exception_state_s {
     void (*free_internal)(void *ptr);
 } xx_pe_exception_state;
 
+/** Optional stream providers, available when their build module is enabled. */
+XXFC_API const StreamImport *xx_pe_get_stream_import(void);
+XXFC_API const StreamExport *xx_pe_get_stream_export(void);
+XXFC_API const StreamResources *xx_pe_get_stream_resources(void);
+XXFC_API const StreamMetadata *xx_pe_get_stream_metadata(void);
+XXFC_API const StreamSymbols *xx_pe_get_stream_symbols(void);
+
 XXFC_API void xx_pe_init(xx_pe *pe, xx_io_device *device, int64_t base_address);
 XXFC_API xx_pe *xx_pe_create(xx_io_device *device, int64_t base_address);
 XXFC_API void xx_pe_destroy(xx_pe *pe);

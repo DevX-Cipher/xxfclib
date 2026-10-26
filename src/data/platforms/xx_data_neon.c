@@ -11,16 +11,24 @@
 #include "xxfclib/memory/xx_memory.h"
 #include <arm_neon.h>
 
-static int xx_data_neon_any(uint8x16_t value)
+#if defined(_MSC_VER)
+#define XX_DATA_NEON_INLINE __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+#define XX_DATA_NEON_INLINE inline __attribute__((always_inline))
+#else
+#define XX_DATA_NEON_INLINE inline
+#endif
+
+static XX_DATA_NEON_INLINE int xx_data_neon_any(uint8x16_t value)
 {
     uint64x2_t words = vreinterpretq_u64_u8(value);
     return (vgetq_lane_u64(words, 0) | vgetq_lane_u64(words, 1)) != 0;
 }
 
-static int xx_data_neon_should_stop(xx_pd_struct *pd, size_t at, size_t start)
+static XX_DATA_NEON_INLINE int xx_data_neon_should_stop(xx_pd_struct *pd, size_t at, size_t start)
 {
-    /* SIMD advances in 16-byte steps, so this polls at most every 16 KiB
-     * regardless of the caller's absolute start alignment. */
+    /* SIMD advances in multiples of 16 bytes, so this polls at most every
+     * 16 KiB regardless of the caller's absolute start alignment. */
     return pd && (((at - start) & 0x3fffU) == 0) && xx_pd_is_stopped(pd);
 }
 
@@ -66,6 +74,46 @@ int64_t xx_data_find_bytes_neon(const uint8_t *pdata, size_t data_size, size_t s
         wanted1 = vdupq_n_u8(pat[idx1]);
         wanted2 = vdupq_n_u8(pat[idx2]);
 
+        /* Four independent vectors hide load/compare latency and amortize
+         * loop control and the reduction across 64 candidate starts.  The
+         * combined test keeps the common no-candidate path free of stores. */
+        while (i <= limit && limit - i >= 63) {
+            uint8x16_t matches0;
+            uint8x16_t matches1;
+            uint8x16_t matches2;
+            uint8x16_t matches3;
+            uint8x16_t any;
+
+            if (xx_data_neon_should_stop(pd, i, start_offset)) return -1;
+            matches0 = vandq_u8(vceqq_u8(vld1q_u8(pdata + i + idx1), wanted1),
+                                 vceqq_u8(vld1q_u8(pdata + i + idx2), wanted2));
+            matches1 = vandq_u8(vceqq_u8(vld1q_u8(pdata + i + 16 + idx1), wanted1),
+                                 vceqq_u8(vld1q_u8(pdata + i + 16 + idx2), wanted2));
+            matches2 = vandq_u8(vceqq_u8(vld1q_u8(pdata + i + 32 + idx1), wanted1),
+                                 vceqq_u8(vld1q_u8(pdata + i + 32 + idx2), wanted2));
+            matches3 = vandq_u8(vceqq_u8(vld1q_u8(pdata + i + 48 + idx1), wanted1),
+                                 vceqq_u8(vld1q_u8(pdata + i + 48 + idx2), wanted2));
+            any = vorrq_u8(vorrq_u8(matches0, matches1), vorrq_u8(matches2, matches3));
+            if (xx_data_neon_any(any)) {
+                uint8_t lanes[64];
+                size_t lane;
+
+                vst1q_u8(lanes, matches0);
+                vst1q_u8(lanes + 16, matches1);
+                vst1q_u8(lanes + 32, matches2);
+                vst1q_u8(lanes + 48, matches3);
+                for (lane = 0; lane < 64; ++lane) {
+                    size_t match_offset;
+                    if (lanes[lane] == 0) continue;
+                    match_offset = i + lane;
+                    if (pattern_size <= 2 || xx_mem_compare(pdata + match_offset, pat, pattern_size) == 0) {
+                        return (int64_t)match_offset;
+                    }
+                }
+            }
+            i += 64;
+        }
+
         /* Each iteration tests 16 candidate starts. The subtraction form
          * keeps both selected-byte loads in bounds without overflow. */
         while (i <= limit && limit - i >= 15) {
@@ -98,6 +146,8 @@ int64_t xx_data_find_bytes_neon(const uint8_t *pdata, size_t data_size, size_t s
     }
     return -1;
 }
+
+#undef XX_DATA_NEON_INLINE
 
 static int xx_data_masked_equal_neon(const uint8_t *data, const uint8_t *value, const uint8_t *mask, size_t size)
 {

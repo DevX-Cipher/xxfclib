@@ -457,7 +457,7 @@ static bool bcw_parse_buffered(Abstractformat *format, bcw_stream **result, uint
             joined[at] = 0U;
             member.name = bcw_normalize_name(joined, at);
             if (!member.name) goto fail;
-            member.header_offset = format->base_address + record_offset;
+            member.header_offset = record_offset; /* reader.position is already absolute */
             member.header_size = data_offset - member.header_offset;
             member.data_offset = data_offset;
             member.packed_size = reader.position - data_offset;

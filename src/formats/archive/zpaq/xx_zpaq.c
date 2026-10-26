@@ -1899,6 +1899,7 @@ static bool zp_scan_block(struct xx_zpaq_scan *s, zp_in *in, int64_t pos, int64_
     r = zp_segment_begin(b, &head);
     if (r < 0) goto done;
     if (r == 0) {
+        *next = zp_in_tell(in); /* Empty blocks still advance the physical stream. */
         ok = true;
         goto done;
     }

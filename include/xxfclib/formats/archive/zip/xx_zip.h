@@ -66,7 +66,8 @@ typedef enum xx_zip_data_struct_id_e {
     XX_ZIP_DS_CENTRAL_DIRECTORY_HEADER,              /**< Central directory file header (per-entry) */
     XX_ZIP_DS_END_OF_CENTRAL_DIRECTORY,              /**< End of Central Directory record (EOCD) */
     XX_ZIP_DS_ZIP64_END_OF_CENTRAL_DIRECTORY,        /**< ZIP64 End of Central Directory record */
-    XX_ZIP_DS_ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR /**< ZIP64 End of Central Directory locator */
+    XX_ZIP_DS_ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR, /**< ZIP64 End of Central Directory locator */
+    XX_ZIP_DS_EXTRA_FIELD                            /**< Generic extra-field ID/size/data record */
 } xx_zip_data_struct_id_t;
 
 /**

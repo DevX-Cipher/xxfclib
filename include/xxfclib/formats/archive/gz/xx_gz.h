@@ -47,7 +47,8 @@ typedef enum xx_gz_data_struct_id_e {
     XX_GZ_DS_COMMENT,
     XX_GZ_DS_HEADER_CRC16,
     XX_GZ_DS_COMPRESSED_DATA,
-    XX_GZ_DS_TRAILER
+    XX_GZ_DS_TRAILER,
+    XX_GZ_DS_EXTRA_SUBFIELD
 } xx_gz_data_struct_id_t;
 
 struct xx_gz {

@@ -85,11 +85,14 @@ static bool ns_decode(ac_blob *b, const uint8_t *in, uint32_t packed, uint8_t *o
             (uint64_t)xx_data_get_u32(in + 1U, 4, 0, false) + 1024U * 1024U > b->limit - b->used)
             return false;
     }
-    src = xx_io_mem_open_ro(in, packed);
-    if (!src) return false;
-    if (method == 2U) ok = xx_lzma_unpack_device_to_memory(src, 5, packed - 5U, in, 5, -1, out, cap, &n, b->pd);
-    else ok = xx_deflate_unpack_device_to_memory(src, 0, packed, out, cap, &n, false, b->pd);
-    xx_io_close(src);
+    if (method == 2U) {
+        ok = xx_lzma_decompress_memory(in + 5, packed - 5U, in, 5, -1, out, cap, &n);
+    } else {
+        src = xx_io_mem_open_ro(in, packed);
+        if (!src) return false;
+        ok = xx_deflate_unpack_device_to_memory(src, 0, packed, out, cap, &n, false, b->pd);
+        xx_io_close(src);
+    }
     if (ok && n <= cap && ac_poll(b)) {
         *written = (uint32_t)n;
         return true;
@@ -129,8 +132,8 @@ static bool ns_name(char name[96], const uint8_t *header, uint32_t strings, uint
 }
 static bool ns_parse(Abstractformat *f, pm_stream *s, ac_blob *b)
 {
-    uint32_t start = 0, flags, size, header_size, data_size, pos, header_packed, header_n = 0, cap, solid_capacity = 0, solid_n = 0, entries, count, strings, lang, i;
-    uint8_t *header = NULL, *solid = NULL;
+    uint32_t start = 0, flags, size, header_size, data_size, pos, header_packed, header_n = 0, cap, solid_capacity = 0, solid_n = 0, entries, count, strings, lang, i, scratch_cap = 0;
+    uint8_t *header = NULL, *solid = NULL, *scratch = NULL;
     bool non_solid, unicode;
     unsigned stride = 8U, method;
     const uint8_t *data;
@@ -230,25 +233,28 @@ static bool ns_parse(Abstractformat *f, pm_stream *s, ac_blob *b)
                 if (!ac_emit(f, s, b, name, start + 28U + at + 4U, n)) goto fail;
                 continue;
             }
-            cap = 16U * 1024U * 1024U;
-            {
-                const xx_var *v = ac_option(f, XX_META_ID_OPT_MAX_MEMBER_SIZE);
-                if (v && xx_var_get_u64(v) < cap) cap = (uint32_t)xx_var_get_u64(v);
+            if (!scratch) {
+                cap = 16U * 1024U * 1024U;
+                {
+                    const xx_var *v = ac_option(f, XX_META_ID_OPT_MAX_MEMBER_SIZE);
+                    if (v && xx_var_get_u64(v) < cap) cap = (uint32_t)xx_var_get_u64(v);
+                }
+                scratch_cap = cap;
+                scratch = (uint8_t *)xx_mem_alloc(scratch_cap);
+                if (!scratch) goto fail;
             }
             if (b->used >= b->limit) {
                 goto fail;
             }
-            if (cap > b->limit - b->used) cap = (uint32_t)(b->limit - b->used);
-            out = ac_alloc(b, cap);
+            if (!ns_decode(b, data + at + 4U, n, scratch, scratch_cap, &packed, ns_method(data + at + 4U, n))) {
+                goto fail;
+            }
+            if ((uint64_t)packed > b->limit - b->used) {
+                goto fail;
+            }
+            out = ac_alloc(b, packed);
             if (!out) goto fail;
-            if (!ns_decode(b, data + at + 4U, n, out, cap, &packed, ns_method(data + at + 4U, n))) {
-                ac_release(b, out, cap);
-                goto fail;
-            }
-            if (!ac_compact(b, &out, cap, packed)) {
-                ac_release(b, out, cap);
-                goto fail;
-            }
+            xx_rt_memcpy(out, scratch, packed);
             if (!ac_memory(f, s, b, name, out, packed, n, (uint16_t)method)) goto fail;
         } else {
             if (offset > solid_n - pos || solid_n - pos - offset < 4U) {
@@ -266,10 +272,12 @@ static bool ns_parse(Abstractformat *f, pm_stream *s, ac_blob *b)
         }
     }
     ((xx_nsis *)f)->note = "NSIS2/3 standard extract-file commands; decoded payloads, no installer execution; names use safe unresolved-variable placeholders";
+    if (scratch) xx_mem_free(scratch);
     if (solid) ac_release(b, solid, solid_capacity);
     else ac_release(b, header, header_size);
     return s->count != 0;
 fail:
+    if (scratch) xx_mem_free(scratch);
     if (solid) ac_release(b, solid, solid_capacity);
     else if (header) ac_release(b, header, header_size);
     return ac_error(b, failure);

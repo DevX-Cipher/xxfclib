@@ -38,7 +38,8 @@ static bool pm_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
                   serialized_crc(&b, at + 21, end - at - 21, xx_data_get_u32(b.p + (size_t)at + 17, 4, 0, true), true) && blob_add(f, s, &b, "batch-header", at, 61));
         at += 61;
         for (i = 0; i < count; ++i) {
-            BLOB_NEED(serialized_zig(&b, &at, end, &n) && n >= 7 && record_span(at, (uint64_t)n, end));
+            /* Six minimum body bytes: attributes, two deltas, two nullable lengths, and header count. */
+            BLOB_NEED(serialized_zig(&b, &at, end, &n) && n >= 6 && record_span(at, (uint64_t)n, end));
             recend = at + (uint64_t)n;
             start = at;
             BLOB_NEED(blob_span(&b, at, 1) && !b.p[(size_t)at++] && serialized_zig(&b, &at, recend, &ts) && serialized_zig(&b, &at, recend, &off) && off >= 0 &&

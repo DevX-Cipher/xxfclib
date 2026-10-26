@@ -2,6 +2,11 @@
  * SPDX-License-Identifier: MIT
  */
 #include "xx_format_additional.h"
+#include "xxfclib/formats/archive/stor_resource/xx_stor_resource.h"
+#include "xxfclib/formats/archive/installshield_obl/xx_installshield_obl.h"
+#include "xxfclib/formats/installer/natata_ebook/xx_natata_ebook.h"
+#include "xxfclib/formats/archive/eid/xx_eid.h"
+#include "xxfclib/formats/archive/apple_diags/xx_apple_diags.h"
 #include "xxfclib/formats/filesystem/dmk/xx_dmk.h"
 #include "xxfclib/formats/filesystem/mfs/xx_mfs.h"
 #include "xxfclib/formats/filesystem/hfs/xx_hfs.h"
@@ -50,6 +55,7 @@
 #include "xxfclib/formats/filesystem/pce_pbi/xx_pce_pbi.h"
 #include "xxfclib/formats/filesystem/pce_pbit/xx_pce_pbit.h"
 #include "xxfclib/formats/filesystem/pce_tc/xx_pce_tc.h"
+#include "xxfclib/formats/filesystem/pce_anadisk/xx_pce_anadisk.h"
 #include "xxfclib/formats/filesystem/erofs/xx_erofs.h"
 #include "xxfclib/formats/filesystem/ldbs/xx_ldbs.h"
 #include "xxfclib/formats/filesystem/ldbst/xx_ldbst.h"
@@ -188,6 +194,25 @@ xx_file_type_t xx_format_detect_additional(xx_io_device *device)
     if (size <= 0) goto done;
     prefix_size = size < (int64_t)sizeof(prefix) ? (size_t)size : sizeof(prefix);
     if (xx_io_seek64(device, 0, SEEK_SET) != 0 || !probe_read_exact(device, prefix, prefix_size)) goto done;
+    if (prefix_size >= 12U && !xx_rt_memcmp(prefix, "pOdA", 4U) && xx_installshield_obl_fast_detect(device, 0, false)) {
+        result = XX_FILE_TYPE_INSTALLSHIELD_OBL; goto done;
+    }
+    if (prefix_size >= 8U && !xx_rt_memcmp(prefix, "STOR", 4U) && xx_stor_resource_fast_detect(device, 0, false)) {
+        result = XX_FILE_TYPE_STOR_RESOURCE; goto done;
+    }
+    if ((prefix_size >= 4U && !xx_rt_memcmp(prefix, "#1!#", 4U)) ||
+        (prefix_size >= 2U && prefix[0] == 'M' && prefix[1] == 'Z')) {
+        if (xx_natata_ebook_fast_detect(device, 0, false)) { result = XX_FILE_TYPE_NATATA_EBOOK; goto done; }
+    }
+    if (size >= 202 && prefix[0] < 104U && matches(device, prefix, prefix_size, size, 108, (const unsigned char *)"\x04\0\0\0\x04\0\0\0", 8U)) {
+        if (xx_eid_fast_detect(device, 0, false)) { result = XX_FILE_TYPE_EID; goto done; }
+    }
+    if (prefix_size >= 12U && !xx_rt_memcmp(prefix, "|_|_", 4U)) {
+        Abstractformat *reader = xx_apple_diags_create(device, 0);
+        bool valid = reader && xx_format_is_valid(reader, NULL);
+        xx_apple_diags_free(reader);
+        if (valid) { result = XX_FILE_TYPE_APPLE_DIAGS; goto done; }
+    }
     if (prefix_size >= 30U && !xx_rt_memcmp(prefix, "SOFTWARE PIRATESRelease 3.02$0", 30U)) {
         xx_snatchit_cp2 *reader = xx_snatchit_cp2_create(device, 0);
         bool valid = reader && xx_format_is_valid(&reader->format, NULL);
@@ -376,7 +401,19 @@ xx_file_type_t xx_format_detect_additional(xx_io_device *device)
             goto done;
         }
     }
-    if (prefix_size >= 11 && !xx_rt_memcmp(prefix + 3, "EXFAT   ", 8)) {
+    /* The native reader can recover a damaged primary boot region from the
+     * backup at sector 12. Probe only the four supported logical sector sizes,
+     * then require complete native validation before choosing exFAT. */
+    bool exfat_candidate = prefix_size >= 11 && !xx_rt_memcmp(prefix + 3, "EXFAT   ", 8);
+    if (!exfat_candidate && size >= INT64_C(1048576)) {
+        for (uint32_t sector = 512U; sector <= 4096U; sector *= 2U) {
+            if (matches(device, prefix, prefix_size, size, (int64_t)sector * 12 + 3, (const unsigned char *)"EXFAT   ", 8)) {
+                exfat_candidate = true;
+                break;
+            }
+        }
+    }
+    if (exfat_candidate) {
         xx_exfat *reader = xx_exfat_create(device, 0);
         bool valid = reader && xx_exfat_check_is_valid(&reader->format, NULL);
         xx_exfat_free(reader);
@@ -977,7 +1014,7 @@ xx_file_type_t xx_format_detect_additional(xx_io_device *device)
             goto done;
         }
     }
-    if (size >= 485 && prefix_size >= 17U && matches(device, prefix, prefix_size, size, 0, (const unsigned char *)"Solitaire Deluxe.", 17)) {
+    if (size >= 119 && prefix_size >= 17U && matches(device, prefix, prefix_size, size, 0, (const unsigned char *)"Solitaire Deluxe.", 17)) {
         xx_solitaire_deluxe *reader = xx_solitaire_deluxe_create(device, 0);
         bool valid = reader && xx_solitaire_deluxe_check_is_valid(&reader->format, NULL);
         xx_solitaire_deluxe_free(reader);
@@ -996,7 +1033,8 @@ xx_file_type_t xx_format_detect_additional(xx_io_device *device)
         }
     }
     if (size >= 128 && size <= 128 * 1024 * 1024 && prefix_size >= 8U &&
-        ((prefix[0] == 0xb0U && prefix[1] == 0U && prefix[2] == 0x30U && prefix[3] == 0U && prefix[4] == 0x44U && prefix[5] == 0U && prefix[6] == 0x60U &&
+        (matches(device, prefix, prefix_size, size, 0, (const unsigned char *)"OpenVMS DCX FTSV Compressed File", 32) ||
+         (prefix[0] == 0xb0U && prefix[1] == 0U && prefix[2] == 0x30U && prefix[3] == 0U && prefix[4] == 0x44U && prefix[5] == 0U && prefix[6] == 0x60U &&
           prefix[7] == 0U) ||
          (prefix[0] == 3U && prefix[1] == 0U && prefix[2] == 0U && prefix[3] == 0U && prefix[4] == 0U && prefix[5] == 0U && prefix[6] == 0U && prefix[7] == 0U &&
           has_vms_dcx_ftsv_banner(device, size)))) {
@@ -1396,6 +1434,22 @@ xx_file_type_t xx_format_detect_additional(xx_io_device *device)
             xx_bytekiller_free(reader);
             if (valid) result = XX_FILE_TYPE_BYTEKILLER;
         }
+    }
+    /* AnaDisk has no magic. Only try it after all anchored probes, and ask
+     * its conservative parser to validate the complete stream: at least two
+     * nonempty sectors, plausible per-sector geometry, and no trailing bytes.
+     * The native reader separately bounds the file, record count and sizes. */
+    if (result == XX_FILE_TYPE_UNKNOWN && size >= 18 && size <= 64 * 1024 * 1024 && prefix_size >= 8U &&
+        prefix[0] <= 99U && prefix[1] <= 3U && prefix[2] <= 99U && prefix[3] <= 3U && prefix[4] <= 63U && prefix[5] <= 7U &&
+        ((unsigned)prefix[6] | ((unsigned)prefix[7] << 8U)) <= 16384U) {
+        xx_pce_anadisk *reader = xx_pce_anadisk_create(device, 0);
+        bool valid = false;
+        if (reader) {
+            xx_pce_anadisk_set_conservative_probe(reader, true);
+            valid = xx_format_is_valid(&reader->format, NULL);
+        }
+        xx_pce_anadisk_free(reader);
+        if (valid) result = XX_FILE_TYPE_PCE_ANADISK;
     }
 done:
     (void)xx_io_seek64(device, saved, SEEK_SET);

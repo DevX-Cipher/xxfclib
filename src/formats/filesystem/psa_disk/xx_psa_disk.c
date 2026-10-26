@@ -98,6 +98,27 @@ static bool psa_disk_set_carrier(Abstractformat *f, xx_file_type_t type, int64_t
     return true;
 }
 
+bool xx_psa_disk_get_container_span(Abstractformat *f, int64_t *base, int64_t *size)
+{
+    int64_t cursor, outer, total;
+    bool ok;
+    /* Callback identity proves this is our actual carrier, not a plain
+     * Abstractformat with a claimed type or cached validity bit. */
+    if (!f || !base || !size || !f->device || f->file_type != XX_FILE_TYPE_PSA_DISK ||
+        f->handle_base_info != psa_disk_carrier_info || f->destroy != psa_disk_carrier_destroy ||
+        !f->priv || f->base_address < 84) return false;
+    cursor = xx_io_tell(f->device);
+    total = xx_io_total_size(f->device);
+    outer = f->base_address - 84;
+    if (cursor < 0 || total < f->base_address) return false;
+    ok = psa_disk_psa_header(f->device, outer);
+    if (xx_io_seek64(f->device, cursor, SEEK_SET) != 0) return false;
+    if (!ok) return false;
+    *base = outer;
+    *size = total - outer;
+    return true;
+}
+
 Abstractformat *xx_psa_disk_create(xx_io_device *d, int64_t base)
 {
     bool valid = psa_disk_psa_header(d, base);

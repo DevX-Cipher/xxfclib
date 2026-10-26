@@ -8,6 +8,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+/** Return authenticated outer and inner physical spans, preserving the device cursor. */
+XXFC_API bool xx_binsh_starkit_get_container_span(Abstractformat *format, int64_t *base, int64_t *size, int64_t *inner);
 XXFC_API Abstractformat *xx_binsh_starkit_create(xx_io_device *device, int64_t base_address);
 XXFC_API void xx_binsh_starkit_free(Abstractformat *format);
 XXFC_API xx_file_type_t xx_binsh_starkit_detect(xx_io_device *device, int64_t base_address);

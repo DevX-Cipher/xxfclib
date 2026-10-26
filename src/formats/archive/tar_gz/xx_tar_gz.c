@@ -3,6 +3,7 @@
  */
 
 #include "xxfclib/formats/archive/tar_gz/xx_tar_gz.h"
+#include "xx_tar_gz_datastructs_internal.h"
 
 #include "../tar_common/xx_tar_common.h"
 #include "xxfclib/algo/deflate/xx_deflate.h"
@@ -14,7 +15,7 @@
 
 static void xx_tar_gz_vtable_destroy(Abstractformat *self);
 
-static xx_tar_common *xx_tar_gz_common(xx_tar_gz *tar_gz)
+xx_tar_common *xx_tar_gz_common(xx_tar_gz *tar_gz)
 {
     xx_tar_common *common;
     if (!tar_gz) return NULL;
@@ -50,7 +51,7 @@ static void xx_tar_gz_sync_public_state(xx_tar_gz *tar_gz, const xx_tar_common *
 
 /* One pass: each gzip member is decoded once, into the cache, and checked
  * against its trailer on the way. */
-static bool xx_tar_gz_decode(Abstractformat *outer, xx_io_device *destination, int64_t *compressed_size, xx_pd_struct *pd)
+bool xx_tar_gz_decode(Abstractformat *outer, xx_io_device *destination, int64_t *compressed_size, xx_pd_struct *pd)
 {
     bool cut = false;
     uint64_t checked = 0U;
@@ -160,16 +161,6 @@ void xx_tar_gz_init(xx_tar_gz *tar_gz, xx_io_device *dev, int64_t base_address)
     tar_gz->format.pack_archive_record = xx_tar_gz_pack_archive_record;
     tar_gz->format.finalize_archive_records_writing = xx_tar_gz_finalize_archive_records_writing;
     tar_gz->format.free_archive_records_writing = xx_tar_gz_free_archive_records_writing;
-    tar_gz->format.data_struct_id_to_string = xx_tar_gz_data_struct_id_to_string;
-    tar_gz->format.data_struct_string_to_id = xx_tar_gz_data_struct_string_to_id;
-    tar_gz->format.create_data_structs_reading = xx_tar_gz_create_data_structs_reading;
-    tar_gz->format.get_current_data_struct = xx_tar_gz_get_current_data_struct;
-    tar_gz->format.data_struct_move_to_next = xx_tar_gz_data_struct_move_to_next;
-    tar_gz->format.free_data_structs_reading = xx_tar_gz_free_data_structs_reading;
-    tar_gz->format.create_data_struct_records_reading = xx_tar_gz_create_data_struct_records_reading;
-    tar_gz->format.get_current_data_struct_record = xx_tar_gz_get_current_data_struct_record;
-    tar_gz->format.data_struct_record_move_to_next = xx_tar_gz_data_struct_record_move_to_next;
-    tar_gz->format.free_data_struct_records_reading = xx_tar_gz_free_data_struct_records_reading;
     tar_gz->format.destroy = xx_tar_gz_vtable_destroy;
     xx_tar_gz_clear_public_state(tar_gz);
 }
@@ -323,67 +314,6 @@ bool xx_tar_gz_finalize_archive_records_writing(Abstractformat *self, xx_archive
 void xx_tar_gz_free_archive_records_writing(Abstractformat *self, xx_archive_write_state *state)
 {
     xx_tar_common_free_archive_records_writing(self, state);
-}
-
-const char *xx_tar_gz_data_struct_id_to_string(Abstractformat *self, uint32_t id)
-{
-    xx_tar_common *common = self ? (xx_tar_common *)((xx_tar_gz *)self)->internal : NULL;
-    return xx_tar_common_data_struct_id_to_string(common, id);
-}
-
-uint32_t xx_tar_gz_data_struct_string_to_id(Abstractformat *self, const char *name)
-{
-    xx_tar_common *common = self ? (xx_tar_common *)((xx_tar_gz *)self)->internal : NULL;
-    return xx_tar_common_data_struct_string_to_id(common, name);
-}
-
-xx_data_struct_state *xx_tar_gz_create_data_structs_reading(Abstractformat *self, xx_pd_struct *pd)
-{
-    xx_tar_gz *tar_gz = (xx_tar_gz *)self;
-    xx_tar_common *common = xx_tar_gz_common(tar_gz);
-    return common ? xx_tar_common_create_data_structs_reading(common, self, xx_tar_gz_decode, pd) : NULL;
-}
-
-const xx_data_struct *xx_tar_gz_get_current_data_struct(Abstractformat *self, xx_data_struct_state *state)
-{
-    xx_tar_common *common = self ? (xx_tar_common *)((xx_tar_gz *)self)->internal : NULL;
-    return common ? xx_tar_common_get_current_data_struct(common, state) : NULL;
-}
-
-bool xx_tar_gz_data_struct_move_to_next(Abstractformat *self, xx_data_struct_state *state, xx_pd_struct *pd)
-{
-    xx_tar_common *common = self ? (xx_tar_common *)((xx_tar_gz *)self)->internal : NULL;
-    return common && xx_tar_common_data_struct_move_to_next(common, state, pd);
-}
-
-void xx_tar_gz_free_data_structs_reading(Abstractformat *self, xx_data_struct_state *state)
-{
-    xx_tar_common *common = self ? (xx_tar_common *)((xx_tar_gz *)self)->internal : NULL;
-    xx_tar_common_free_data_structs_reading(common, state);
-}
-
-xx_data_struct_record_state *xx_tar_gz_create_data_struct_records_reading(Abstractformat *self, const xx_data_struct *ds, xx_pd_struct *pd)
-{
-    xx_tar_common *common = self ? (xx_tar_common *)((xx_tar_gz *)self)->internal : NULL;
-    return common ? xx_tar_common_create_data_struct_records_reading(common, ds, pd) : NULL;
-}
-
-const xx_data_struct_record *xx_tar_gz_get_current_data_struct_record(Abstractformat *self, xx_data_struct_record_state *state)
-{
-    xx_tar_common *common = self ? (xx_tar_common *)((xx_tar_gz *)self)->internal : NULL;
-    return common ? xx_tar_common_get_current_data_struct_record(common, state) : NULL;
-}
-
-bool xx_tar_gz_data_struct_record_move_to_next(Abstractformat *self, xx_data_struct_record_state *state, xx_pd_struct *pd)
-{
-    xx_tar_common *common = self ? (xx_tar_common *)((xx_tar_gz *)self)->internal : NULL;
-    return common && xx_tar_common_data_struct_record_move_to_next(common, state, pd);
-}
-
-void xx_tar_gz_free_data_struct_records_reading(Abstractformat *self, xx_data_struct_record_state *state)
-{
-    xx_tar_common *common = self ? (xx_tar_common *)((xx_tar_gz *)self)->internal : NULL;
-    xx_tar_common_free_data_struct_records_reading(common, state);
 }
 
 uint64_t xx_tar_gz_get_number_of_records(const xx_tar_gz *tar_gz)

@@ -2,6 +2,7 @@
 # Define XXFC_STATIC, add XXFORMATS_INCLUDE_DIR publicly and
 # XXFORMATS_INCLUDE_DIRS privately, and link XXFORMATS_LIBRARIES.
 # The legacy x*.c parsers are part of die_engine and are deliberately excluded.
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/xxfclib_streams.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/xxfclib_codepages.cmake")
 set(XXFORMATS_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/include")
 # FOLLOW_SYMLINKS: a synced folder (ownCloud, OneDrive) can mark directories
@@ -85,6 +86,8 @@ else()
     find_package(Threads REQUIRED)
     set(XXFORMATS_LIBRARIES Threads::Threads m ${CMAKE_DL_LIBS})
 endif()
+
+xxfclib_select_stream_sources(XXFORMATS_SOURCES)
 
 # Resolve internal headers and the short algorithm header names used by readers.
 set(XXFORMATS_INCLUDE_DIRS

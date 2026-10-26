@@ -5,8 +5,9 @@
 #ifndef XXFCLIB_ELF_DATA_INTERNAL_H
 #define XXFCLIB_ELF_DATA_INTERNAL_H
 
+#include "xxfclib/formats/xx_format_streams.h"
 #include "xxfclib/formats/executable/elf/xx_elf.h"
 
-void xx_elf_setup_data_struct_callbacks(xx_elf *elf);
+const StreamDataStructs *xx_elf_get_stream_datastructs(void);
 
 #endif /* XXFCLIB_ELF_DATA_INTERNAL_H */

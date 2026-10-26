@@ -539,3 +539,15 @@ uint64_t xx_elf_get_number_of_resources(Abstractformat *format, xx_pd_struct *pd
     format->number_of_resources = count;
     return count;
 }
+
+const StreamResources *xx_elf_get_stream_resources(void)
+{
+    static const StreamResources stream = {
+        .get_number_of_resources = xx_elf_get_number_of_resources,
+        .create_resources_reading = xx_elf_create_resources_reading,
+        .get_current_resource = xx_elf_get_current_resource,
+        .resource_move_to_next = xx_elf_resource_move_to_next,
+        .free_resources_reading = xx_elf_free_resources_reading
+    };
+    return &stream;
+}

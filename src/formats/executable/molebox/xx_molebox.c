@@ -31,6 +31,8 @@ typedef struct mb_index {
     mb_package *packages;
     uint32_t count, capacity, blocks;
     uint64_t owned;
+    int64_t catalog_at;
+    uint32_t catalog_size;
 } mb_index;
 typedef struct mb_sink {
     uint8_t *bytes;
@@ -367,6 +369,7 @@ static mb_index *mb_parse(Abstractformat *f, xx_pd_struct *pd)
     ix = xx_mem_calloc(1, sizeof(*ix));
     if (!ix) return NULL;
     ix->owned = sizeof(*ix);
+    ix->catalog_at = -1;
     if (mb_catalog_header(f, h, &cipher)) {
         bytes = xx_data_get_u32(h, 4, 0, false);
         catalog = xx_mem_alloc(bytes);
@@ -381,7 +384,12 @@ static mb_index *mb_parse(Abstractformat *f, xx_pd_struct *pd)
         mounts = xx_data_get_u32(catalog + 12, 4, 0, false);
         if (!pkgs || pkgs > 64 || mounts > 64 || !mb_range(bytes, pt, (uint64_t)pkgs * 8) || !mb_range(bytes, mt, (uint64_t)mounts * 24)) goto done;
         for (i = 0; i < pkgs; ++i) {
-            int64_t at = xx_data_get_u32(catalog + pt + i * 8, 4, 0, false);
+            uint32_t relative = xx_data_get_u32(catalog + pt + i * 8, 4, 0, false);
+            int64_t at;
+            /* The writer stores offsets within this input file. Actual native
+             * readers retain a nonzero device base; factory slices use zero. */
+            if (relative > (uint64_t)(total - f->base_address)) goto done;
+            at = f->base_address + relative;
             uint32_t no = xx_data_get_u32(catalog + pt + i * 8 + 4, 4, 0, false);
             const char *prefix = "";
             bool embedded = false;
@@ -408,6 +416,8 @@ static mb_index *mb_parse(Abstractformat *f, xx_pd_struct *pd)
             }
             if (!mb_load_package(f, ix, at, use, embedded, prefix, pd)) goto done;
         }
+        ix->catalog_at = total - 8 - bytes;
+        ix->catalog_size = bytes;
     } else if (total - f->base_address >= 64) {
         if (!mb_load_package(f, ix, total - 48, key, false, "", pd)) goto done;
     } else goto done;
@@ -463,6 +473,44 @@ static bool mb_info(Abstractformat *f, xx_pd_struct *pd)
     f->number_of_archive_records = ix->records.count;
     f->format_size = ix->records.size;
     return true;
+}
+bool xx_molebox_get_physical_metadata(Abstractformat *f, uint32_t package_index,
+                                     xx_molebox_physical_metadata *out, xx_pd_struct *pd)
+{
+    mb_index *ix;
+    mb_package *p;
+    uint8_t prefix[12];
+    int64_t saved;
+    bool ok = false;
+    if (!out) return false;
+    xx_mem_zero(out, sizeof(*out));
+    out->package_offset = out->tree_offset = out->header_offset = out->catalog_offset = -1;
+    /* Check the native callback before accessing its extended allocation. */
+    if (!f || !f->device || f->file_type != MB_TYPE || f->handle_base_info != mb_info ||
+        (pd && xx_pd_is_stopped(pd))) return false;
+    saved = xx_io_tell(f->device);
+    if ((!f->base_info_handled && !mb_info(f, pd)) || !f->is_valid) goto done;
+    ix = ((xx_molebox *)f)->index;
+    if (!ix || package_index >= ix->count) goto done;
+    p = ix->packages + package_index;
+    out->package_count = ix->count;
+    out->package_offset = p->base;
+    out->tree_offset = p->tree_at;
+    out->tree_size = p->size;
+    out->header_offset = p->tree_at + p->size;
+    out->catalog_offset = ix->catalog_at;
+    out->catalog_size = ix->catalog_size;
+    /* The prefix is separately authenticated. A legacy native-accepted image
+     * without it still has valid tree/header spans; its prefix remains raw. */
+    if (p->tree_at - p->base >= 12 && ue2_read(f, p->base, prefix, sizeof(prefix))) {
+        mb_decrypt8(&p->cipher, prefix);
+        out->has_verified_prefix = !xx_rt_memcmp(prefix, "QUICKBOX", 8) &&
+            xx_data_get_u32(prefix + 8, 4, 0, false) == (uint64_t)(p->base - f->base_address);
+    }
+    ok = true;
+done:
+    if (saved >= 0) xx_io_seek64(f->device, saved, XX_RT_SEEK_SET);
+    return ok;
 }
 static xx_archive_record_state *mb_records(Abstractformat *f, const xx_list_s *opts, xx_pd_struct *pd)
 {

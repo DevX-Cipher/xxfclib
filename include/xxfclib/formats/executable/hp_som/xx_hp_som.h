@@ -85,8 +85,8 @@ typedef struct xx_hp_som_section_s {
     uint32_t name_offset;
     uint32_t space_index;
     uint32_t flags;
-    uint32_t file_offset;
-    uint32_t file_size;
+    uint32_t file_offset; /**< File byte offset when file_size != 0; otherwise the stored 32-bit initialization pattern. */
+    uint32_t file_size;   /**< Bytes physically initialized from the file; zero selects the pattern union. */
     uint32_t subspace_start;
     uint32_t virtual_size;
     uint32_t alignment;
