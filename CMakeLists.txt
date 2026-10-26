@@ -7761,3 +7761,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_lzma_context_tests.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_sfxarj_resource_tests.cmake")
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_arq_advisory_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_createinstall_resources_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_jugglor_legacy_tests.cmake")

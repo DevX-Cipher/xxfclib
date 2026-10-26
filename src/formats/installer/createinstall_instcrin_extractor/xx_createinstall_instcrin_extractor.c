@@ -6,7 +6,7 @@
  * carries the container layout.
  *
  * Sources.  The adaptive Huffman model (the 1257-node tree, its update and the
- * weight halving at 2000) and the container rules (prelude search, the 77/79
+ * weight halving at 2000) and the container rules (prelude search, the 77/78/79
  * byte prelude, the 17-byte records, the stream chains of large members) are
  * ported from XArchive Algos/xcreateinstalldecoder.cpp and
  * installers/xcreateinstallsfx.cpp (MIT, Copyright (c) 2019-2026
@@ -77,6 +77,7 @@
 #define CI_RECORD_HEADER 17
 #define CI_PRELUDE_SHORT 77
 #define CI_PRELUDE_LONG 79
+#define CI_PRELUDE_MIDDLE 78
 #define CI_PRELUDE_HEAD 0x12
 #define CI_PRELUDE_SKIP 8
 #define CI_SCAN_LIMIT 0x101
@@ -563,7 +564,7 @@ typedef struct ci_head_s {
     int64_t runtime_size;
     int64_t runtime_packed;
     int64_t prelude;
-    int64_t candidates[2]; /**< Record chain starts that look right. */
+    int64_t candidates[3]; /**< Record chain starts that look right. */
     uint32_t candidate_count;
 } ci_head;
 
@@ -655,6 +656,10 @@ static bool ci_parse_head(Abstractformat *format, ci_codec *codec, ci_head *head
     }
     if (ci_record_plausible(format, head->available, prelude + first + skip)) head->candidates[head->candidate_count++] = prelude + first + skip;
     if (ci_record_plausible(format, head->available, prelude + second + skip)) head->candidates[head->candidate_count++] = prelude + second + skip;
+    /* A builder variant places the script after a 78-byte prelude. Keep the
+     * established candidates first; the complete record walk and codec EOS
+     * checks must still accept the selected candidate. */
+    if (ci_record_plausible(format, head->available, prelude + CI_PRELUDE_MIDDLE + skip)) head->candidates[head->candidate_count++] = prelude + CI_PRELUDE_MIDDLE + skip;
     return head->candidate_count > 0U;
 }
 
@@ -1221,6 +1226,8 @@ done:
     return result;
 }
 
+#include "xx_createinstall_resource_files.h"
+
 static bool ci_walk_container(Abstractformat *format, ci_walk **out, xx_pd_struct *pd)
 {
     ci_codec *codec;
@@ -1234,6 +1241,7 @@ static bool ci_walk_container(Abstractformat *format, ci_walk **out, xx_pd_struc
     if (ci_parse_head(format, codec, &head, pd)) {
         for (index = 0U; index < head.candidate_count && !result; ++index) result = ci_walk_records(format, codec, &head, head.candidates[index], out, pd);
     }
+    if (!result && !(pd && xx_pd_is_stopped(pd))) result = ci_resource_files(format, codec, out, pd);
     xx_mem_free(codec);
     return result;
 }
@@ -1416,7 +1424,12 @@ bool xx_createinstall_instcrin_extractor_check_is_valid(Abstractformat *format, 
     bool result;
     /* The PE headers and eight overlay bytes first: nothing is allocated for
      * a file that does not carry the runtime signature. */
-    if (!ci_locate(format, NULL, NULL)) return false;
+    if (!ci_locate(format, NULL, NULL)) {
+        ci_walk *walk = NULL;
+        codec = ci_codec_create(); if (!codec) return false;
+        result = ci_resource_files(format, codec, &walk, pd);
+        ci_walk_free(walk); xx_mem_free(codec); return result;
+    }
     codec = ci_codec_create();
     if (!codec) return false;
     result = ci_parse_head(format, codec, &head, pd);

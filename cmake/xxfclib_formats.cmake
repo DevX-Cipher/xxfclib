@@ -44,8 +44,20 @@ set_target_properties(xxfclib PROPERTIES
     C_EXTENSIONS OFF
     POSITION_INDEPENDENT_CODE ON)
 if(MSVC)
-    target_compile_options(xxfclib PRIVATE /W4 /utf-8)
+    target_compile_options(xxfclib PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:/W4>
+        $<$<COMPILE_LANGUAGE:C>:/utf-8>)
     target_compile_definitions(xxfclib PRIVATE _CRT_SECURE_NO_WARNINGS)
+    # The MSVC x64 codec headers select these assembly implementations. The
+    # formats profile returns before the full build's MASM setup, so it must
+    # provide them itself. Test the target architecture, not the pointer size,
+    # to keep ARM64 builds on the portable C implementations.
+    if(CMAKE_C_COMPILER_ARCHITECTURE_ID MATCHES "^(x64|AMD64)$")
+        enable_language(ASM_MASM)
+        target_sources(xxfclib PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/algo/lzma/asm/lzma_x64.asm"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/algo/bzip2/asm/bzip2_x64.asm")
+    endif()
 else()
     target_compile_options(xxfclib PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -141,3 +153,8 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_sfxarj_resource_tests.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_arq_advisory_tests.cmake")
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_sfxcab_bss_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_createinstall_resources_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_jugglor_legacy_tests.cmake")
+
