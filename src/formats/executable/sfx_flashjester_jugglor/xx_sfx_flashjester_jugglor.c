@@ -53,6 +53,7 @@
 
 #define JG_MAGIC UINT32_C(0x6A4A61A3)
 #define JG_SEAL UINT32_C(0x8CF9BF0D)
+#define JG_RELATIVE_SEAL UINT32_C(0x8CF9BF0C)
 
 #define JG_NAME_AT 0x004U
 #define JG_DIR_AT 0x104U
@@ -261,7 +262,8 @@ static bool jg_component_safe(const uint8_t *text, size_t length)
 }
 
 /* "<directory without drive>/<name>".  The directory is split on both
- * separators; empty components are dropped, and so is a leading "X:".
+ * separators; empty and current-directory components are dropped, as is
+ * a leading "X:". Parent-directory components remain unsafe.
  * The name is built on the stack and returned in an exact-size copy, so a
  * list of many members holds only what their names need. */
 static char *jg_build_name(const uint8_t *dir_field, const uint8_t *name_field, bool *unsafe)
@@ -280,7 +282,7 @@ static char *jg_build_name(const uint8_t *dir_field, const uint8_t *name_field, 
         if (stop > start) {
             size_t length = stop - start;
             bool drive = first && start == 0U && length == 2U && dir[1] == ':' && ((dir[0] >= 'A' && dir[0] <= 'Z') || (dir[0] >= 'a' && dir[0] <= 'z'));
-            if (!drive) {
+            if (!drive && !(length == 1U && dir[start] == '.')) {
                 if (!jg_component_safe(dir + start, length)) *unsafe = true;
                 for (index = start; index < stop; ++index) position += jg_put_utf8(out + position, dir[index]);
                 out[position++] = '/';
@@ -415,16 +417,32 @@ static bool jg_trailer_parse(const uint8_t *t, const jg_layout *layout, int64_t 
     uint32_t reserved = xx_data_get_u32(t + 16U, 4, 0, false);
     const uint8_t *text = t + JG_TRAILER_VERSION_AT + 1U;
     size_t prefix = sizeof(JG_VERSION_PREFIX) - 1U;
-    if (layout->overlay > (int64_t)UINT32_MAX || position - layout->overlay > (int64_t)UINT32_MAX || xx_data_get_u32(t + 4U, 4, 0, false) != (uint32_t)layout->overlay ||
+    int64_t chain_size = position - layout->overlay;
+    uint32_t seal = xx_data_get_u32(t + JG_TRAILER_SEAL_AT, 4, 0, false);
+    uint32_t expected_overlay;
+    if (chain_size < 0 || chain_size > (int64_t)UINT32_MAX) return false;
+    if (seal == JG_RELATIVE_SEAL) {
+        uint32_t checksum = 0U;
+        /* The relative trailer is reached at EOF - 220; its signed +4
+         * displacement points back to the first member. The loader checks
+         * this rolling checksum over bytes 0..211 before using it. */
+        if (chain_size > INT32_MAX) return false;
+        expected_overlay = 0U - (uint32_t)chain_size;
+        for (index = 0U; index < 212U; ++index) checksum = checksum * 3U + t[index];
+        if (checksum != xx_data_get_u32(t + 212U, 4, 0, false)) return false;
+    } else if (seal == JG_SEAL) expected_overlay = (uint32_t)layout->overlay;
+    else return false;
+    if (layout->overlay > (int64_t)UINT32_MAX || position - layout->overlay > (int64_t)UINT32_MAX || xx_data_get_u32(t + 4U, 4, 0, false) != expected_overlay ||
         xx_data_get_u32(t + 8U, 4, 0, false) != (uint32_t)(position - layout->overlay) || (uint64_t)xx_data_get_u32(t + 12U, 4, 0, false) != layout->count ||
         xx_data_get_u32(t + 20U, 4, 0, false) != (uint32_t)layout->unpacked || length < prefix || length > JG_TRAILER_VERSION_MAX)
         return false;
     for (index = 0U; index < length; ++index)
         if (text[index] < 0x20U || text[index] > 0x7EU) return false;
     if (xx_rt_memcmp(text, JG_VERSION_PREFIX, prefix) != 0) return false;
-    /* The observed 1.01 builder writes 797 here; later builds write zero.
-     * No interpretation of other nonzero values is established. */
-    if (reserved != 0U && (reserved != 797U || length != sizeof(legacy_version) - 1U || xx_rt_memcmp(text, legacy_version, sizeof(legacy_version) - 1U))) return false;
+    /* Version 1.01 writes an opaque producer value here (observed 786,
+     * 790 and 797). It is not a count, size or checksum, and the original
+     * reader does not interpret it. Later versions require zero. */
+    if (reserved != 0U && (length != sizeof(legacy_version) - 1U || xx_rt_memcmp(text, legacy_version, sizeof(legacy_version) - 1U))) return false;
     xx_rt_memcpy(version, text + prefix, length - prefix);
     version[length - prefix] = 0;
     return true;
@@ -479,7 +497,8 @@ static bool jg_walk(Abstractformat *format, jg_layout *layout, jg_member **list,
         if (layout->variant == XX_SFX_FLASHJESTER_JUGGLOR_VARIANT_JUGGLOR) {
             /* Each step is either the trailer or another member. */
             if (remaining < (int64_t)JG_TRAILER || !jg_read_at(format->device, format->base_address + position, h, avail)) return false;
-            if (xx_data_get_u32(h, 4, 0, false) == JG_MAGIC && xx_data_get_u32(h + JG_TRAILER_SEAL_AT, 4, 0, false) == JG_SEAL) {
+            if (xx_data_get_u32(h, 4, 0, false) == JG_MAGIC && (xx_data_get_u32(h + JG_TRAILER_SEAL_AT, 4, 0, false) == JG_SEAL ||
+                                                                          xx_data_get_u32(h + JG_TRAILER_SEAL_AT, 4, 0, false) == JG_RELATIVE_SEAL)) {
                 if (layout->count == 0U || !jg_trailer_parse(h, layout, position, layout->version)) return false;
                 layout->end = position + (int64_t)JG_TRAILER;
                 return true;
