@@ -1,0 +1,7 @@
+option(XXFC_BUILD_PFTW_PKG_TESTS "Build standalone encoded PackageForTheWeb tests" OFF)
+if(XXFC_BUILD_PFTW_PKG_TESTS)
+    enable_testing()
+    add_executable(test_pftw_pkg_native "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pftw_pkg_native.c")
+    target_link_libraries(test_pftw_pkg_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_pftw_pkg_native COMMAND test_pftw_pkg_native)
+endif()

@@ -1,0 +1,7 @@
+option(XXFC_BUILD_GOB_TERMINAL_TESTS "Build GOB terminal-directory-marker tests" OFF)
+if(XXFC_BUILD_GOB_TERMINAL_TESTS)
+    enable_testing()
+    add_executable(test_gob_terminal "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gob_terminal.c")
+    target_link_libraries(test_gob_terminal PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_gob_terminal COMMAND test_gob_terminal "${CMAKE_CURRENT_BINARY_DIR}/gob-terminal-output")
+endif()

@@ -1,0 +1,7 @@
+option(XXFC_BUILD_AR_LEGACY_TESTS "Build legacy COFF size-field compatibility tests" OFF)
+if(XXFC_BUILD_AR_LEGACY_TESTS)
+    enable_testing()
+    add_executable(test_ar_legacy_size "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ar_legacy_size.c")
+    target_link_libraries(test_ar_legacy_size PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_ar_legacy_size COMMAND test_ar_legacy_size)
+endif()

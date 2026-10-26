@@ -1,0 +1,7 @@
+option(XXFC_BUILD_INSTALIT_FOOTER_TESTS "Build Instalit legacy volume footer tests" OFF)
+if(XXFC_BUILD_INSTALIT_FOOTER_TESTS)
+    enable_testing()
+    add_executable(test_instalit_footer "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_instalit_footer.c")
+    target_link_libraries(test_instalit_footer PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_instalit_footer COMMAND test_instalit_footer "${CMAKE_CURRENT_BINARY_DIR}/instalit-footer-output")
+endif()

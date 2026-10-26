@@ -1,0 +1,7 @@
+option(XXFC_BUILD_MACBINARY_SECONDARY_TESTS "Build MacBinary II legacy extension-area tests" OFF)
+if(XXFC_BUILD_MACBINARY_SECONDARY_TESTS)
+    enable_testing()
+    add_executable(test_macbinary_secondary "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_macbinary_secondary.c")
+    target_link_libraries(test_macbinary_secondary PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_macbinary_secondary COMMAND test_macbinary_secondary "${CMAKE_CURRENT_BINARY_DIR}/macbinary-secondary-output")
+endif()

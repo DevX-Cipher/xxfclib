@@ -1,0 +1,7 @@
+option(XXFC_BUILD_JGPAK_BANNER_TESTS "Build JGPAK text banner tests" OFF)
+if(XXFC_BUILD_JGPAK_BANNER_TESTS)
+    enable_testing()
+    add_executable(test_jgpak_banner "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_jgpak_banner.c")
+    target_link_libraries(test_jgpak_banner PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_jgpak_banner COMMAND test_jgpak_banner "${CMAKE_CURRENT_BINARY_DIR}/jgpak-banner-output")
+endif()

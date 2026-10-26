@@ -1,0 +1,7 @@
+option(XXFC_BUILD_GST_PREFIX_TESTS "Build GST prefixed-DCL tests" OFF)
+if(XXFC_BUILD_GST_PREFIX_TESTS)
+    enable_testing()
+    add_executable(test_gst_prefix "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gst_prefix.c")
+    target_link_libraries(test_gst_prefix PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_gst_prefix COMMAND test_gst_prefix "${CMAKE_CURRENT_BINARY_DIR}/gst-prefix-output")
+endif()

@@ -1,0 +1,7 @@
+option(XXFC_BUILD_ASYMETRIX_EMPTY_TESTS "Build Asymetrix empty-member tests" OFF)
+if(XXFC_BUILD_ASYMETRIX_EMPTY_TESTS)
+    enable_testing()
+    add_executable(test_asymetrix_empty "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_asymetrix_empty.c")
+    target_link_libraries(test_asymetrix_empty PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_asymetrix_empty COMMAND test_asymetrix_empty "${CMAKE_CURRENT_BINARY_DIR}/asymetrix-empty-output")
+endif()

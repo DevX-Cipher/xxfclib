@@ -1,0 +1,7 @@
+option(XXFC_BUILD_SECURA_TESTS "Build Secura SAC1 native tests" OFF)
+if(XXFC_BUILD_SECURA_TESTS)
+    enable_testing()
+    add_executable(test_secura_native "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_secura_native.c")
+    target_link_libraries(test_secura_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_secura_native COMMAND test_secura_native)
+endif()

@@ -1,0 +1,7 @@
+option(XXFC_BUILD_STARFORCE_OVL_TESTS "Build StarForce OVL native tests" OFF)
+if(XXFC_BUILD_STARFORCE_OVL_TESTS)
+    enable_testing()
+    add_executable(test_starforce_ovl_native "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_starforce_ovl_native.c")
+    target_link_libraries(test_starforce_ovl_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_starforce_ovl_native COMMAND test_starforce_ovl_native)
+endif()

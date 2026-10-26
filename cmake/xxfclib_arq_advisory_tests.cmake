@@ -1,0 +1,8 @@
+option(XXFC_BUILD_ARQ_ADVISORY_TESTS "Build ARQ advisory metadata tests" OFF)
+if(XXFC_BUILD_ARQ_ADVISORY_TESTS)
+    enable_testing()
+    add_executable(test_arq_advisory "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_arq_advisory.c")
+    target_link_libraries(test_arq_advisory PRIVATE xxfclib::xxfclib)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/arq-advisory-output")
+    add_test(NAME xxfc_arq_advisory COMMAND test_arq_advisory "${CMAKE_CURRENT_BINARY_DIR}/arq-advisory-output")
+endif()

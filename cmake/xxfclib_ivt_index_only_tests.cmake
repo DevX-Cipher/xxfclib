@@ -1,0 +1,7 @@
+option(XXFC_BUILD_IVT_INDEX_ONLY_TESTS "Build IVT index-only companion tests" OFF)
+if(XXFC_BUILD_IVT_INDEX_ONLY_TESTS)
+    enable_testing()
+    add_executable(test_ivt_index_only "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ivt_index_only.c")
+    target_link_libraries(test_ivt_index_only PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_ivt_index_only COMMAND test_ivt_index_only "${CMAKE_CURRENT_BINARY_DIR}/ivt-index-only-output")
+endif()

@@ -1,0 +1,7 @@
+option(XXFC_BUILD_AIXBFF_VOLUME_TESTS "Build bounded AIX BFF volume-set tests" OFF)
+if(XXFC_BUILD_AIXBFF_VOLUME_TESTS)
+    enable_testing()
+    add_executable(test_aixbff_volumes "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_aixbff_volumes.c")
+    target_link_libraries(test_aixbff_volumes PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_aixbff_volumes COMMAND test_aixbff_volumes "${CMAKE_CURRENT_BINARY_DIR}/aixbff-volume-fixtures")
+endif()

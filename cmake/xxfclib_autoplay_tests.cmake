@@ -1,0 +1,7 @@
+option(XXFC_BUILD_AUTOPLAY_TESTS "Build AutoPlay SFX credential recovery tests" OFF)
+if(XXFC_BUILD_AUTOPLAY_TESTS)
+    enable_testing()
+    add_executable(test_autoplay_sfx_native "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_autoplay_sfx_native.c")
+    target_link_libraries(test_autoplay_sfx_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_autoplay_sfx_native COMMAND test_autoplay_sfx_native)
+endif()

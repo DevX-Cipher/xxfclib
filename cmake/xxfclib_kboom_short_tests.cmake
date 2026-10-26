@@ -1,0 +1,7 @@
+option(XXFC_BUILD_KBOOM_SHORT_TESTS "Build KBOOM timestamp-free header tests" OFF)
+if(XXFC_BUILD_KBOOM_SHORT_TESTS)
+    enable_testing()
+    add_executable(test_kboom_short "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_kboom_short.c")
+    target_link_libraries(test_kboom_short PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_kboom_short COMMAND test_kboom_short "${CMAKE_CURRENT_BINARY_DIR}/kboom-short-output")
+endif()

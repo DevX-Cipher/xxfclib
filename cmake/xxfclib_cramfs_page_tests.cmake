@@ -1,0 +1,7 @@
+option(XXFC_BUILD_CRAMFS_PAGE_TESTS "Build CRAMFS page-size tests" OFF)
+if(XXFC_BUILD_CRAMFS_PAGE_TESTS)
+    enable_testing()
+    add_executable(test_cramfs_pages "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cramfs_pages.c")
+    target_link_libraries(test_cramfs_pages PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_cramfs_pages COMMAND test_cramfs_pages "${CMAKE_CURRENT_BINARY_DIR}/cramfs-pages-output")
+endif()

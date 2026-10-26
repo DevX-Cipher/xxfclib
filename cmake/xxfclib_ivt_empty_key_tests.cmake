@@ -1,0 +1,7 @@
+option(XXFC_BUILD_IVT_EMPTY_KEY_TESTS "Build IVT first-empty-key tests" OFF)
+if(XXFC_BUILD_IVT_EMPTY_KEY_TESTS)
+    enable_testing()
+    add_executable(test_ivt_empty_key "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ivt_empty_key.c")
+    target_link_libraries(test_ivt_empty_key PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_ivt_empty_key COMMAND test_ivt_empty_key "${CMAKE_CURRENT_BINARY_DIR}/ivt-empty-key-output")
+endif()

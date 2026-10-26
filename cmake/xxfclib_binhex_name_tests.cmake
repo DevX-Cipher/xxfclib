@@ -1,0 +1,7 @@
+option(XXFC_BUILD_BINHEX_NAME_TESTS "Build BinHex Macintosh filename tests" OFF)
+if(XXFC_BUILD_BINHEX_NAME_TESTS)
+    enable_testing()
+    add_executable(test_binhex_names "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_binhex_names.c")
+    target_link_libraries(test_binhex_names PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_binhex_names COMMAND test_binhex_names "${CMAKE_CURRENT_BINARY_DIR}/binhex-name-output")
+endif()

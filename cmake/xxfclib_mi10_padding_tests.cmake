@@ -1,0 +1,7 @@
+option(XXFC_BUILD_MI10_PADDING_TESTS "Build authenticated MI10 zero-padding tests" OFF)
+if(XXFC_BUILD_MI10_PADDING_TESTS)
+    enable_testing()
+    add_executable(test_mi10_padding "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mi10_padding.c")
+    target_link_libraries(test_mi10_padding PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_mi10_padding COMMAND test_mi10_padding "${CMAKE_CURRENT_BINARY_DIR}/mi10-padding-output")
+endif()

@@ -1,0 +1,7 @@
+option(XXFC_BUILD_PATCHWISE_TESTS "Build PatchWise ZSB native tests" OFF)
+if(XXFC_BUILD_PATCHWISE_TESTS)
+    enable_testing()
+    add_executable(test_patchwise_native "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_patchwise_native.c")
+    target_link_libraries(test_patchwise_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_patchwise_native COMMAND test_patchwise_native)
+endif()

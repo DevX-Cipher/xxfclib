@@ -1,0 +1,7 @@
+option(XXFC_BUILD_PYZ_NAMESPACE_TESTS "Build legacy PYZ namespace stream tests" OFF)
+if(XXFC_BUILD_PYZ_NAMESPACE_TESTS)
+    enable_testing()
+    add_executable(test_pyz_namespace "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pyz_namespace.c")
+    target_link_libraries(test_pyz_namespace PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_pyz_namespace COMMAND test_pyz_namespace)
+endif()

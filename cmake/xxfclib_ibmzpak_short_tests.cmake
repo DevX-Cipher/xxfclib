@@ -1,0 +1,7 @@
+option(XXFC_BUILD_IBMZPAK_SHORT_TESTS "Build IBM ZPAK short-directory tests" OFF)
+if(XXFC_BUILD_IBMZPAK_SHORT_TESTS)
+    enable_testing()
+    add_executable(test_ibmzpak_short "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ibmzpak_short.c")
+    target_link_libraries(test_ibmzpak_short PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_ibmzpak_short COMMAND test_ibmzpak_short "${CMAKE_CURRENT_BINARY_DIR}/ibmzpak-short-output")
+endif()

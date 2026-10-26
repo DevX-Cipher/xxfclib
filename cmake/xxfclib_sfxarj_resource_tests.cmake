@@ -1,0 +1,8 @@
+option(XXFC_BUILD_SFXARJ_RESOURCE_TESTS "Build native ARJ PE resource tests" OFF)
+if(XXFC_BUILD_SFXARJ_RESOURCE_TESTS)
+    enable_testing()
+    add_executable(test_sfxarj_resource "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_sfxarj_resource.c")
+    target_link_libraries(test_sfxarj_resource PRIVATE xxfclib::xxfclib)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/sfxarj-resource-output")
+    add_test(NAME xxfc_sfxarj_resource COMMAND test_sfxarj_resource "${CMAKE_CURRENT_BINARY_DIR}/sfxarj-resource-output")
+endif()

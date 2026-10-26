@@ -1,0 +1,7 @@
+option(XXFC_BUILD_STUFFIT5_SFX_TESTS "Build StuffIt 5 self-extractor framing tests" OFF)
+if(XXFC_BUILD_STUFFIT5_SFX_TESTS)
+    enable_testing()
+    add_executable(test_stuffit5_sfx_native "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_stuffit5_sfx_native.c")
+    target_link_libraries(test_stuffit5_sfx_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_stuffit5_sfx_native COMMAND test_stuffit5_sfx_native)
+endif()

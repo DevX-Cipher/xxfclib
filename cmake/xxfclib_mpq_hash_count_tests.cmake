@@ -1,0 +1,7 @@
+option(XXFC_BUILD_MPQ_HASH_COUNT_TESTS "Build MPQ non-power-of-two hash table tests" OFF)
+if(XXFC_BUILD_MPQ_HASH_COUNT_TESTS)
+    enable_testing()
+    add_executable(test_mpq_hash_count "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mpq_hash_count.c")
+    target_link_libraries(test_mpq_hash_count PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_mpq_hash_count COMMAND test_mpq_hash_count)
+endif()

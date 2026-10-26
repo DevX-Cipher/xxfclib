@@ -1,0 +1,7 @@
+option(XXFC_BUILD_MACBINARY_PAINT_TESTS "Build MacBinary MacPaint length recovery tests" OFF)
+if(XXFC_BUILD_MACBINARY_PAINT_TESTS)
+    enable_testing()
+    add_executable(test_macbinary_paint "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_macbinary_paint.c")
+    target_link_libraries(test_macbinary_paint PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_macbinary_paint COMMAND test_macbinary_paint "${CMAKE_CURRENT_BINARY_DIR}/macbinary-paint-output")
+endif()

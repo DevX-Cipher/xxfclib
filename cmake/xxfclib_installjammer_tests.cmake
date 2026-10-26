@@ -1,0 +1,7 @@
+option(XXFC_BUILD_INSTALLJAMMER_TESTS "Build InstallJammer CRAP02 native tests" OFF)
+if(XXFC_BUILD_INSTALLJAMMER_TESTS)
+    enable_testing()
+    add_executable(test_installjammer_native "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_installjammer_native.c")
+    target_link_libraries(test_installjammer_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_installjammer_native COMMAND test_installjammer_native)
+endif()

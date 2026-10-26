@@ -1,0 +1,7 @@
+option(XXFC_BUILD_SOD_INSTALLER_TESTS "Build SOD installer native tests" OFF)
+if(XXFC_BUILD_SOD_INSTALLER_TESTS)
+    enable_testing()
+    add_executable(test_sod_installer_native "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_sod_installer_native.c")
+    target_link_libraries(test_sod_installer_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_sod_installer_native COMMAND test_sod_installer_native)
+endif()

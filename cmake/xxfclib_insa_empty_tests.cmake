@@ -1,0 +1,7 @@
+option(XXFC_BUILD_INSA_EMPTY_TESTS "Build INSA empty-record tests" OFF)
+if(XXFC_BUILD_INSA_EMPTY_TESTS)
+    enable_testing()
+    add_executable(test_insa_empty "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_insa_empty.c")
+    target_link_libraries(test_insa_empty PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_insa_empty COMMAND test_insa_empty "${CMAKE_CURRENT_BINARY_DIR}/insa-empty-output")
+endif()

@@ -1,0 +1,7 @@
+option(XXFC_BUILD_MAKESELF_NVIDIA_TESTS "Build NVIDIA Makeself line-offset tests" OFF)
+if(XXFC_BUILD_MAKESELF_NVIDIA_TESTS)
+    enable_testing()
+    add_executable(test_makeself_nvidia "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_makeself_nvidia.c")
+    target_link_libraries(test_makeself_nvidia PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_makeself_nvidia COMMAND test_makeself_nvidia "${CMAKE_CURRENT_BINARY_DIR}/makeself-nvidia-output")
+endif()

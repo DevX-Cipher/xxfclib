@@ -1,0 +1,8 @@
+option(XXFC_BUILD_SFX7ZIP_RESOURCE_TESTS "Build bounded SFX 7z PE resource tests" OFF)
+if(XXFC_BUILD_SFX7ZIP_RESOURCE_TESTS)
+    enable_testing()
+    add_executable(test_sfx7zip_resource "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_sfx7zip_resource.c")
+    target_link_libraries(test_sfx7zip_resource PRIVATE xxfclib::xxfclib)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/sfx7zip-resource-output")
+    add_test(NAME xxfc_sfx7zip_resource COMMAND test_sfx7zip_resource "${CMAKE_CURRENT_BINARY_DIR}/sfx7zip-resource-output")
+endif()

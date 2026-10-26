@@ -1,0 +1,7 @@
+option(XXFC_BUILD_MVA_VOLUME_TESTS "Build authenticated MVA/MVB volume tests" OFF)
+if(XXFC_BUILD_MVA_VOLUME_TESTS)
+    enable_testing()
+    add_executable(test_mva_volumes "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mva_volumes.c")
+    target_link_libraries(test_mva_volumes PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_mva_volumes COMMAND test_mva_volumes "${CMAKE_CURRENT_BINARY_DIR}/mva-volume-output")
+endif()

@@ -1,0 +1,7 @@
+option(XXFC_BUILD_LZMA_CONTEXT_TESTS "Build full LZMA1 context tests" OFF)
+if(XXFC_BUILD_LZMA_CONTEXT_TESTS)
+    enable_testing()
+    add_executable(test_lzma_context "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lzma_context.c")
+    target_link_libraries(test_lzma_context PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_lzma_context COMMAND test_lzma_context)
+endif()

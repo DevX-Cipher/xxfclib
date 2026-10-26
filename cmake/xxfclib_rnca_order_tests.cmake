@@ -1,0 +1,7 @@
+option(XXFC_BUILD_RNCA_ORDER_TESTS "Build RNCA unordered-directory tests" OFF)
+if(XXFC_BUILD_RNCA_ORDER_TESTS)
+    enable_testing()
+    add_executable(test_rnca_order "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rnca_order.c")
+    target_link_libraries(test_rnca_order PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_rnca_order COMMAND test_rnca_order)
+endif()

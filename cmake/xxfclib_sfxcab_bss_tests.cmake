@@ -1,0 +1,8 @@
+option(XXFC_BUILD_SFXCAB_BSS_TESTS "Build legacy CAB PE BSS tests" OFF)
+if(XXFC_BUILD_SFXCAB_BSS_TESTS)
+    enable_testing()
+    add_executable(test_sfxcab_bss "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_sfxcab_bss.c")
+    target_link_libraries(test_sfxcab_bss PRIVATE xxfclib::xxfclib)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/sfxcab-bss-output")
+    add_test(NAME xxfc_sfxcab_bss COMMAND test_sfxcab_bss "${CMAKE_CURRENT_BINARY_DIR}/sfxcab-bss-output")
+endif()

@@ -1,0 +1,7 @@
+option(XXFC_BUILD_ISSKIN_OVERLAY_TESTS "Build InstallShield skin binary-overlay tests" OFF)
+if(XXFC_BUILD_ISSKIN_OVERLAY_TESTS)
+    enable_testing()
+    add_executable(test_isskin_overlay "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_isskin_overlay.c")
+    target_link_libraries(test_isskin_overlay PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_isskin_overlay COMMAND test_isskin_overlay "${CMAKE_CURRENT_BINARY_DIR}/isskin-overlay-output")
+endif()

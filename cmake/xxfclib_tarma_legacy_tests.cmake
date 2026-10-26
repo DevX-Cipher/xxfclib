@@ -1,0 +1,7 @@
+option(XXFC_BUILD_TARMA_LEGACY_TESTS "Build Tarma tiz1/tiz2 framing tests" OFF)
+if(XXFC_BUILD_TARMA_LEGACY_TESTS)
+    enable_testing()
+    add_executable(test_tarma_legacy_native "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_tarma_legacy_native.c")
+    target_link_libraries(test_tarma_legacy_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_tarma_legacy_native COMMAND test_tarma_legacy_native)
+endif()

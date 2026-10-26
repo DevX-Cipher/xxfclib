@@ -1,0 +1,7 @@
+option(XXFC_BUILD_KIRIKIRI_XP3_TESTS "Build bounded XP3 compressed index/segment tests" OFF)
+if(XXFC_BUILD_KIRIKIRI_XP3_TESTS)
+    enable_testing()
+    add_executable(test_kirikiri_xp3_native "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_kirikiri_xp3_native.c")
+    target_link_libraries(test_kirikiri_xp3_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_kirikiri_xp3_native COMMAND test_kirikiri_xp3_native)
+endif()

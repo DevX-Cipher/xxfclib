@@ -1,0 +1,7 @@
+option(XXFC_BUILD_BIGF_NAMELESS_TESTS "Build nameless BIGF directory tests" OFF)
+if(XXFC_BUILD_BIGF_NAMELESS_TESTS)
+    enable_testing()
+    add_executable(test_bigf_nameless "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bigf_nameless.c")
+    target_link_libraries(test_bigf_nameless PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_bigf_nameless COMMAND test_bigf_nameless "${CMAKE_CURRENT_BINARY_DIR}/bigf-nameless-output")
+endif()

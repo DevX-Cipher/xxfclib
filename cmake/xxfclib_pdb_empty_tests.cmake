@@ -1,0 +1,7 @@
+option(XXFC_BUILD_PDB_EMPTY_TESTS "Build nameless MOBI container tests" OFF)
+if(XXFC_BUILD_PDB_EMPTY_TESTS)
+    enable_testing()
+    add_executable(test_pdb_empty_mobi "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pdb_empty_mobi.c")
+    target_link_libraries(test_pdb_empty_mobi PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_pdb_empty_mobi COMMAND test_pdb_empty_mobi)
+endif()

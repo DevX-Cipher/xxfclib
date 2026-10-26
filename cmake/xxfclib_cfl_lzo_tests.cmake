@@ -1,0 +1,7 @@
+option(XXFC_BUILD_CFL_LZO_TESTS "Build CFL LZO1X reader tests" OFF)
+if(XXFC_BUILD_CFL_LZO_TESTS)
+    enable_testing()
+    add_executable(test_cfl_lzo "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cfl_lzo.c")
+    target_link_libraries(test_cfl_lzo PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_cfl_lzo COMMAND test_cfl_lzo "${CMAKE_CURRENT_BINARY_DIR}/cfl-lzo-output")
+endif()

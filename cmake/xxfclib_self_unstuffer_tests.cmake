@@ -1,0 +1,7 @@
+option(XXFC_BUILD_SELF_UNSTUFFER_TESTS "Build Aladdin DOS Self-UnStuffer native tests" OFF)
+if(XXFC_BUILD_SELF_UNSTUFFER_TESTS)
+    enable_testing()
+    add_executable(test_self_unstuffer_native "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_self_unstuffer_native.c")
+    target_link_libraries(test_self_unstuffer_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_self_unstuffer_native COMMAND test_self_unstuffer_native)
+endif()

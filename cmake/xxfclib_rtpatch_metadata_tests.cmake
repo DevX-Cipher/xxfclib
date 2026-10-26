@@ -1,0 +1,7 @@
+option(XXFC_BUILD_RTPATCH_METADATA_TESTS "Build RTPatch metadata-only package tests" OFF)
+if(XXFC_BUILD_RTPATCH_METADATA_TESTS)
+    enable_testing()
+    add_executable(test_rtpatch_metadata "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rtpatch_metadata.c")
+    target_link_libraries(test_rtpatch_metadata PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_rtpatch_metadata COMMAND test_rtpatch_metadata)
+endif()

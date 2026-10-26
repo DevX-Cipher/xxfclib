@@ -1,0 +1,7 @@
+option(XXFC_BUILD_AMIGALZX_CRLF_TESTS "Build Amiga LZX text-mode transfer recovery tests" OFF)
+if(XXFC_BUILD_AMIGALZX_CRLF_TESTS)
+    enable_testing()
+    add_executable(test_amigalzx_crlf "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_amigalzx_crlf.c")
+    target_link_libraries(test_amigalzx_crlf PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_amigalzx_crlf COMMAND test_amigalzx_crlf "${CMAKE_CURRENT_BINARY_DIR}/amigalzx-crlf-output")
+endif()
