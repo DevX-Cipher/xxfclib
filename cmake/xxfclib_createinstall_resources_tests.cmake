@@ -1,0 +1,8 @@
+option(XXFC_BUILD_CREATEINSTALL_RESOURCES_TESTS "Build CreateInstall resource stream tests" OFF)
+if(XXFC_BUILD_CREATEINSTALL_RESOURCES_TESTS)
+    enable_testing()
+    add_executable(test_createinstall_resources "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_createinstall_resources.c")
+    target_link_libraries(test_createinstall_resources PRIVATE xxfclib::xxfclib)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/createinstall-resource-output")
+    add_test(NAME xxfc_createinstall_resources COMMAND test_createinstall_resources "${CMAKE_CURRENT_BINARY_DIR}/createinstall-resource-output")
+endif()

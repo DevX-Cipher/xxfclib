@@ -1,0 +1,8 @@
+option(XXFC_BUILD_JUGGLOR_LEGACY_TESTS "Build Jugglor 1.01 trailer tests" OFF)
+if(XXFC_BUILD_JUGGLOR_LEGACY_TESTS)
+    enable_testing()
+    add_executable(test_jugglor_legacy "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_jugglor_legacy.c")
+    target_link_libraries(test_jugglor_legacy PRIVATE xxfclib::xxfclib)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/jugglor-legacy-output")
+    add_test(NAME xxfc_jugglor_legacy COMMAND test_jugglor_legacy "${CMAKE_CURRENT_BINARY_DIR}/jugglor-legacy-output")
+endif()
