@@ -11,6 +11,7 @@
 #include "../../../io/xx_io_policy.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/strings/xx_string.h"
+#include "../../xx_archive_output_name.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -83,6 +84,8 @@ done:
 
 typedef struct xx_iso9660_entry_s {
     char *name;
+    char *output_name;
+    char *output_key;
     int64_t header_offset;
     int64_t data_offset;
     uint32_t data_size;
@@ -107,6 +110,8 @@ typedef struct xx_iso9660_private_s {
     int64_t volume_end;
     uint32_t block_size;
     uint32_t volume_space_size;
+    size_t *output_slots;
+    size_t output_capacity;
 } xx_iso9660_private;
 
 typedef struct xx_iso9660_archive_stream_s {
@@ -156,12 +161,84 @@ static void xx_iso9660_private_cleanup(xx_iso9660_private *parsed)
     if (!parsed) return;
     for (index = 0U; index < parsed->count; ++index) {
         if (parsed->entries[index].name) xx_str_free(parsed->entries[index].name);
+        xx_str_free(parsed->entries[index].output_name);
+        xx_str_free(parsed->entries[index].output_key);
     }
     if (parsed->entries) xx_mem_free(parsed->entries);
     if (parsed->visited) xx_mem_free(parsed->visited);
+    xx_mem_free(parsed->output_slots);
     xx_mem_zero(parsed, sizeof(*parsed));
     parsed->pvd_offset = -1;
     parsed->volume_end = -1;
+}
+
+static size_t xx_iso9660_output_hash(const char *key)
+{
+    uint64_t value = UINT64_C(14695981039346656037);
+    while (*key) { value ^= (unsigned char)*key++; value *= UINT64_C(1099511628211); }
+    return (size_t)value;
+}
+
+static char *xx_iso9660_output_key(const char *name)
+{
+#ifdef _WIN32
+    wchar_t *wide = xx_str_utf8_to_unicode(name), *upper;
+    char *key;
+    int n;
+    if (!wide) return NULL;
+    n = LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_UPPERCASE, wide, -1, NULL, 0, NULL, NULL, 0);
+    if (n <= 0) { xx_str_wfree(wide); return NULL; }
+    upper = (wchar_t *)xx_mem_alloc((size_t)n * sizeof(*upper));
+    if (!upper) { xx_str_wfree(wide); return NULL; }
+    if (LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_UPPERCASE, wide, -1, upper, n, NULL, NULL, 0) != n) {
+        xx_str_wfree(wide); xx_mem_free(upper); return NULL;
+    }
+    key = xx_str_unicode_to_utf8(upper);
+    xx_str_wfree(wide); xx_mem_free(upper);
+    return key;
+#else
+    return xx_str_dup(name);
+#endif
+}
+
+/* One namespace for files and directories. Mapped directory prefixes flow
+ * into their children. The open-addressed table avoids quadratic scans of
+ * large ISO trees; stored names remain unchanged in archive records. */
+static bool xx_iso9660_output_unique(xx_iso9660_private *parsed, xx_iso9660_entry *entry)
+{
+    size_t slot;
+    if ((parsed->count + 1U) * 2U > parsed->output_capacity) {
+        size_t capacity = parsed->output_capacity ? parsed->output_capacity * 2U : 64U;
+        size_t *slots = (size_t *)xx_mem_calloc(capacity, sizeof(*slots));
+        if (!slots) return false;
+        for (size_t i = 0; i < parsed->count; ++i) {
+            slot = xx_iso9660_output_hash(parsed->entries[i].output_key) & (capacity - 1U);
+            while (slots[slot]) slot = (slot + 1U) & (capacity - 1U);
+            slots[slot] = i + 1U;
+        }
+        xx_mem_free(parsed->output_slots); parsed->output_slots = slots; parsed->output_capacity = capacity;
+    }
+    entry->output_key = xx_iso9660_output_key(entry->output_name);
+    if (!entry->output_key) return false;
+    slot = xx_iso9660_output_hash(entry->output_key) & (parsed->output_capacity - 1U);
+    while (parsed->output_slots[slot]) {
+        const char *key = parsed->entries[parsed->output_slots[slot] - 1U].output_key;
+        if (!xx_rt_strcmp(key, entry->output_key)) {
+            xx_str_free(entry->output_key); entry->output_key = NULL;
+            if (!xx_archive_output_suffix(&entry->output_name, parsed->count)) return false;
+            entry->output_key = xx_iso9660_output_key(entry->output_name);
+            if (!entry->output_key) return false;
+            slot = xx_iso9660_output_hash(entry->output_key) & (parsed->output_capacity - 1U);
+            while (parsed->output_slots[slot]) {
+                if (!xx_rt_strcmp(parsed->entries[parsed->output_slots[slot] - 1U].output_key, entry->output_key)) return false;
+                slot = (slot + 1U) & (parsed->output_capacity - 1U);
+            }
+            break;
+        }
+        slot = (slot + 1U) & (parsed->output_capacity - 1U);
+    }
+    parsed->output_slots[slot] = parsed->count + 1U;
+    return true;
 }
 
 static bool xx_iso9660_append_entry(xx_iso9660_private *parsed, xx_iso9660_entry *entry)
@@ -343,7 +420,7 @@ static char *xx_iso9660_join_name(const char *prefix, const char *name)
     return combined;
 }
 
-static bool xx_iso9660_parse_directory(Abstractformat *self, xx_iso9660_private *parsed, uint32_t extent, uint32_t size, const char *prefix, unsigned depth,
+static bool xx_iso9660_parse_directory(Abstractformat *self, xx_iso9660_private *parsed, uint32_t extent, uint32_t size, const char *prefix, const char *output_prefix, unsigned depth,
                                        xx_pd_struct *pd)
 {
     int64_t directory_offset;
@@ -416,22 +493,30 @@ static bool xx_iso9660_parse_directory(Abstractformat *self, xx_iso9660_private 
             component = xx_iso9660_name_from_rock_ridge(self, parsed->block_size, record, record_length, identifier_length);
         if (!component) component = xx_iso9660_name_from_identifier(record + 33U, identifier_length, true);
         if (component) {
+            char *safe_component, *output_name;
             xx_mem_zero(&entry, sizeof(entry));
             full_name = xx_iso9660_join_name(prefix, component);
+            safe_component = xx_archive_output_name(component, 65001, 0);
+            output_name = safe_component ? xx_iso9660_join_name(output_prefix, safe_component) : NULL;
+            xx_str_free(safe_component);
             xx_str_free(component);
-            if (!full_name) return false;
+            if (!full_name || !output_name) { xx_str_free(full_name); xx_str_free(output_name); return false; }
             entry.name = full_name;
+            entry.output_name = output_name;
             entry.header_offset = record_offset;
             entry.data_offset = data_offset;
             entry.data_size = data_size;
             entry.flags = record[25];
             entry.is_zisofs = is_zisofs;
             entry.zisofs = zisofs;
-            if (!xx_iso9660_append_entry(parsed, &entry)) {
+            if (!xx_iso9660_output_unique(parsed, &entry) || !xx_iso9660_append_entry(parsed, &entry)) {
                 xx_str_free(full_name);
+                xx_str_free(entry.output_name);
+                xx_str_free(entry.output_key);
                 return false;
             }
-            if ((record[25] & UINT8_C(0x02)) != 0U && !xx_iso9660_parse_directory(self, parsed, data_extent, data_size, full_name, depth + 1U, pd)) {
+            output_name = parsed->entries[parsed->count - 1U].output_name;
+            if ((record[25] & UINT8_C(0x02)) != 0U && !xx_iso9660_parse_directory(self, parsed, data_extent, data_size, full_name, output_name, depth + 1U, pd)) {
                 return false;
             }
         } else if (identifier_length != 1U || (record[33] != 0U && record[33] != 1U)) {
@@ -506,7 +591,7 @@ static bool xx_iso9660_parse(Abstractformat *self, xx_iso9660_private *parsed, x
     parsed->block_size = block_size_le;
     parsed->volume_space_size = volume_space_le;
     if (root_extent != root_extent_be || root_size != root_size_be || (pvd[181] & UINT8_C(0x02)) == 0U ||
-        !xx_iso9660_parse_directory(self, parsed, root_extent, root_size, "", 0U, pd))
+        !xx_iso9660_parse_directory(self, parsed, root_extent, root_size, "", "", 0U, pd))
         goto fail;
     return true;
 fail:
@@ -790,6 +875,7 @@ bool xx_iso9660_unpack_current_archive_record(Abstractformat *self, xx_archive_r
     const char *name;
     const char *base = NULL;
     char *owned_base = NULL;
+    char *owned_name = NULL;
     char *destination = NULL;
     bool folder;
     bool overwrite;
@@ -813,6 +899,17 @@ bool xx_iso9660_unpack_current_archive_record(Abstractformat *self, xx_archive_r
         base = owned_base;
     }
     if (!base) goto cleanup;
+    {
+        size_t n = xx_str_len(name), raw = xx_str_len(entry->name), prefix;
+        if (n < raw || xx_rt_strcmp(name + n - raw, entry->name)) goto cleanup;
+        prefix = n - raw;
+        if (prefix && name[prefix - 1U] != '/') goto cleanup;
+        owned_name = xx_str_create_len(prefix + xx_str_len(entry->output_name));
+        if (!owned_name) goto cleanup;
+        xx_mem_copy(owned_name, name, prefix);
+        xx_mem_copy(owned_name + prefix, entry->output_name, xx_str_len(entry->output_name) + 1U);
+        name = owned_name;
+    }
     if (base[0] && base[xx_str_len(base) - 1U] != '/' && base[xx_str_len(base) - 1U] != '\\') {
         destination = xx_str_concat(base, "/");
         if (!destination) goto cleanup;
@@ -852,10 +949,12 @@ bool xx_iso9660_unpack_current_archive_record(Abstractformat *self, xx_archive_r
     } else {
         result = false;
     }
+    xx_str_free(owned_name);
     if (owned_base) xx_str_free(owned_base);
     xx_str_free(destination);
     return result;
 cleanup:
+    xx_str_free(owned_name);
     if (owned_base) xx_str_free(owned_base);
     if (destination) xx_str_free(destination);
     return false;

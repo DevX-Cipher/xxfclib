@@ -585,16 +585,12 @@ static xx_pyz_stream *xx_pyz_parse(Abstractformat *self, xx_pd_struct *pd)
             goto fail;
         }
 
-        if (entry_type == XX_PYZ_ENTRY_NAMESPACE) {
-            /* A namespace package is a marker with no byte stream at all, so
-             * it publishes no member; a nonzero size on one is a
-             * contradiction, not a member to fall back on. */
-            if (data_size != 0) {
-                goto fail;
-            }
+        if (entry_type == XX_PYZ_ENTRY_NAMESPACE && data_size == 0) {
+            /* Current writers emit markers. Older writers serialize and
+             * compress a code object for namespace packages as well. */
             continue;
         }
-        if ((entry_type != XX_PYZ_ENTRY_MODULE) && (entry_type != XX_PYZ_ENTRY_PACKAGE)) {
+        if ((entry_type != XX_PYZ_ENTRY_MODULE) && (entry_type != XX_PYZ_ENTRY_PACKAGE) && (entry_type != XX_PYZ_ENTRY_NAMESPACE)) {
             goto fail;
         }
         if (data_size < XX_PYZ_MIN_STREAM) {
@@ -628,7 +624,7 @@ static xx_pyz_stream *xx_pyz_parse(Abstractformat *self, xx_pd_struct *pd)
         }
 
         xx_mem_zero(&member, sizeof(member));
-        member.name = xx_pyz_build_name(toc + name.offset, name.size, entry_type == XX_PYZ_ENTRY_PACKAGE);
+        member.name = xx_pyz_build_name(toc + name.offset, name.size, entry_type == XX_PYZ_ENTRY_PACKAGE || entry_type == XX_PYZ_ENTRY_NAMESPACE);
         if (!member.name) {
             goto fail;
         }
@@ -708,7 +704,8 @@ static bool xx_pyz_decode_core(Abstractformat *self, const xx_pyz_member *member
      * itself publish keeps a future entry type from being inflated as if it
      * were a module - silently guessing is how garbage gets written out as
      * data. */
-    if ((member->method != (uint32_t)XX_PYZ_ENTRY_MODULE) && (member->method != (uint32_t)XX_PYZ_ENTRY_PACKAGE)) {
+    if ((member->method != (uint32_t)XX_PYZ_ENTRY_MODULE) && (member->method != (uint32_t)XX_PYZ_ENTRY_PACKAGE) &&
+        (member->method != (uint32_t)XX_PYZ_ENTRY_NAMESPACE)) {
         return false;
     }
     if ((member->compressed_size < XX_PYZ_MIN_STREAM) || (member->compressed_size > (int64_t)XX_PYZ_MAX_DECODED)) {

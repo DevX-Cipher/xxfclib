@@ -39,6 +39,7 @@
 
 #include "xxfclib/algo/crc/xx_crc.h"
 #include "xxfclib/algo/store/xx_store.h"
+#include "xxfclib/codepages/xx_codepage.h"
 #include "xxfclib/io/xx_io.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/strings/xx_string.h"
@@ -108,8 +109,8 @@ static int hqx_alphabet_value(uint8_t c)
     return -1;
 }
 
-/* Mac Roman names may legally contain bytes a file system would choke on, so
- * only the filesystem-facing representation is sanitized. */
+/* Convert Mac Roman to UTF-8 before exposing names to filesystem APIs. Only
+ * the filesystem-facing representation is sanitized. */
 static char *hqx_normalize_name(const uint8_t *bytes, size_t size, const char *suffix)
 {
     size_t suffix_size = suffix ? xx_str_len(suffix) : 0U;
@@ -117,12 +118,19 @@ static char *hqx_normalize_name(const uint8_t *bytes, size_t size, const char *s
     size_t output = 0U;
     char *name;
     if (size == 0U || size > HQX_MAX_NAME) return NULL;
-    name = (char *)xx_mem_alloc(size + suffix_size + 2U);
+    name = (char *)xx_mem_alloc(size * 3U + suffix_size + 2U);
     if (!name) return NULL;
     for (input = 0U; input < size; ++input) {
         uint8_t c = bytes[input];
         if (c < 0x20U || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' || c == 0x7fU) name[output++] = '_';
-        else name[output++] = (char)c;
+        else {
+            size_t written = xx_codepage_byte_to_utf8(xx_codepage_by_number(10000), c, (unsigned char *)name + output, 3U);
+            if (written == 0U) {
+                xx_mem_free(name);
+                return NULL;
+            }
+            output += written;
+        }
     }
     while (output != 0U && (name[output - 1U] == ' ' || name[output - 1U] == '.')) --output;
     if (output == 0U) name[output++] = '_';

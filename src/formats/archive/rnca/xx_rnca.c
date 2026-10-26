@@ -195,11 +195,20 @@ static bool rnca_fill_member(xx_io_device *device, rnca_member *member, int64_t 
     return member->packed_size != 0U && member->unpacked_size != 0U && member->packed_size <= (uint64_t)(span - (int64_t)XX_RNCA_PACKED_HEADER);
 }
 
+static int rnca_compare_physical(const void *left, const void *right, void *context)
+{
+    const rnca_member *a = *(rnca_member *const *)left;
+    const rnca_member *b = *(rnca_member *const *)right;
+    (void)context;
+    return a->header_offset < b->header_offset ? -1 : (a->header_offset > b->header_offset ? 1 : 0);
+}
+
 static bool rnca_parse(Abstractformat *format, rnca_stream **result)
 {
     uint8_t header[XX_RNCA_HEADER_SIZE];
     uint8_t *directory = NULL;
     rnca_stream *stream = NULL;
+    rnca_member **physical = NULL;
     int64_t total, size;
     uint32_t directory_size, cursor;
     size_t index;
@@ -252,20 +261,26 @@ static bool rnca_parse(Abstractformat *format, rnca_stream **result)
      * is the last one before the first member. */
     if (stream->count == 0U || cursor != directory_size - 1U || directory[cursor] != 0U) goto fail;
 
+    physical = (rnca_member **)xx_mem_alloc(stream->count * sizeof(*physical));
+    if (!physical) goto fail;
+    for (index = 0U; index < stream->count; ++index) physical[index] = &stream->items[index];
+    xx_rt_qsort_context(physical, stream->count, sizeof(*physical), rnca_compare_physical, NULL);
     for (index = 0U; index < stream->count; ++index) {
-        rnca_member *member = &stream->items[index];
-        int64_t next = index + 1U < stream->count ? stream->items[index + 1U].header_offset : format->base_address + size;
+        rnca_member *member = physical[index];
+        int64_t next = index + 1U < stream->count ? physical[index + 1U]->header_offset : format->base_address + size;
         if (next <= member->header_offset || !rnca_fill_member(format->device, member, next - member->header_offset)) goto fail;
     }
     /* The first member must start exactly where the directory ends, or the
      * two copies of the offset in the header describe nothing. */
-    if (stream->items[0].header_offset != format->base_address + (int64_t)directory_size) goto fail;
+    if (physical[0]->header_offset != format->base_address + (int64_t)directory_size) goto fail;
 
     stream->archive_size = size;
+    xx_mem_free(physical);
     xx_mem_free(directory);
     *result = stream;
     return true;
 fail:
+    if (physical) xx_mem_free(physical);
     if (directory) xx_mem_free(directory);
     rnca_stream_free(stream);
     return false;

@@ -92,14 +92,103 @@ invalid:
 }
 
 typedef struct {
+    uint32_t hash;
+    uint32_t symbol_index_plus_one; /* Zero marks an unused slot. */
+} MachExportSymbolSlot;
+
+typedef struct {
     xx_executable_input *file;
     xx_macho_inspection *state;
     uint32_t offset;
     uint32_t size;
     uint32_t visited;
     uint32_t symbol_capacity;
+    MachExportSymbolSlot *symbol_slots;
+    uint32_t symbol_slot_capacity;
+    uint32_t indexed_symbols;
     char name[4096];
 } MachExportTrie;
+
+static uint32_t mach_export_symbol_hash(const char *name)
+{
+    uint32_t hash = 2166136261U;
+    const unsigned char *byte = (const unsigned char *)name;
+    while (*byte) hash = (hash ^ *byte++) * 16777619U;
+    return hash;
+}
+
+/* The index borrows names and stores array indices, so symbol reallocations
+ * cannot invalidate it. Keep the first occurrence of a duplicate nlist name,
+ * matching the former linear search. At most half the slots are occupied. */
+static uint32_t mach_export_symbol_slot(MachExportTrie *trie, const char *name, uint32_t hash)
+{
+    uint32_t mask = trie->symbol_slot_capacity - 1U;
+    uint32_t slot = hash & mask;
+    for (uint32_t probes = 0; probes < trie->symbol_slot_capacity; ++probes) {
+        const MachExportSymbolSlot *entry = &trie->symbol_slots[slot];
+        if ((probes & 1023U) == 0 && xx_pd_is_stopped(trie->file->pd)) break;
+        if (!entry->symbol_index_plus_one ||
+            (entry->hash == hash &&
+             !xx_rt_strcmp(trie->state->pSymbols[entry->symbol_index_plus_one - 1U].pName, name))) return slot;
+        slot = (slot + 1U) & mask;
+    }
+    mach_inspect_error(trie->file, XXFC_ERR_INVALID_ARG, "Cannot search Mach-O export symbol index");
+    return UINT32_MAX;
+}
+
+static int mach_export_symbol_index_grow(MachExportTrie *trie, uint32_t capacity)
+{
+    MachExportSymbolSlot *slots;
+    uint32_t mask = capacity - 1U;
+    /* The parser accepts at most 2^20 symbols. A half-full index therefore
+     * needs at most 2^21 eight-byte slots (16 MiB). */
+    if (capacity > 2097152U) return mach_inspect_error(trie->file, XXFC_ERR_INVALID_ARG, "Too many Mach-O export symbols");
+    slots = (MachExportSymbolSlot *)xx_mem_calloc(capacity, sizeof(*slots));
+    if (!slots) return mach_inspect_error(trie->file, XXFC_ERR_OUT_OF_MEMORY, "Cannot allocate Mach-O export symbol index");
+    for (uint32_t i = 0; i < trie->symbol_slot_capacity; ++i) {
+        MachExportSymbolSlot entry = trie->symbol_slots[i];
+        uint32_t slot, probes = 0;
+        if ((i & 1023U) == 0 && xx_pd_is_stopped(trie->file->pd)) {
+            xx_mem_free(slots);
+            return mach_inspect_error(trie->file, XXFC_ERR_INVALID_ARG, "Mach-O export symbol indexing cancelled");
+        }
+        if (!entry.symbol_index_plus_one) continue;
+        slot = entry.hash & mask;
+        while (slots[slot].symbol_index_plus_one) {
+            if ((++probes & 1023U) == 0 && xx_pd_is_stopped(trie->file->pd)) {
+                xx_mem_free(slots);
+                return mach_inspect_error(trie->file, XXFC_ERR_INVALID_ARG, "Mach-O export symbol indexing cancelled");
+            }
+            slot = (slot + 1U) & mask;
+        }
+        slots[slot] = entry;
+    }
+    xx_mem_free(trie->symbol_slots);
+    trie->symbol_slots = slots;
+    trie->symbol_slot_capacity = capacity;
+    return 1;
+}
+
+static int mach_export_symbol_index_init(MachExportTrie *trie)
+{
+    uint32_t capacity = 256U;
+    while (capacity < (uint32_t)trie->state->nSymbolCount * 2U) capacity *= 2U;
+    if (!mach_export_symbol_index_grow(trie, capacity)) return 0;
+    for (int i = 0; i < trie->state->nSymbolCount; ++i) {
+        const char *name = trie->state->pSymbols[i].pName;
+        uint32_t hash, slot;
+        if (!name) continue;
+        hash = mach_export_symbol_hash(name);
+        slot = mach_export_symbol_slot(trie, name, hash);
+        if (slot == UINT32_MAX) return 0;
+        if (!trie->symbol_slots[slot].symbol_index_plus_one) {
+            trie->symbol_slots[slot].hash = hash;
+            trie->symbol_slots[slot].symbol_index_plus_one = (uint32_t)i + 1U;
+            ++trie->indexed_symbols;
+        }
+    }
+    return 1;
+}
 
 static int mach_uleb(xx_executable_input *file, uint64_t *position, uint64_t end, uint64_t *value)
 {
@@ -139,6 +228,7 @@ static int mach_export_trie_node(MachExportTrie *trie, uint64_t node, unsigned d
     terminal_end = cursor + terminal_size;
     if (terminal_size) {
         xx_macho_inspect_symbol *symbol = NULL;
+        uint32_t hash, slot;
         if (!trie->name[0] || !mach_uleb(trie->file, &cursor, terminal_end, &flags)) goto invalid;
         if (flags & 0x08U) {
             char *target;
@@ -166,15 +256,23 @@ static int mach_export_trie_node(MachExportTrie *trie, uint64_t node, unsigned d
             }
             if (cursor != terminal_end) goto invalid;
         }
-        for (int index = 0; index < trie->state->nSymbolCount; ++index) {
-            if (trie->state->pSymbols[index].pName && !xx_rt_strcmp(trie->state->pSymbols[index].pName, trie->name)) {
-                symbol = &trie->state->pSymbols[index];
-                break;
-            }
+        hash = mach_export_symbol_hash(trie->name);
+        slot = mach_export_symbol_slot(trie, trie->name, hash);
+        if (slot == UINT32_MAX) { xx_mem_free(forwarder); return 0; }
+        if (trie->symbol_slots[slot].symbol_index_plus_one) {
+            symbol = &trie->state->pSymbols[trie->symbol_slots[slot].symbol_index_plus_one - 1U];
         }
         if (!symbol) {
             uint32_t count = (uint32_t)trie->state->nSymbolCount;
             if (count >= 1048576U) goto invalid;
+            if (trie->indexed_symbols >= trie->symbol_slot_capacity / 2U) {
+                if (!mach_export_symbol_index_grow(trie, trie->symbol_slot_capacity * 2U)) {
+                    xx_mem_free(forwarder);
+                    return 0;
+                }
+                slot = mach_export_symbol_slot(trie, trie->name, hash);
+                if (slot == UINT32_MAX) { xx_mem_free(forwarder); return 0; }
+            }
             if (count == trie->symbol_capacity) {
                 uint32_t next = trie->symbol_capacity ? trie->symbol_capacity * 2U : 256U;
                 xx_macho_inspect_symbol *symbols;
@@ -194,6 +292,9 @@ static int mach_export_trie_node(MachExportTrie *trie, uint64_t node, unsigned d
             symbol->nTableIndex = UINT64_MAX;
             symbol->nRecordOffset = -1;
             ++trie->state->nSymbolCount;
+            trie->symbol_slots[slot].hash = hash;
+            trie->symbol_slots[slot].symbol_index_plus_one = count + 1U;
+            ++trie->indexed_symbols;
         }
         if (symbol->bFromExportTrie) goto invalid;
         symbol->bExported = symbol->bFromExportTrie = 1;
@@ -752,7 +853,8 @@ static int inspect_parse_input(xx_executable_input *pFile, xx_macho_inspection *
             trie.offset = nExportOffset;
             trie.size = nExportSize;
             trie.symbol_capacity = nSymCount;
-            mach_export_trie_node(&trie, 0, 0);
+            if (mach_export_symbol_index_init(&trie)) mach_export_trie_node(&trie, 0, 0);
+            xx_mem_free(trie.symbol_slots);
         }
     }
     vecLibs.data = vecSections.data = NULL;

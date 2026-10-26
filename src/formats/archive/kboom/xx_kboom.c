@@ -33,6 +33,7 @@
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/strings/xx_string.h"
 #include "xxfclib/algo/lzwvariants/xx_lzwvariants.h"
+#include "../../../algo/lzwvariants/xx_kboom_internal.h"
 
 #include <stdio.h>
 #include "xxfclib/data/xx_data.h"
@@ -143,6 +144,26 @@ static bool xx_kboom_add(xx_kboom_stream *stream, const xx_kboom_member *member)
 static xx_kboom_stream *xx_kboom_parse(Abstractformat *self, xx_pd_struct *pd);
 static bool xx_kboom_decode(Abstractformat *self, const xx_kboom_member *member, uint8_t **out, size_t *out_size, xx_pd_struct *pd);
 
+/* Prefer the timestamped layout whenever its complete stream authenticates.
+ * The timestamp-free variant must independently reach the declared size,
+ * reference only allocated trie codes and consume its exact physical input.
+ * A damaged ordinary file retains its normal layout for error reporting. */
+static bool xx_kboom_pick_header(Abstractformat *self, int64_t span, size_t raw, int64_t *size, xx_pd_struct *pd)
+{
+    uint8_t *packed;
+    size_t n;
+    *size = XX_KBOOM_HEADER_SIZE;
+    if (span < 10 || span - 8 > XX_KBOOM_MAX_DECODED || (pd && xx_pd_is_stopped(pd))) return false;
+    n = (size_t)(span - 8);
+    packed = (uint8_t *)xx_mem_alloc(n);
+    if (!packed) return false;
+    if (!xx_kboom_read_at(self, self->base_address + 8, packed, n)) { xx_mem_free(packed); return false; }
+    if (!(n >= 6 && xx_kboom_decode_exact_memory(packed + 4, n - 4, NULL, raw, NULL)) &&
+        xx_kboom_decode_exact_memory(packed, n, NULL, raw, NULL)) *size = 8;
+    xx_mem_free(packed);
+    return !(pd && xx_pd_is_stopped(pd));
+}
+
 /* Two bytes carry enough bits for a 13-bit code plus the start of the next
  * word refill; anything shorter cannot be a stream. */
 /* This container wraps exactly one payload. The cap exists because the
@@ -166,6 +187,7 @@ static xx_kboom_stream *xx_kboom_parse(Abstractformat *self, xx_pd_struct *pd)
     int64_t compressed_size;
     uint32_t raw_size;
     int64_t uncompressed_size;
+    int64_t header_size;
 
     if (!self || !self->device || self->base_address < 0) return NULL;
     if (pd && xx_pd_is_stopped(pd)) return NULL;
@@ -174,8 +196,8 @@ static xx_kboom_stream *xx_kboom_parse(Abstractformat *self, xx_pd_struct *pd)
     span = total - self->base_address;
     /* The reference demands strictly more than the header: a header with no
      * payload behind it is not an archive. */
-    if (span <= XX_KBOOM_HEADER_SIZE) return NULL;
-    if (!xx_kboom_read_at(self, self->base_address, header, sizeof(header))) {
+    if (span < 10) return NULL;
+    if (!xx_kboom_read_at(self, self->base_address, header, span < XX_KBOOM_HEADER_SIZE ? 8U : sizeof(header))) {
         return NULL;
     }
 
@@ -201,13 +223,14 @@ static xx_kboom_stream *xx_kboom_parse(Abstractformat *self, xx_pd_struct *pd)
 
     /* The payload is everything behind the header: the container stores no
      * packed size, so end-of-file is the only boundary there is. */
-    compressed_size = span - XX_KBOOM_HEADER_SIZE;
+    if (!xx_kboom_pick_header(self, span, (size_t)uncompressed_size, &header_size, pd)) return NULL;
+    compressed_size = span - header_size;
     if (compressed_size < XX_KBOOM_MIN_PACKED_SIZE) return NULL;
     if (compressed_size > XX_KBOOM_MAX_DECODED) return NULL;
     if (uncompressed_size > (compressed_size * XX_KBOOM_MAX_RATIO) + XX_KBOOM_RATIO_SLACK) {
         return NULL;
     }
-    if (!xx_kboom_range_within(span, (int64_t)XX_KBOOM_HEADER_SIZE, compressed_size)) {
+    if (!xx_kboom_range_within(span, header_size, compressed_size)) {
         return NULL;
     }
 
@@ -225,8 +248,8 @@ static xx_kboom_stream *xx_kboom_parse(Abstractformat *self, xx_pd_struct *pd)
     xx_mem_zero(&member, sizeof(member));
     member.name = name;
     member.header_offset = self->base_address;
-    member.header_size = XX_KBOOM_HEADER_SIZE;
-    member.data_offset = self->base_address + XX_KBOOM_HEADER_SIZE;
+    member.header_size = header_size;
+    member.data_offset = self->base_address + header_size;
     member.compressed_size = compressed_size;
     member.uncompressed_size = uncompressed_size;
     member.method = XX_KBOOM_METHOD_LZW;
@@ -234,7 +257,8 @@ static xx_kboom_stream *xx_kboom_parse(Abstractformat *self, xx_pd_struct *pd)
      * first and the time word second, the reverse of the packed DOS order,
      * and swapping them yields plausible nonsense rather than an error. */
     member.timestamp =
-        ((uint64_t)xx_data_get_u16(header + XX_KBOOM_DOSDATE_OFFSET, 2, 0, false) << 16) | (uint64_t)xx_data_get_u16(header + XX_KBOOM_DOSTIME_OFFSET, 2, 0, false);
+        header_size == XX_KBOOM_HEADER_SIZE ?
+        ((uint64_t)xx_data_get_u16(header + XX_KBOOM_DOSDATE_OFFSET, 2, 0, false) << 16) | (uint64_t)xx_data_get_u16(header + XX_KBOOM_DOSTIME_OFFSET, 2, 0, false) : 0;
     /* The wrapper has no directory entries and never will: it holds one
      * file. */
     member.is_folder = false;
@@ -305,7 +329,9 @@ static bool xx_kboom_decode(Abstractformat *self, const xx_kboom_member *member,
      * The codec itself already absorbs the reference's one quirk - a final
      * phrase that runs past the declared size is truncated, not failed - so
      * a `false` here is a genuinely broken stream, never that quirk. */
-    if (!xx_lzwvariants_kboom_decode_memory(input, (size_t)member->compressed_size, output, (size_t)member->uncompressed_size, &written) ||
+    if (!(member->header_size == 8 ?
+          xx_kboom_decode_exact_memory(input, (size_t)member->compressed_size, output, (size_t)member->uncompressed_size, &written) :
+          xx_lzwvariants_kboom_decode_memory(input, (size_t)member->compressed_size, output, (size_t)member->uncompressed_size, &written)) ||
         written != (size_t)member->uncompressed_size) {
         xx_mem_free(output);
         xx_mem_free(input);
@@ -438,7 +464,7 @@ static bool xx_kboom_set_record(xx_archive_record *record, const xx_kboom_member
            xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSED_SIZE, (uint64_t)member->compressed_size) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_UNCOMPRESSED_SIZE, (uint64_t)member->uncompressed_size) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSION_METHOD, member->method) &&
-           xx_archive_record_set_meta_u64(record, XX_META_ID_TIMESTAMP, member->timestamp) &&
+           (member->header_size != XX_KBOOM_HEADER_SIZE || xx_archive_record_set_meta_u64(record, XX_META_ID_TIMESTAMP, member->timestamp)) &&
            xx_archive_record_set_meta_bool(record, XX_META_ID_IS_FOLDER, member->is_folder) && xx_archive_record_set_meta_bool(record, XX_META_ID_IS_ENCRYPTED, false);
 }
 

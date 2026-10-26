@@ -105,7 +105,7 @@ uint32_t xx_thread_cpu_count(void)
         return 1;
     }
 
-    return (count > (long)UINT32_MAX) ? UINT32_MAX : (uint32_t)count;
+    return ((uint64_t)count > UINT32_MAX) ? UINT32_MAX : (uint32_t)count;
 }
 
 /* Absolute CLOCK_REALTIME time timeout_ms from now. */

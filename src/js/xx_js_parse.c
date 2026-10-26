@@ -56,11 +56,44 @@ JSNode *js_node_new(JSNodeType type, int nLine)
     return pNode;
 }
 
-#define node_new js_node_new
+static JSNode *parser_node_new(JSParser *pParser, JSNodeType type, int nLine)
+{
+    JSNode *pNode = js_node_new(type, nLine);
+    size_t nPos = pParser->bError || pParser->nPos >= pParser->lexer.nCount ? pParser->lexer.nCount - 1 : pParser->nPos;
+    pNode->nColumn = pParser->lexer.pTokens[nPos].nColumn;
+    return pNode;
+}
+#define node_new(type, line) parser_node_new(pParser, type, line)
+
+static void node_set_source_walk(JSNode *pNode, JSNode *pRoot)
+{
+    while (pNode) {
+        size_t i;
+        pNode->pSourceRoot = pRoot;
+        node_set_source_walk(pNode->b, pRoot);
+        node_set_source_walk(pNode->c, pRoot);
+        node_set_source_walk(pNode->d, pRoot);
+        for (i = 0; i < pNode->nList; i++) node_set_source_walk(pNode->ppList[i], pRoot);
+        pNode = pNode->a;
+    }
+}
+void js_node_set_source(JSNode *pRoot, const char *pName)
+{
+    if (!pRoot) return;
+    if (pName || !pRoot->pSourceName) {
+        xx_js_free(pRoot->pSourceName);
+        pRoot->pSourceName = xx_js_strdup(pName ? pName : "");
+    }
+    node_set_source_walk(pRoot, pRoot);
+}
 
 static void node_add(JSNode *pNode, JSNode *pChild)
 {
-    pNode->ppList = (JSNode **)xx_js_realloc(pNode->ppList, (pNode->nList + 1) * sizeof(JSNode *));
+    if (pNode->nList == pNode->nListCapacity) {
+        size_t nCapacity = pNode->nListCapacity ? pNode->nListCapacity * 2 : 8;
+        pNode->ppList = (JSNode **)xx_js_realloc(pNode->ppList, nCapacity * sizeof(JSNode *));
+        pNode->nListCapacity = nCapacity;
+    }
     pNode->ppList[pNode->nList++] = pChild;
 }
 
@@ -85,14 +118,214 @@ void js_free_node(JSNode *pNode)
             xx_js_free(pNode->ppVarNames[i]);
         }
 
+        if (pNode->pRegExpLiteral) jsregexp_free(pNode->pRegExpLiteral);
+        xx_js_free(pNode->pHoistPlan);
         xx_js_free(pNode->ppVarNames);
         xx_js_free(pNode->ppList);
         xx_js_free(pNode->pStr);
         xx_js_free(pNode->pStr2);
+        xx_js_free(pNode->pSourceName);
         xx_js_free(pNode);
 
         pNode = pLeft;
     }
+}
+
+/* Preparation also returns conservative function-call metadata to the
+ * enclosing function. One traversal replaces a separate scan of every
+ * function body (including repeated scans of nested bodies). */
+#define PREPARE_ARGUMENTS 1U
+#define PREPARE_HOIST 2U
+
+typedef struct {
+    JSHoistPlan *pPlan;
+    size_t nSteps;
+    size_t nVars;
+    unsigned nCheckDepth;
+} HoistBuilder;
+
+static void hoist_plan_add(HoistBuilder *pBuilder, JSNode *pNode, unsigned nDepth)
+{
+    if (pBuilder->pPlan) {
+        JSHoistStep *pStep = &pBuilder->pPlan->steps[pBuilder->nSteps];
+        pStep->pNode = pNode;
+        pStep->nDepth = nDepth;
+        pStep->nCheckDepth = pBuilder->nCheckDepth;
+    }
+    if (pNode && pNode->type == N_VARDECL) pBuilder->nVars++;
+    pBuilder->nSteps++;
+    pBuilder->nCheckDepth = 0;
+}
+
+/* Match hoist_declarations_node's order exactly, including declarations in
+ * both conditional branches, loop initializers, catches and finally blocks.
+ * Initializers/expressions and nested function bodies belong to other scopes.
+ * A checkpoint includes empty/NULL branches because the old walker applied
+ * its nesting guard before checking whether the node was NULL. */
+static void hoist_plan_walk(HoistBuilder *pBuilder, JSNode *pNode, unsigned nDepth)
+{
+    size_t i;
+    if (nDepth > pBuilder->nCheckDepth) pBuilder->nCheckDepth = nDepth;
+    if (!pNode) return;
+    switch (pNode->type) {
+        case N_FUNCTION:
+            if (pNode->nNum == 0 && pNode->pStr) hoist_plan_add(pBuilder, pNode, nDepth);
+            return;
+        case N_VAR:
+            for (i = 0; i < pNode->nList; i++) {
+                if (nDepth > pBuilder->nCheckDepth) pBuilder->nCheckDepth = nDepth;
+                hoist_plan_add(pBuilder, pNode->ppList[i], nDepth);
+            }
+            return;
+        case N_PROGRAM:
+        case N_BLOCK:
+        case N_CASE:
+        case N_SWITCH:
+            for (i = 0; i < pNode->nList; i++) hoist_plan_walk(pBuilder, pNode->ppList[i], nDepth + 1);
+            return;
+        case N_IF:
+            hoist_plan_walk(pBuilder, pNode->b, nDepth + 1);
+            hoist_plan_walk(pBuilder, pNode->c, nDepth + 1);
+            return;
+        case N_FOR:
+        case N_FORIN:
+            hoist_plan_walk(pBuilder, pNode->a, nDepth + 1);
+            hoist_plan_walk(pBuilder, pNode->d, nDepth + 1);
+            return;
+        case N_WHILE:
+        case N_DOWHILE: hoist_plan_walk(pBuilder, pNode->d, nDepth + 1); return;
+        case N_TRY:
+            hoist_plan_walk(pBuilder, pNode->a, nDepth + 1);
+            hoist_plan_walk(pBuilder, pNode->b, nDepth + 1);
+            hoist_plan_walk(pBuilder, pNode->c, nDepth + 1);
+            return;
+        case N_LABELED: hoist_plan_walk(pBuilder, pNode->a, nDepth + 1); return;
+        default: return;
+    }
+}
+
+/* Repeated var declarations cannot change a binding already created at a
+ * shallower (or equal) depth. Keep shallower repetitions: a low runtime depth
+ * budget may reject the first declaration and still accept a later sibling.
+ * Function declarations always run in order because each replaces the value.
+ * Merge skipped guards into the next step so rejected empty/deep branches
+ * still raise the same exception before the next observable binding. */
+static void hoist_plan_compact(JSHoistPlan *pPlan)
+{
+    size_t nIndexSize = 8, i, nUsed = 0;
+    size_t *pIndex;
+    unsigned nCheckDepth = 0;
+    if (pPlan->nSteps < 3) return;
+    while (nIndexSize / 2 < pPlan->nSteps) {
+        if (nIndexSize > SIZE_MAX / 2) return;
+        nIndexSize *= 2;
+    }
+    if (nIndexSize > SIZE_MAX / sizeof(*pIndex)) return;
+    pIndex = (size_t *)xx_js_calloc(nIndexSize, sizeof(*pIndex));
+    for (i = 0; i < pPlan->nSteps; i++) {
+        JSHoistStep step = pPlan->steps[i];
+        JSNode *pNode = step.pNode;
+        size_t nSlot = 0;
+        if (step.nCheckDepth > nCheckDepth) nCheckDepth = step.nCheckDepth;
+        if (pNode) {
+            nSlot = (size_t)pNode->nStrHash & (nIndexSize - 1);
+            while (pIndex[nSlot]) {
+                JSHoistStep *pPrevious = &pPlan->steps[pIndex[nSlot] - 1];
+                JSNode *pPreviousNode = pPrevious->pNode;
+                if (pPreviousNode->nStrHash == pNode->nStrHash && pPreviousNode->nStrSize == pNode->nStrSize &&
+                    !xx_rt_memcmp(pPreviousNode->pStr, pNode->pStr, pNode->nStrSize)) break;
+                nSlot = (nSlot + 1) & (nIndexSize - 1);
+            }
+            if (pNode->type == N_VARDECL && pIndex[nSlot] &&
+                pPlan->steps[pIndex[nSlot] - 1].nDepth <= step.nDepth) continue;
+        }
+        step.nCheckDepth = nCheckDepth;
+        nCheckDepth = 0;
+        pPlan->steps[nUsed] = step;
+        if (pNode && (!pIndex[nSlot] || step.nDepth < pPlan->steps[pIndex[nSlot] - 1].nDepth)) pIndex[nSlot] = nUsed + 1;
+        nUsed++;
+    }
+    pPlan->nSteps = nUsed;
+    xx_js_free(pIndex);
+}
+
+static JSHoistPlan *prepare_hoist_plan(JSNode *pBody)
+{
+    HoistBuilder builder = {0};
+    JSHoistPlan *pPlan;
+    hoist_plan_walk(&builder, pBody, 0);
+    hoist_plan_add(&builder, NULL, 0);
+    if (builder.nSteps > (SIZE_MAX - sizeof(*pPlan)) / sizeof(JSHoistStep)) return NULL;
+    pPlan = (JSHoistPlan *)xx_js_malloc(sizeof(*pPlan) + builder.nSteps * sizeof(JSHoistStep));
+    pPlan->nSteps = builder.nSteps;
+    builder.pPlan = pPlan;
+    builder.nSteps = 0;
+    builder.nVars = 0;
+    builder.nCheckDepth = 0;
+    hoist_plan_walk(&builder, pBody, 0);
+    hoist_plan_add(&builder, NULL, 0);
+    if (builder.nVars > 1) hoist_plan_compact(pPlan);
+    if (pPlan->nSteps < builder.nSteps) {
+        pPlan = (JSHoistPlan *)xx_js_realloc(pPlan, sizeof(*pPlan) + pPlan->nSteps * sizeof(JSHoistStep));
+    }
+    return pPlan;
+}
+
+static unsigned prepare_program_node(JSNode *pNode, unsigned nDepth)
+{
+    unsigned nInfo = 0;
+    /* Beyond the analysis ceiling retain the original allocations. We still
+     * prepare hashes/literals so that even deeply nested ASTs stay immutable.
+     * The parser's own recursion limit bounds this traversal; left-associated
+     * expression chains are walked iteratively below. */
+    if (pNode && nDepth >= 128) nInfo = PREPARE_ARGUMENTS | PREPARE_HOIST;
+    while (pNode) {
+        size_t i;
+        unsigned nChildren = 0;
+        JSNode *pLeft = pNode->a;
+        /* Only identifier/declaration nodes are passed to node_key(). Literal
+         * strings and property/member names need no cached identifier hash. */
+        if (pNode->pStr && (pNode->type == N_IDENT || pNode->type == N_VARDECL || pNode->type == N_FUNCTION)) {
+            pNode->nStrSize = xx_rt_strlen(pNode->pStr);
+            pNode->nStrHash = xx_js_hash_str(pNode->pStr, pNode->nStrSize);
+            pNode->bStrKey = 1;
+        }
+        if (pNode->type == N_REGEXP && !pNode->pRegExpLiteral) {
+            char *pError = NULL;
+            pNode->pRegExpLiteral = jsregexp_compile(pNode->pStr ? pNode->pStr : "", pNode->pStr2 ? pNode->pStr2 : "", &pError);
+            /* Preserve evaluation-time errors for invalid, unreachable literals. */
+            xx_js_free(pError);
+        }
+        nChildren |= prepare_program_node(pNode->b, nDepth + 1);
+        nChildren |= prepare_program_node(pNode->c, nDepth + 1);
+        nChildren |= prepare_program_node(pNode->d, nDepth + 1);
+        for (i = 0; i < pNode->nList; i++) nChildren |= prepare_program_node(pNode->ppList[i], nDepth + 1);
+        if (pNode->type == N_FUNCTION) {
+            /* Parameters use N_IDENT nodes too, but their spellings declare
+             * bindings rather than reading arguments or obtaining eval. */
+            (void)prepare_program_node(pLeft, nDepth + 1);
+            pNode->bNeedsArguments = (nChildren & PREPARE_ARGUMENTS) != 0;
+            pNode->bNeedsHoist = (nChildren & PREPARE_HOIST) != 0;
+            if (pNode->bNeedsHoist && !pNode->pHoistPlan) pNode->pHoistPlan = prepare_hoist_plan(pNode->b);
+            pLeft = NULL; /* parameter list was prepared above */
+        }
+        nInfo |= nChildren;
+        /* Only a variable reference can observe the arguments binding or
+         * obtain eval. Literal strings, object keys and member spellings do
+         * not read a variable. Keep propagating identifier references from
+         * nested functions because closures can observe enclosing scopes. */
+        if (pNode->type == N_IDENT && pNode->pStr &&
+            (!xx_rt_strcmp(pNode->pStr, "arguments") || !xx_rt_strcmp(pNode->pStr, "eval"))) nInfo |= PREPARE_ARGUMENTS;
+        if (pNode->type == N_VAR || (pNode->type == N_FUNCTION && pNode->nNum == 0 && pNode->pStr)) nInfo |= PREPARE_HOIST;
+        pNode = pLeft;
+    }
+    return nInfo;
+}
+
+void js_prepare_program(JSNode *pNode)
+{
+    (void)prepare_program_node(pNode, 0);
+    if (pNode && pNode->type == N_PROGRAM && !pNode->pHoistPlan) pNode->pHoistPlan = prepare_hoist_plan(pNode);
 }
 
 /* After an error the stream reports end of input, so every loop and every
@@ -180,6 +413,19 @@ static void consume_semicolon(JSParser *pParser)
     parse_error(pParser, "expected ';'");
 }
 
+/* An identifier token is consumed exactly once. Its owned text can become
+ * the AST's owned text, avoiding a duplicate allocation and copy. Keyword
+ * tokens instead borrow the lexer's immutable table and must be copied. */
+static char *take_token_text(JSToken *pToken)
+{
+    if (pToken->type == T_IDENT) {
+        char *pText = pToken->pText;
+        pToken->pText = NULL;
+        return pText;
+    }
+    return xx_js_strdup(pToken->pText);
+}
+
 /* Identifier-like tokens usable as property names. */
 static char *property_name(JSParser *pParser)
 {
@@ -189,7 +435,7 @@ static char *property_name(JSParser *pParser)
         char *pResult = NULL;
 
         if (pTok->pText) {
-            pResult = xx_js_strdup(pTok->pText);
+            pResult = take_token_text(pTok);
         } else {
             static const char *pNames[] = {"break",    "case", "catch", "continue",   "default", "delete", "do",     "else", "finally", "for",
                                            "function", "if",   "in",    "instanceof", "new",     "return", "switch", "this", "throw",   "try",
@@ -301,14 +547,14 @@ static JSNode *parse_primary(JSParser *pParser)
 
         case T_REGEXP:
             pNode = node_new(N_REGEXP, pTok->nLine);
-            pNode->pStr = xx_js_strdup(pTok->pText);
+            pNode->pStr = take_token_text(pTok);
             pNode->pStr2 = xx_js_strdup(pTok->pText2);
             pParser->nPos++;
             return pNode;
 
         case T_IDENT:
             pNode = node_new(N_IDENT, pTok->nLine);
-            pNode->pStr = xx_js_strdup(pTok->pText);
+            pNode->pStr = take_token_text(pTok);
             pParser->nPos++;
             return pNode;
 
@@ -690,7 +936,7 @@ static JSNode *parse_function(JSParser *pParser, int bExpression)
     expect(pParser, T_FUNCTION, "'function'");
 
     if (tok(pParser)->type == T_IDENT) {
-        pNode->pStr = xx_js_strdup(tok(pParser)->pText);
+        pNode->pStr = take_token_text(tok(pParser));
         pParser->nPos++;
     } else if (!bExpression) {
         parse_error(pParser, "expected function name");
@@ -707,7 +953,7 @@ static JSNode *parse_function(JSParser *pParser, int bExpression)
             parse_error(pParser, "expected parameter name");
         }
 
-        pParam->pStr = xx_js_strdup(tok(pParser)->pText);
+        pParam->pStr = take_token_text(tok(pParser));
         pParser->nPos++;
         node_add(pNode->a, pParam);
 
@@ -739,7 +985,7 @@ static JSNode *parse_var_statement(JSParser *pParser, int bNoIn)
             parse_error(pParser, "expected variable name");
         }
 
-        pDecl->pStr = xx_js_strdup(tok(pParser)->pText);
+        pDecl->pStr = take_token_text(tok(pParser));
         pParser->nPos++;
 
         if (accept(pParser, T_ASSIGN)) {
@@ -854,7 +1100,7 @@ static JSNode *parse_try(JSParser *pParser)
                 parse_error(pParser, "expected catch parameter");
             }
 
-            pNode->pStr = xx_js_strdup(tok(pParser)->pText);
+            pNode->pStr = take_token_text(tok(pParser));
             pParser->nPos++;
             expect(pParser, T_RPAREN, "')'");
         }
@@ -877,6 +1123,12 @@ static JSNode *parse_statement_inner(JSParser *pParser)
         case T_LBRACE: return parse_block(pParser);
 
         case T_SEMI: pParser->nPos++; return node_new(N_EMPTY, pTok->nLine);
+        case T_DEBUGGER: {
+            JSNode *pNode = node_new(N_DEBUGGER, pTok->nLine);
+            pParser->nPos++;
+            consume_semicolon(pParser);
+            return pNode;
+        }
 
         case T_VAR: {
             JSNode *pNode = parse_var_statement(pParser, 0);
@@ -965,7 +1217,7 @@ static JSNode *parse_statement_inner(JSParser *pParser)
             pParser->nPos++;
 
             if ((tok(pParser)->type == T_IDENT) && (!tok(pParser)->bNewLineBefore)) {
-                pNode->pStr = xx_js_strdup(tok(pParser)->pText);
+                pNode->pStr = take_token_text(tok(pParser));
                 pParser->nPos++;
             }
 
@@ -981,7 +1233,7 @@ static JSNode *parse_statement_inner(JSParser *pParser)
     if ((pTok->type == T_IDENT) && (tok_at(pParser, 1)->type == T_COLON)) {
         JSNode *pNode = node_new(N_LABELED, pTok->nLine);
 
-        pNode->pStr = xx_js_strdup(pTok->pText);
+        pNode->pStr = take_token_text(pTok);
         pParser->nPos += 2;
         pNode->a = parse_statement(pParser);
 
@@ -1006,7 +1258,12 @@ static JSNode *parse_statement(JSParser *pParser)
         return NULL;
     }
 
-    pNode = parse_statement_inner(pParser);
+    {
+        int nLine = tok(pParser)->nLine;
+        int nColumn = tok(pParser)->nColumn;
+        pNode = parse_statement_inner(pParser);
+        if (pNode) { pNode->nLine = nLine; pNode->nColumn = nColumn; }
+    }
     pParser->nDepth--;
 
     return pNode;
@@ -1037,7 +1294,9 @@ JSNode *js_parse_program(JSCtx *pCtx, const char *pSource, const char *pName, ch
         return NULL;
     }
 
-    pProgram = node_new(N_PROGRAM, 1);
+    pProgram = js_node_new(N_PROGRAM, 1);
+    pProgram->nColumn = 1;
+    js_node_set_source(pProgram, pName);
 
     while ((tok(&parser)->type != T_EOF) && (!parser.bError)) {
         node_add(pProgram, parse_statement(&parser));
@@ -1057,5 +1316,7 @@ JSNode *js_parse_program(JSCtx *pCtx, const char *pSource, const char *pName, ch
         return NULL;
     }
 
+    js_node_set_source(pProgram, NULL);
+    js_prepare_program(pProgram);
     return pProgram;
 }

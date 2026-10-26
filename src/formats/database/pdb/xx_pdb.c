@@ -38,8 +38,8 @@
 #define PDB_RECORD_ENTRY_SIZE 8
 #define PDB_RESOURCE_ENTRY_SIZE 10
 #define PDB_ATTR_RESOURCE 0x0001U
-/* PalmOS defines bits 0..11, 14 and 15; 0x7000 is reserved and is always
- * clear in a real database, so a set bit there is a cheap reject. */
+/* Unknown attribute bits normally reject. Legacy PalmDOC 0x1000 is handled
+ * separately with an additional header check. */
 #define PDB_ATTR_RESERVED_MASK 0x7000U
 #define PDB_MAX_ENTRIES 65535
 /* PalmOS aligns the first block to an even offset, so writers emit either
@@ -314,7 +314,7 @@ static bool pdb_parse(Abstractformat *format, pdb_stream **result)
     pdb_stream *stream = NULL;
     pdb_member *items = NULL;
     int64_t total, size, app_info, sort_info, entry_size, table_size;
-    int64_t header_size, previous;
+    int64_t header_size, previous, maximum_filler = PDB_MAX_FILLER;
     uint32_t attributes, type, creator;
     int32_t entry_count, index;
     size_t count = 0U, capacity;
@@ -324,9 +324,11 @@ static bool pdb_parse(Abstractformat *format, pdb_stream **result)
     if (total < format->base_address) return false;
     size = total - format->base_address;
     if (size < (int64_t)PDB_HEADER_SIZE + 1 || !pdb_read_at(format->device, format->base_address, header, sizeof(header))) return false;
-    if (!pdb_check_name(header)) return false;
+    /* Some MOBI writers leave the Palm database title empty. A nameless
+     * container needs the additional BOOK/MOBI and record-zero checks below. */
+    if (header[0] != 0U && !pdb_check_name(header)) return false;
     attributes = xx_data_get_u16(header + 0x20U, 2, 0, true);
-    if ((attributes & PDB_ATTR_RESERVED_MASK) != 0U) return false;
+    if ((attributes & (PDB_ATTR_RESERVED_MASK & ~0x1000U)) != 0U) return false;
     app_info = (int64_t)xx_data_get_u32(header + 0x34U, 4, 0, true);
     sort_info = (int64_t)xx_data_get_u32(header + 0x38U, 4, 0, true);
     type = xx_data_get_u32(header + 0x3cU, 4, 0, true);
@@ -336,6 +338,10 @@ static bool pdb_parse(Abstractformat *format, pdb_stream **result)
      * permissive "header plus offset table" shape from matching unrelated
      * files. */
     if (!pdb_is_printable_4cc(type) || !pdb_is_printable_4cc(creator)) return false;
+    if ((attributes & 0x1000U) != 0U && (type != 0x54455874U || creator != 0x52454164U ||
+        (attributes & PDB_ATTR_RESOURCE) != 0U || app_info != 0 || sort_info != 0)) return false;
+    if (header[0] == 0U && (type != 0x424f4f4bU || creator != 0x4d4f4249U ||
+        (attributes & PDB_ATTR_RESOURCE) != 0U || app_info != 0 || sort_info != 0)) return false;
     resource_database = (attributes & PDB_ATTR_RESOURCE) != 0U;
     entry_count = (int32_t)xx_data_get_u16(header + 0x4cU, 2, 0, true);
     if (entry_count < 1 || entry_count > PDB_MAX_ENTRIES) return false;
@@ -356,7 +362,45 @@ static bool pdb_parse(Abstractformat *format, pdb_stream **result)
             if (!pdb_read_at(format->device, format->base_address + PDB_HEADER_SIZE, entry, (size_t)entry_size)) return false;
             first = (int64_t)xx_data_get_u32(entry + (resource_database ? 6U : 0U), 4, 0, true);
         }
-        if (first < header_size || first - header_size > PDB_MAX_FILLER || first >= size) return false;
+        /* AppInfo is located by its explicit header pointer. Some writers
+         * reserve a zero-filled gap before it rather than two filler bytes. */
+        if (app_info != 0 && header[0] != 0U && first > header_size + PDB_MAX_FILLER &&
+            first - header_size <= 4096 && first < size) {
+            uint8_t gap[256];
+            int64_t at = header_size;
+            while (at < first) {
+                size_t take = first - at > (int64_t)sizeof(gap) ? sizeof(gap) : (size_t)(first - at);
+                if (!pdb_read_at(format->device, format->base_address + at, gap, take)) return false;
+                for (size_t j = 0U; j < take; ++j) if (gap[j] != 0U) return false;
+                at += (int64_t)take;
+            }
+            maximum_filler = first - header_size;
+        }
+        if (first > header_size + PDB_MAX_FILLER && first - header_size <= 4096 && first < size &&
+            !resource_database && app_info == 0 && sort_info == 0 &&
+            type == 0x54455874U && creator == 0x52454164U && entry_count > 1) {
+            uint8_t block[256], doc[16];
+            int64_t at = header_size;
+            uint16_t compression, text_records;
+            bool zero_gap = true, printable_gap = first - header_size <= 128;
+            if (size - first < 16 || !pdb_read_at(format->device, format->base_address + first, doc, sizeof(doc))) return false;
+            compression = xx_data_get_u16(doc, 2, 0, true);
+            text_records = xx_data_get_u16(doc + 8U, 2, 0, true);
+            if ((compression != 1U && compression != 2U) || text_records == 0U || text_records >= (uint32_t)entry_count ||
+                xx_data_get_u16(doc + 10U, 2, 0, true) != 4096U) return false;
+            while (at < first) {
+                size_t take = first - at > (int64_t)sizeof(block) ? sizeof(block) : (size_t)(first - at);
+                if (!pdb_read_at(format->device, format->base_address + at, block, take)) return false;
+                for (size_t j = 0U; j < take; ++j) {
+                    if (block[j] != 0U) zero_gap = false;
+                    if (block[j] < 0x20U || block[j] > 0x7eU) printable_gap = false;
+                }
+                at += (int64_t)take;
+            }
+            if (!zero_gap && !printable_gap) return false;
+            maximum_filler = first - header_size;
+        }
+        if (first < header_size || first - header_size > maximum_filler || first >= size) return false;
     }
 
     entries = (uint8_t *)xx_mem_alloc((size_t)table_size);
@@ -422,7 +466,7 @@ static bool pdb_parse(Abstractformat *format, pdb_stream **result)
 
     /* Monotonic, in range, and starting right behind the entry table apart
      * from the two-byte alignment filler PalmOS writers emit. */
-    if (items[0].offset - header_size < 0 || items[0].offset - header_size > PDB_MAX_FILLER) goto fail;
+    if (items[0].offset - header_size < 0 || items[0].offset - header_size > maximum_filler) goto fail;
     previous = header_size;
     for (index = 0; (size_t)index < count; ++index) {
         if (items[index].offset < previous || items[index].offset > size) goto fail;
@@ -431,6 +475,37 @@ static bool pdb_parse(Abstractformat *format, pdb_stream **result)
     /* The final block must actually contain something; a database whose last
      * entry points at EOF is truncated, not merely empty. */
     if (previous >= size) goto fail;
+    /* A legacy PalmDOC writer sets opaque attribute 0x1000. Accept it only
+     * with an independently bounded PalmDOC header and the normal record walk. */
+    if ((attributes & 0x1000U) != 0U) {
+        uint8_t doc[16];
+        uint16_t compression, text_records;
+        uint32_t text_size;
+        int64_t end = count > 1U ? items[1].offset : size;
+        if (end - items[0].offset < 16 || !pdb_read_at(format->device, format->base_address + items[0].offset, doc, sizeof(doc))) goto fail;
+        compression = xx_data_get_u16(doc, 2, 0, true);
+        text_records = xx_data_get_u16(doc + 8U, 2, 0, true);
+        text_size = xx_data_get_u32(doc + 4U, 4, 0, true);
+        if ((compression != 1U && compression != 2U) || text_records == 0U || text_records >= (uint32_t)entry_count ||
+            xx_data_get_u16(doc + 10U, 2, 0, true) != 4096U || text_size > (uint32_t)text_records * 4096U) goto fail;
+    }
+    if (maximum_filler > PDB_MAX_FILLER && app_info == 0 && items[1].offset - items[0].offset < 16) goto fail;
+    if (header[0] == 0U) {
+        uint8_t mobi[24];
+        int64_t end = count > 1U ? items[1].offset : size;
+        uint32_t length;
+        uint16_t compression, text_records;
+        if (end - items[0].offset < (int64_t)sizeof(mobi) ||
+            !pdb_read_at(format->device, format->base_address + items[0].offset, mobi, sizeof(mobi))) goto fail;
+        compression = xx_data_get_u16(mobi, 2, 0, true);
+        text_records = xx_data_get_u16(mobi + 8U, 2, 0, true);
+        length = xx_data_get_u32(mobi + 20U, 4, 0, true);
+        if (mobi[16] != 'M' || mobi[17] != 'O' || mobi[18] != 'B' || mobi[19] != 'I' ||
+            length < 24U || (int64_t)length > end - items[0].offset - 16 ||
+            (compression != 1U && compression != 2U && compression != 17480U) ||
+            text_records == 0U || text_records >= (uint32_t)entry_count ||
+            xx_data_get_u16(mobi + 12U, 2, 0, true) > 2U) goto fail;
+    }
     for (index = 0; (size_t)index < count; ++index) {
         int64_t next = ((size_t)index + 1U < count) ? items[index + 1].offset : size;
         items[index].size = next - items[index].offset;

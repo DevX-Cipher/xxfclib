@@ -1332,6 +1332,13 @@ const char *xx_format_file_type_to_string(xx_file_type_t type)
         case XX_FILE_TYPE_NATATA_EBOOK: return "Natata eBook";
         case XX_FILE_TYPE_STOR_RESOURCE: return "STOR resource archive";
         case XX_FILE_TYPE_INSTALLSHIELD_OBL: return "InstallShield OBL library";
+        case XX_FILE_TYPE_PFTW_PKG: return "PackageForTheWeb encoded CAB";
+        case XX_FILE_TYPE_SOD_INSTALLER: return "Spear of Destiny installer archive";
+        case XX_FILE_TYPE_STARFORCE_OVL: return "StarForce OVL resource archive";
+        case XX_FILE_TYPE_SELF_UNSTUFFER: return "Aladdin DOS Self-UnStuffer archive";
+        case XX_FILE_TYPE_SECURA: return "Secura SAC1 archive";
+        case XX_FILE_TYPE_PATCHWISE: return "PatchWise ZSB archive";
+        case XX_FILE_TYPE_INSTALLJAMMER: return "InstallJammer CRAP archive";
         case XX_FILE_TYPE_SFX_INFTOOL: return "sfx inftool";
         case XX_FILE_TYPE_AMIGA_EXT_ADF: return "amiga ext adf";
         case XX_FILE_TYPE_AMIGA_OLD_EXT_ADF: return "amiga old ext adf";

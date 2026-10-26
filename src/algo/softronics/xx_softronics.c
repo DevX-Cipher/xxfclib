@@ -86,7 +86,7 @@ static bool xx_softronics_emit_reversed(uint8_t *output, size_t output_size, siz
     return true;
 }
 
-bool xx_softronics_lzw_decompress_memory(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, size_t *consumed_size)
+static bool xx_softronics_decode(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, size_t *consumed_size, bool exact)
 {
     xx_softronics_bit_reader reader;
     uint16_t prefix[XX_SOFTRONICS_DICTIONARY_SIZE];
@@ -120,7 +120,7 @@ bool xx_softronics_lzw_decompress_memory(const uint8_t *input, size_t input_size
             continue;
         }
         if (code == XX_SOFTRONICS_END) {
-            if (!have_previous || output_position != output_size || !xx_softronics_padding_is_zero(&reader)) {
+            if (!have_previous || output_position != output_size || (exact && (reader.bit_position+7U)/8U!=input_size) || !xx_softronics_padding_is_zero(&reader)) {
                 return false;
             }
             if (consumed_size) *consumed_size = input_size;
@@ -162,4 +162,13 @@ bool xx_softronics_lzw_decompress_memory(const uint8_t *input, size_t input_size
         previous_code = code;
         previous_first = first_byte;
     }
+}
+
+bool xx_softronics_lzw_decompress_memory(const uint8_t *input,size_t input_size,uint8_t *output,size_t output_size,size_t *consumed_size)
+{
+    return xx_softronics_decode(input,input_size,output,output_size,consumed_size,false);
+}
+bool xx_softronics_lzw_decompress_memory_exact(const uint8_t *input,size_t input_size,uint8_t *output,size_t output_size)
+{
+    return xx_softronics_decode(input,input_size,output,output_size,NULL,true);
 }

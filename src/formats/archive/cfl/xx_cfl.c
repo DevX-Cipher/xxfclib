@@ -11,7 +11,7 @@
  *
  * The directory lives in a block, whose 8-byte header is:
  *
- *   0x00  u32 LE block method, 0 = stored, 1 = zlib
+ *   0x00  u32 LE block method, 0 = stored, 1 = zlib, 4 = LZO1X
  *   0x04  i32 LE block size, the payload length that follows the header
  *
  * For a stored block the payload is the directory itself and the block size
@@ -25,8 +25,7 @@
  *
  *   0x00  i32 LE uncompressed size
  *   0x04  i32 LE data offset, from the base address
- *   0x08  u16 LE method, 0 = stored, 1 = zlib
- *   0x0A  u16 unused
+ *   0x08  u32 LE handler flags, 0 = stored, 1 = zlib, 4 = LZO1X
  *   0x0C  u16 LE name length, in bytes, no terminator
  *   0x0E  the name, name length bytes
  *
@@ -35,7 +34,8 @@
  * failing the archive: that is how the padding some writers leave after the
  * last record is tolerated.
  *
- * A stored member's data is the raw bytes at its data offset. A zlib member's
+ * A stored member starts with a four-byte repeated length, then raw data.
+ * A zlib or LZO1X member's
  * data offset points at a second, different 8-byte block header:
  *
  *   0x00  i32 LE block size
@@ -45,7 +45,8 @@
  * here -- the method comes from the directory record -- so the two block
  * headers are NOT the same structure despite both being eight bytes.
  *
- * The member's published extent skips the two-byte RFC 1950 header, so what
+ * LZO1X blocks use the same repeated-size framing but no RFC 1950 header.
+ * A zlib member's published extent skips the two-byte RFC 1950 header, so what
  * this reader hands the decoder is raw DEFLATE: the stream carries no
  * Adler-32, and a zlib decoder that expects one consumes the last four
  * DEFLATE bytes as a checksum and decodes every member short.
@@ -62,6 +63,7 @@
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/strings/xx_string.h"
 #include "xxfclib/algo/deflate/xx_deflate.h"
+#include "xxfclib/algo/lzo/xx_lzo.h"
 #include <stdio.h>
 #include "xxfclib/data/xx_data.h"
 
@@ -75,6 +77,7 @@ typedef struct xx_cfl_member_s {
     int64_t compressed_size;
     int64_t uncompressed_size;
     uint32_t method;
+    bool encrypted;
     uint64_t timestamp;
     bool is_folder;
 } xx_cfl_member;
@@ -159,10 +162,43 @@ static bool xx_cfl_add(xx_cfl_stream *stream, const xx_cfl_member *member)
 #define XX_CFL_ZLIB_HEADER_SIZE 2
 #define XX_CFL_METHOD_STORED 0
 #define XX_CFL_METHOD_ZLIB 1
+#define XX_CFL_METHOD_LZO1X 4
 #define XX_CFL_MAX_DIRECTORY 0x20000000
 #define XX_CFL_MAX_MEMBERS 1000000
 #define XX_CFL_MAX_NAME 4096
 #define XX_CFL_MAX_DECODED (256 * 1024 * 1024)
+#define XX_CFL_TAAT_CIPHER UINT32_C(0x74000000)
+
+/* tAAt CFL Filter from Truck Dismount 1.01: each resource restarts the
+ * fixed-seed stream. Skip counts bytes of the encrypted resource already
+ * consumed as its repeated size or zlib header; no shared global state. */
+static uint32_t xx_cfl_ror(uint32_t value, unsigned count)
+{
+    if (count == 0U) return value;
+    return (value >> count) | (value << (32U - count));
+}
+
+static void xx_cfl_taat_xor(uint8_t *bytes, size_t size, size_t skip)
+{
+    const uint32_t seed = UINT32_C(0x2c63b2c9);
+    uint32_t a = xx_cfl_ror(seed ^ UINT32_C(0x6c691b25), (seed >> 5U) & 31U);
+    uint32_t b = xx_cfl_ror(seed ^ UINT32_C(0x14951c57), seed & 31U);
+    size_t index;
+    for (index = 0U; index < skip + size; ++index) {
+        uint32_t key = b ^ UINT32_C(0x51549515);
+        b ^= xx_cfl_ror(a, 13U);
+        a = key;
+        if (index >= skip) bytes[index - skip] ^= (uint8_t)key;
+    }
+}
+
+static bool xx_cfl_handler(uint32_t flags, uint32_t *method, bool *encrypted)
+{
+    *encrypted = (flags & UINT32_C(0xff000000)) == XX_CFL_TAAT_CIPHER;
+    *method = flags & UINT32_C(0x00ffffff);
+    return ((flags & UINT32_C(0xff000000)) == 0U || *encrypted) &&
+           (*method == XX_CFL_METHOD_STORED || *method == XX_CFL_METHOD_ZLIB || *method == XX_CFL_METHOD_LZO1X);
+}
 
 /* Forward declarations: the parse and the decode
  * call into each other's helpers. */
@@ -195,6 +231,7 @@ static uint8_t *xx_cfl_read_block(Abstractformat *self, int64_t span, int64_t of
     uint8_t *packed = NULL;
     uint8_t *plain = NULL;
     uint32_t method;
+    bool encrypted;
     int64_t payload_size;
     int64_t packed_size;
     size_t written = 0U;
@@ -204,7 +241,7 @@ static uint8_t *xx_cfl_read_block(Abstractformat *self, int64_t span, int64_t of
     if (!xx_cfl_read_at(self, self->base_address + offset, head, sizeof(head))) {
         return NULL;
     }
-    method = xx_data_get_u32(head, 4, 0, false);
+    if (!xx_cfl_handler(xx_data_get_u32(head, 4, 0, false), &method, &encrypted)) return NULL;
     payload_size = xx_cfl_i32(head + 4);
 
     plain = (uint8_t *)xx_mem_alloc((size_t)expanded);
@@ -225,11 +262,12 @@ static uint8_t *xx_cfl_read_block(Abstractformat *self, int64_t span, int64_t of
             return NULL;
         }
         *block_size = XX_CFL_BLOCK_HEADER_SIZE + expanded;
+        if (encrypted) xx_cfl_taat_xor(plain, (size_t)expanded, 0U);
         return plain;
     }
-    /* Method 2 and above are not defined by the format; treating an unknown
-     * one as stored would publish compressed bytes as a directory. */
-    if (method != (uint32_t)XX_CFL_METHOD_ZLIB) {
+    /* Other compressor IDs and preprocessing/encryption flags need their own
+     * handlers; never treat them as stored or silently discard their flags. */
+    if (method != (uint32_t)XX_CFL_METHOD_ZLIB && method != (uint32_t)XX_CFL_METHOD_LZO1X) {
         xx_mem_free(plain);
         return NULL;
     }
@@ -243,12 +281,13 @@ static uint8_t *xx_cfl_read_block(Abstractformat *self, int64_t span, int64_t of
     /* The second copy of the inflated size. The file header and the block
      * must agree, which is the strongest thing standing between a random
      * file and a decode attempt. */
+    if (encrypted) xx_cfl_taat_xor(size_field, sizeof(size_field), 0U);
     if (xx_cfl_i32(size_field) != expanded) {
         xx_mem_free(plain);
         return NULL;
     }
     packed_size = payload_size - 4;
-    if (packed_size < XX_CFL_ZLIB_HEADER_SIZE || !xx_cfl_range_within(span, offset + XX_CFL_BLOCK_HEADER_SIZE + 4, packed_size)) {
+    if (packed_size < (method == XX_CFL_METHOD_ZLIB ? XX_CFL_ZLIB_HEADER_SIZE : 1) || !xx_cfl_range_within(span, offset + XX_CFL_BLOCK_HEADER_SIZE + 4, packed_size)) {
         xx_mem_free(plain);
         return NULL;
     }
@@ -262,11 +301,13 @@ static uint8_t *xx_cfl_read_block(Abstractformat *self, int64_t span, int64_t of
         xx_mem_free(plain);
         return NULL;
     }
+    if (encrypted) xx_cfl_taat_xor(packed, (size_t)packed_size, 4U);
     /* The directory block keeps its two-byte RFC 1950 header, so it is a zlib
      * stream and is decoded as one. Its Adler-32 trailer is absent -- the
      * block size cuts the stream at the last DEFLATE byte -- which this
      * decoder tolerates, and a short decode is caught by the length test. */
-    if (!xx_zlib_stream_decode_memory(packed, (size_t)packed_size, plain, (size_t)expanded, &written) || written != (size_t)expanded) {
+    if (!(method == XX_CFL_METHOD_LZO1X ? xx_lzo1x_decompress(packed, (size_t)packed_size, plain, (size_t)expanded, &written) :
+          xx_zlib_stream_decode_memory(packed, (size_t)packed_size, plain, (size_t)expanded, &written)) || written != (size_t)expanded) {
         xx_mem_free(packed);
         xx_mem_free(plain);
         return NULL;
@@ -332,14 +373,15 @@ static xx_cfl_stream *xx_cfl_parse(Abstractformat *self, xx_pd_struct *pd)
         int64_t data_offset;
         int64_t name_length;
         int64_t index;
-        uint16_t method;
+        uint32_t method;
+        bool encrypted;
 
         if (pd && xx_pd_is_stopped(pd)) goto fail;
         if (stream->count >= (size_t)XX_CFL_MAX_MEMBERS) break;
 
         size = xx_cfl_i32(entry);
         data_offset = xx_cfl_i32(entry + 4);
-        method = xx_data_get_u16(entry + 8, 2, 0, false);
+        if (!xx_cfl_handler(xx_data_get_u32(entry + 8, 4, 0, false), &method, &encrypted)) goto fail;
         name_length = (int64_t)xx_data_get_u16(entry + 12, 2, 0, false);
 
         /* Not a rejection: a record that fails any of these is where the
@@ -370,7 +412,7 @@ static xx_cfl_stream *xx_cfl_parse(Abstractformat *self, xx_pd_struct *pd)
         name = (char *)xx_mem_alloc((size_t)name_length + 1U);
         if (!name) goto fail;
         for (index = 0; index < name_length; ++index) {
-            name[index] = (char)entry[XX_CFL_ENTRY_SIZE + index];
+            name[index] = entry[XX_CFL_ENTRY_SIZE + index] == '\\' ? '/' : (char)entry[XX_CFL_ENTRY_SIZE + index];
         }
         name[name_length] = '\0';
 
@@ -384,9 +426,14 @@ static xx_cfl_stream *xx_cfl_parse(Abstractformat *self, xx_pd_struct *pd)
         member.header_size = XX_CFL_ENTRY_SIZE + name_length;
         member.uncompressed_size = size;
         member.method = (uint32_t)method;
+        member.encrypted = encrypted;
 
         position += XX_CFL_ENTRY_SIZE + name_length;
 
+        if (!xx_cfl_path_safe(name) || (method != XX_CFL_METHOD_STORED && method != XX_CFL_METHOD_ZLIB && method != XX_CFL_METHOD_LZO1X)) {
+            xx_str_free(name);
+            goto fail;
+        }
         if (size == 0) {
             /* No data block exists, so the record's offset is never read;
              * clamp it into the device anyway, because a published member
@@ -394,17 +441,21 @@ static xx_cfl_stream *xx_cfl_parse(Abstractformat *self, xx_pd_struct *pd)
             member.data_offset = self->base_address + (data_offset < span ? data_offset : span);
             member.compressed_size = 0;
             member.method = (uint32_t)XX_CFL_METHOD_STORED;
-        } else if (method == (uint16_t)XX_CFL_METHOD_STORED) {
-            if (!xx_cfl_range_within(span, data_offset, size)) {
+        } else if (method == XX_CFL_METHOD_STORED) {
+            uint8_t stored_size[4];
+            /* CFLResource::save writes a length word for stored resources too.
+             * That word is framing, not the first four bytes of the member. */
+            if (!xx_cfl_range_within(span, data_offset, 4) || !xx_cfl_read_at(self, self->base_address + data_offset, stored_size, 4) ||
+                xx_cfl_i32(stored_size) != size || !xx_cfl_range_within(span, data_offset + 4, size)) {
                 xx_str_free(name);
                 goto fail;
             }
-            member.data_offset = self->base_address + data_offset;
+            member.data_offset = self->base_address + data_offset + 4;
             member.compressed_size = size;
-            if (data_offset + size > archive_end) {
-                archive_end = data_offset + size;
+            if (data_offset + 4 + size > archive_end) {
+                archive_end = data_offset + 4 + size;
             }
-        } else if (method == (uint16_t)XX_CFL_METHOD_ZLIB) {
+        } else if (method == XX_CFL_METHOD_ZLIB || method == XX_CFL_METHOD_LZO1X) {
             uint8_t block[XX_CFL_BLOCK_HEADER_SIZE];
             uint8_t zlib_header[XX_CFL_ZLIB_HEADER_SIZE];
             int64_t block_size;
@@ -418,6 +469,7 @@ static xx_cfl_stream *xx_cfl_parse(Abstractformat *self, xx_pd_struct *pd)
                 goto fail;
             }
             block_size = xx_cfl_i32(block);
+            if (encrypted) xx_cfl_taat_xor(block + 4, 4U, 0U);
             expanded = xx_cfl_i32(block + 4);
             /* The size the record promised and the size the block promises
              * have to be the same number. */
@@ -426,17 +478,18 @@ static xx_cfl_stream *xx_cfl_parse(Abstractformat *self, xx_pd_struct *pd)
                 goto fail;
             }
             packed_size = block_size - 4;
-            if (packed_size < XX_CFL_ZLIB_HEADER_SIZE || !xx_cfl_range_within(span, data_offset + XX_CFL_BLOCK_HEADER_SIZE, packed_size)) {
+            if (packed_size < (method == XX_CFL_METHOD_ZLIB ? XX_CFL_ZLIB_HEADER_SIZE : 1) || !xx_cfl_range_within(span, data_offset + XX_CFL_BLOCK_HEADER_SIZE, packed_size)) {
                 xx_str_free(name);
                 goto fail;
             }
-            if (!xx_cfl_read_at(self, self->base_address + data_offset + XX_CFL_BLOCK_HEADER_SIZE, zlib_header, sizeof(zlib_header))) {
+            if (method == XX_CFL_METHOD_ZLIB && !xx_cfl_read_at(self, self->base_address + data_offset + XX_CFL_BLOCK_HEADER_SIZE, zlib_header, sizeof(zlib_header))) {
                 xx_str_free(name);
                 goto fail;
             }
+            if (encrypted && method == XX_CFL_METHOD_ZLIB) xx_cfl_taat_xor(zlib_header, sizeof(zlib_header), 4U);
             /* The shared check, not an open-coded one: method, window size,
              * the multiple-of-31 rule and the preset-dictionary flag. */
-            if (!xx_zlib_stream_header_is_valid(zlib_header, sizeof(zlib_header))) {
+            if (method == XX_CFL_METHOD_ZLIB && !xx_zlib_stream_header_is_valid(zlib_header, sizeof(zlib_header))) {
                 xx_str_free(name);
                 goto fail;
             }
@@ -445,8 +498,8 @@ static xx_cfl_stream *xx_cfl_parse(Abstractformat *self, xx_pd_struct *pd)
              * from the header would make a zlib decoder claim the last four
              * DEFLATE bytes as the checksum footer and decode every member
              * short, so the published extent is the raw DEFLATE alone. */
-            member.data_offset = self->base_address + data_offset + XX_CFL_BLOCK_HEADER_SIZE + XX_CFL_ZLIB_HEADER_SIZE;
-            member.compressed_size = packed_size - XX_CFL_ZLIB_HEADER_SIZE;
+            member.data_offset = self->base_address + data_offset + XX_CFL_BLOCK_HEADER_SIZE + (method == XX_CFL_METHOD_ZLIB ? XX_CFL_ZLIB_HEADER_SIZE : 0);
+            member.compressed_size = packed_size - (method == XX_CFL_METHOD_ZLIB ? XX_CFL_ZLIB_HEADER_SIZE : 0);
             if (data_offset + XX_CFL_BLOCK_HEADER_SIZE + packed_size > archive_end) {
                 archive_end = data_offset + XX_CFL_BLOCK_HEADER_SIZE + packed_size;
             }
@@ -508,6 +561,11 @@ static bool xx_cfl_decode(Abstractformat *self, const xx_cfl_member *member, uin
         return false;
     }
 
+    if (member->encrypted) {
+        size_t skip = member->method == XX_CFL_METHOD_STORED ? 0U : member->method == XX_CFL_METHOD_ZLIB ? 6U : 4U;
+        xx_cfl_taat_xor(packed, (size_t)member->compressed_size, skip);
+    }
+
     if (member->method == (uint32_t)XX_CFL_METHOD_STORED) {
         /* Parse publishes a stored member with both sizes equal; a disagreement
          * here would mean handing the caller fewer bytes than it was told to
@@ -520,7 +578,7 @@ static bool xx_cfl_decode(Abstractformat *self, const xx_cfl_member *member, uin
         *out_size = (size_t)member->compressed_size;
         return true;
     }
-    if (member->method != (uint32_t)XX_CFL_METHOD_ZLIB) {
+    if (member->method != (uint32_t)XX_CFL_METHOD_ZLIB && member->method != (uint32_t)XX_CFL_METHOD_LZO1X) {
         /* A method the format may define but this reader does not implement.
          * Falling back to a stored copy would return compressed bytes that
          * the caller has no way to recognise as wrong. */
@@ -536,7 +594,8 @@ static bool xx_cfl_decode(Abstractformat *self, const xx_cfl_member *member, uin
     /* Raw DEFLATE, not zlib: parse validated the two RFC 1950 header bytes and
      * then published the extent that starts after them, because the archive
      * stores no Adler-32 trailer for a zlib decoder to find. */
-    if (!xx_deflate_decompress_memory(packed, (size_t)member->compressed_size, plain, (size_t)member->uncompressed_size, &written, false) ||
+    if (!(member->method == XX_CFL_METHOD_LZO1X ? xx_lzo1x_decompress(packed, (size_t)member->compressed_size, plain, (size_t)member->uncompressed_size, &written) :
+          xx_deflate_decompress_memory(packed, (size_t)member->compressed_size, plain, (size_t)member->uncompressed_size, &written, false)) ||
         written != (size_t)member->uncompressed_size) {
         /* Short is a failure, never a success with fewer bytes: the container
          * states the exact decoded length, so anything else is corruption. */
@@ -672,7 +731,7 @@ static bool xx_cfl_set_record(xx_archive_record *record, const xx_cfl_member *me
            xx_archive_record_set_meta_u64(record, XX_META_ID_UNCOMPRESSED_SIZE, (uint64_t)member->uncompressed_size) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSION_METHOD, member->method) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_TIMESTAMP, member->timestamp) &&
-           xx_archive_record_set_meta_bool(record, XX_META_ID_IS_FOLDER, member->is_folder) && xx_archive_record_set_meta_bool(record, XX_META_ID_IS_ENCRYPTED, false);
+           xx_archive_record_set_meta_bool(record, XX_META_ID_IS_FOLDER, member->is_folder) && xx_archive_record_set_meta_bool(record, XX_META_ID_IS_ENCRYPTED, member->encrypted);
 }
 
 static bool xx_cfl_copy_options(xx_list_s *target, const xx_list_s *options)

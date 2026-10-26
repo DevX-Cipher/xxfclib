@@ -50,6 +50,8 @@ extern "C" {
 #endif
 
 typedef struct JSCtx JSCtx;
+typedef struct JSProgramCache JSProgramCache;
+#define XX_JS_PROGRAM_CACHE_API 1
 typedef struct JSStr JSStr;
 typedef struct JSObj JSObj;
 typedef struct JSNode JSNode;
@@ -77,6 +79,18 @@ typedef struct {
 
 XXFC_API JSCtx *js_new(void);
 XXFC_API void js_free(JSCtx *pCtx);
+
+/* Optional cache of immutable parsed source / decoded bytecode programs.
+ * A cache may be shared by independent contexts on different threads. Its
+ * limit bounds retained entries; ASTs pinned by live contexts may outlive
+ * eviction. No globals, scopes, values, or RegExp.lastIndex are shared.
+ * New returns one owned reference (or NULL if a mutex cannot be created).
+ * Free releases that reference. Set retains its argument and releases the
+ * old cache, so the original owner may free its reference immediately.
+ * NULL disables caching. A context remains single-threaded. */
+XXFC_API JSProgramCache *js_program_cache_new(size_t nLimit);
+XXFC_API void js_program_cache_free(JSProgramCache *pCache);
+XXFC_API void js_set_program_cache(JSCtx *pCtx, JSProgramCache *pCache);
 
 /* Evaluates a program in the global scope. Returns 0 on error and stores the
  * message (owned by the context) in *ppError.                              */

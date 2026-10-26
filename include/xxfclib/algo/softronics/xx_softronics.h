@@ -21,6 +21,8 @@ extern "C" {
  * success; it may be NULL.
  */
 XXFC_API bool xx_softronics_lzw_decompress_memory(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, size_t *consumed_size);
+/** Same dialect, but END must occupy the final byte (only bit padding allowed). */
+XXFC_API bool xx_softronics_lzw_decompress_memory_exact(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size);
 
 #ifdef __cplusplus
 }

@@ -159,7 +159,8 @@ bool lzma_parse_props(const uint8_t *props, size_t props_size, lzma_props *out)
     d -= out->pb * 9 * 5;
     out->lp = d / 9;
     out->lc = d - out->lp * 9;
-    if (out->lc + out->lp > 4) return false;
+    /* LZMA1 permits lc up to 8 and lp up to 4. The lc+lp <= 4 limit
+     * belongs to LZMA2; LzmaDec allocates the complete LZMA1 model. */
     uint32_t ds = (uint32_t)props[1] | ((uint32_t)props[2] << 8) | ((uint32_t)props[3] << 16) | ((uint32_t)props[4] << 24);
     if (ds > XX_LZMA_MAX_DICT_SIZE) return false;
     out->dict_size = ds;

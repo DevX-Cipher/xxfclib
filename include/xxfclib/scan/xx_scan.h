@@ -131,6 +131,10 @@ typedef struct {
     DBSignatureMetadata *pMetadata;
     int nMetadataCount;
     int nMetadataCapacity;
+    /* Private retained JSProgramCache (64 MiB), created by successful loaders.
+     * Hand-built databases may leave this NULL. Database loading/freeing
+     * require exclusive ownership; concurrent scans share immutable programs. */
+    void *pJsProgramCache;
 } DBase;
 
 XXFC_API int db_load(DBase *pDb, const char *pPath, DBKind kind);

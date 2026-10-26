@@ -2444,7 +2444,6 @@ static const fast_type fast_types[] = {
     { XX_FILE_TYPE_NRG, 375U, 2U }, /* src/formats/nrg/xx_nrg_fast_detect.json */
     { XX_FILE_TYPE_PACKIT_MAC, 377U, 2U }, /* src/formats/packit_mac/xx_packit_mac_fast_detect.json */
     { XX_FILE_TYPE_RPM, 379U, 1U }, /* src/formats/rpm/xx_rpm_fast_detect.json */
-    { XX_FILE_TYPE_STUFFIT5, 380U, 1U }, /* src/formats/stuffit5/xx_stuffit5_fast_detect.json */
     { XX_FILE_TYPE_ADAM, 381U, 1U }, /* src/formats/adam/xx_adam_fast_detect.json */
     { XX_FILE_TYPE_MAME_FLOPPY_IMAGE_MFI, 382U, 2U }, /* src/formats/mame_floppy_image_mfi/xx_mame_floppy_image_mfi_fast_detect.json */
     { XX_FILE_TYPE_PARALLELS_HDD, 384U, 2U }, /* src/formats/parallels_hdd/xx_parallels_hdd_fast_detect.json */
@@ -2580,4 +2579,4 @@ static const fast_type fast_types[] = {
     { XX_FILE_TYPE_HP_SOM, 643U, 7U }, /* src/formats/hp_som/xx_hp_som_fast_detect.json */
     { XX_FILE_TYPE_XCOFF, 650U, 6U }, /* src/formats/xcoff/xx_xcoff_fast_detect.json */
 };
-static const size_t fast_type_count = 377U;
+static const size_t fast_type_count = 376U;

@@ -67,7 +67,8 @@ typedef enum {
     N_CASE,     /* a = test (NULL for default), list = statements */
     N_LABELED,  /* str = label, a = statement */
     N_EMPTY,
-    N_EXPRSTMT /* a = expression */
+    N_EXPRSTMT, /* a = expression */
+    N_DEBUGGER
 } JSNodeType;
 
 /* Operator identifiers used by N_UNARY/N_BINARY/N_ASSIGN/N_LOGICAL. */
@@ -108,11 +109,29 @@ typedef enum {
     OP_ASSIGN
 } JSOp;
 
+/* The ordered binding operations for one program/function. Nodes are borrowed
+ * from its immutable AST. Depth checkpoints retain the evaluator's existing
+ * nesting-limit behavior without walking unrelated statements on each call. */
+typedef struct {
+    JSNode *pNode; /* N_VARDECL / declaration N_FUNCTION; NULL = final guard */
+    unsigned nDepth;
+    unsigned nCheckDepth;
+} JSHoistStep;
+
+typedef struct {
+    size_t nSteps;
+    JSHoistStep steps[];
+} JSHoistPlan;
+
 struct JSNode {
     JSNodeType type;
     JSOp op;
     int nLine;
-    /* Length and hash of pStr, filled in on the first identifier lookup:
+    int nColumn;
+    /* All nodes borrow the source root, whose name is owned by N_PROGRAM. */
+    JSNode *pSourceRoot;
+    char *pSourceName;
+    /* Length and hash of pStr, filled before a program is published:
      * variable access would otherwise rehash the same name endlessly.     */
     uint8_t bStrKey;
     size_t nStrSize;
@@ -126,10 +145,19 @@ struct JSNode {
     JSNode *d;
     JSNode **ppList;
     size_t nList;
+    size_t nListCapacity;
+    /* Immutable function-call metadata, prepared with the AST. */
+    uint8_t bNeedsArguments;
+    uint8_t bNeedsHoist;
+    JSHoistPlan *pHoistPlan;
+    /* Compiled literals are immutable; evaluation makes a fresh wrapper. */
+    JSRegExp *pRegExpLiteral;
     /* Function bodies cache their declared variable names for hoisting. */
     char **ppVarNames;
     size_t nVarNames;
 };
+
+void js_node_set_source(JSNode *pRoot, const char *pName);
 
 JSNode *js_node_new(JSNodeType type, int nLine);
 

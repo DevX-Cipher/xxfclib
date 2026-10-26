@@ -28,6 +28,7 @@
 #include "xxfclib/strings/xx_string.h"
 #include "xxfclib/global/xx_global.h"
 #include "xxfclib/memory/xx_memory.h"
+#include <limits.h>
 
 static void signature_set_error(DieEngine *pEngine, const char *pText)
 {
@@ -322,6 +323,8 @@ static void run_script(DieEngine *pEngine, DBSignature *pRecord, int bCallDetect
     JSVal callResult;
     cd_i64 nProfileStart = -1;
     int bEvalResult = 0;
+    const char *source_name = pEngine->pDebug && pRecord->pFilePath && pRecord->pFilePath[0]
+        ? pRecord->pFilePath : pRecord->pName;
 
     pEngine->pCurrentScript = pRecord->pName;
     cd_free(pEngine->pCurrentFormatId);
@@ -350,9 +353,9 @@ static void run_script(DieEngine *pEngine, DBSignature *pRecord, int bCallDetect
     js_clear_error(pCtx);
 
     if (js_is_bytecode(pRecord->pText, pRecord->nSize)) {
-        bEvalResult = js_eval_nested_bytecode(pCtx, pRecord->pText, pRecord->nSize, pRecord->pName);
+        bEvalResult = js_eval_nested_bytecode(pCtx, pRecord->pText, pRecord->nSize, source_name);
     } else {
-        bEvalResult = js_eval_nested(pCtx, pRecord->pText, pRecord->pName);
+        bEvalResult = js_eval_nested(pCtx, pRecord->pText, source_name);
     }
 
     if (!bEvalResult) {
@@ -533,12 +536,25 @@ static int script_ne_memory_map(xx_io_device *device, xx_memory_map *map, xx_pd_
     return !xx_pd_is_stopped(pd) && xx_memory_map_finalize(map) ? 1 : -1;
 }
 
+/* Each pass owns its hook/context. No process-global hook state is used. */
+static int die_engine_script_debug_hook(JSCtx *context, const JSDebugEvent *event, void *user)
+{
+    DieEngine *engine = (DieEngine *)user;
+    const die_engine_debug_config *debug = engine->pDebug;
+    if (engine->bStop || xx_pd_is_stopped(engine->pd) || !debug->hook(context, event, debug->hook_user)) {
+        engine->bStop = 1;
+        xx_pd_stop(engine->pd);
+        return 0;
+    }
+    return 1;
+}
+
 /* One detection pass over a borrowed device for a single file type.
  * The buffered device is owned by this pass; the source stays open
  * for subsequent COM/Binary passes. bAddUnknown mirrors the
  * reference's _processDetect flag: when it is 0 an empty pass stays empty
  * instead of gaining the "Unknown" record.                                 */
-static int scan_run_pass(xx_io_device *device, XFileType fileType, int bIsCliAssembly, DBase *pDb, xx_scan_options *pOptions, xx_scan_result *pResult, int bAddUnknown, xx_pd_struct *pd)
+static int scan_run_pass(xx_io_device *device, XFileType fileType, int bIsCliAssembly, DBase *pDb, xx_scan_options *pOptions, xx_scan_result *pResult, int bAddUnknown, xx_pd_struct *pd, const die_engine_debug_config *debug)
 {
     /* Heap, not stack: DieEngine embeds every parser state by value and is
      * over 3 KB on its own. Keeping it off the stack reduces pressure during
@@ -579,6 +595,7 @@ static int scan_run_pass(xx_io_device *device, XFileType fileType, int bIsCliAss
     pEngine->pOptions = pOptions;
     pEngine->pResult = pResult;
     pEngine->pd = pd;
+    pEngine->pDebug = debug;
 
     if ((pEngine->fileType == XFT_PE32) || (pEngine->fileType == XFT_PE64)) {
         pEngine->bHasPE = xx_pe_inspect_analyze_from_device(&pEngine->pe, pEngine->device, 0, NULL);
@@ -659,8 +676,10 @@ static int scan_run_pass(xx_io_device *device, XFileType fileType, int bIsCliAss
     pResult->fileType = pEngine->fileType;
 
     pEngine->pJs = js_new();
+    js_set_program_cache(pEngine->pJs, (JSProgramCache *)pDb->pJsProgramCache);
     js_set_user(pEngine->pJs, pEngine);
     die_engine_install_api(pEngine);
+    if (debug && debug->hook) js_debug_set_hook(pEngine->pJs, die_engine_script_debug_hook, pEngine);
 
     /* Locate the global, per-format and (for a .NET PE) DOTNET _init scripts. */
     {
@@ -699,11 +718,30 @@ static int scan_run_pass(xx_io_device *device, XFileType fileType, int bIsCliAss
     /* cd_alloc_oom() is always false unless the soft out-of-memory policy is
      * armed, which only the shared library does; there it ends the scan at
      * the next script boundary instead of ending the process. */
-    for (i = 0; (i < pDb->nCount) && (!pEngine->bStop) && (!cd_alloc_oom()) && !xx_io_buffer_failed(pEngine->device) && !xx_pd_is_stopped(pd); i++) {
-        xx_pd_set_current(pd, progress, (uint64_t)i);
-        if (xx_pd_is_stopped(pd)) break;
-        if (should_execute(&pDb->pRecords[i], pEngine->fileType, pEngine->bIsCliAssembly, pOptions)) {
-            run_script(pEngine, &pDb->pRecords[i], 1);
+    if (debug && debug->signature_source) {
+        DBSignature edited = {0};
+        edited.pName = (char *)(debug->signature_name && debug->signature_name[0] ? debug->signature_name : "untitled.sg");
+        edited.pFilePath = edited.pName;
+        edited.pText = (char *)debug->signature_source;
+        edited.nSize = x_strlen(debug->signature_source);
+        edited.fileType = pEngine->fileType;
+        edited.databaseType = DB_CUSTOM;
+        if (!pEngine->bStop && !cd_alloc_oom() && !xx_io_buffer_failed(pEngine->device) && !xx_pd_is_stopped(pd))
+            run_script(pEngine, &edited, 1);
+        pEngine->pCurrentScript = NULL;
+        i = pDb->nCount;
+    } else {
+        for (i = 0; (i < pDb->nCount) && (!pEngine->bStop) && (!cd_alloc_oom()) && !xx_io_buffer_failed(pEngine->device) && !xx_pd_is_stopped(pd); i++) {
+            xx_pd_set_current(pd, progress, (uint64_t)i);
+            if (xx_pd_is_stopped(pd)) break;
+            if (should_execute(&pDb->pRecords[i], pEngine->fileType, pEngine->bIsCliAssembly, pOptions)) {
+                if (debug) {
+                    DBSignature record = pDb->pRecords[i];
+                    run_script(pEngine, &record, 1);
+                } else {
+                    run_script(pEngine, &pDb->pRecords[i], 1);
+                }
+            }
         }
     }
 
@@ -903,7 +941,7 @@ static int64_t scan_detection_size(xx_io_device *device)
 /* Orchestrate signature passes over the borrowed, bounded input device.
  * Type detection, input metadata and pass selection use xx_io directly;
  * only scan_run_pass creates the buffered input device. */
-static int scan_engine_run(xx_io_device *device, DBase *pDb, xx_scan_options *pOptions, XFileType selectedType, xx_scan_result *pResult, xx_pd_struct *pd)
+static int scan_engine_run(xx_io_device *device, DBase *pDb, xx_scan_options *pOptions, XFileType selectedType, xx_scan_result *pResult, xx_pd_struct *pd, const die_engine_debug_config *debug)
 {
     xx_scan_file_type_set set;
     scan_detection_device detection = {0};
@@ -971,7 +1009,7 @@ static int scan_engine_run(xx_io_device *device, DBase *pDb, xx_scan_options *pO
         /* Choosing Binary must not silently add a COM pass or .NET scripts.
          * Each explicit choice is an independent interpretation of the file. */
         bIsCliAssembly = bIsCliAssembly && (fileType == XFT_PE32 || fileType == XFT_PE64);
-        nResult = scan_run_pass(device, fileType, bIsCliAssembly, pDb, pOptions, pResult, 1, pd);
+        nResult = scan_run_pass(device, fileType, bIsCliAssembly, pDb, pOptions, pResult, 1, pd, debug);
     } else if (fileType == XFT_COM) {
         /* XScanEngine::scanProcess's FT_COM arm is two passes: a deep scan
          * runs the FT_BINARY scripts first, and the FT_COM pass adds its
@@ -984,14 +1022,14 @@ static int scan_engine_run(xx_io_device *device, DBase *pDb, xx_scan_options *pO
         x_memset(&binResult, 0, sizeof(binResult));
 
         if (pOptions->deep_scan) {
-            if (!scan_run_pass(device, XFT_BINARY, bIsCliAssembly, pDb, pOptions, &binResult, 0, pd)) {
+            if (!scan_run_pass(device, XFT_BINARY, bIsCliAssembly, pDb, pOptions, &binResult, 0, pd, debug)) {
                 xx_scan_result_free(&binResult);
                 goto scan_done;
             }
             bIsBinary = (binResult.nCount > 0);
         }
 
-        nResult = scan_run_pass(device, XFT_COM, bIsCliAssembly, pDb, pOptions, pResult, !bIsBinary, pd);
+        nResult = scan_run_pass(device, XFT_COM, bIsCliAssembly, pDb, pOptions, pResult, !bIsBinary, pd, debug);
 
         result_merge(pResult, &binResult, 1);
         pResult->fileType = XFT_COM;
@@ -1014,13 +1052,13 @@ static int scan_engine_run(xx_io_device *device, DBase *pDb, xx_scan_options *pO
         x_memset(&comResult, 0, sizeof(comResult));
         comOptions.verbose = 0;
 
-        if (!scan_run_pass(device, XFT_COM, bIsCliAssembly, pDb, &comOptions, &comResult, 0, pd)) {
+        if (!scan_run_pass(device, XFT_COM, bIsCliAssembly, pDb, &comOptions, &comResult, 0, pd, debug)) {
             xx_scan_result_free(&comResult);
             goto scan_done;
         }
         bIsCom = com_has_non_generic(&comResult);
 
-        nResult = scan_run_pass(device, XFT_BINARY, bIsCliAssembly, pDb, pOptions, pResult, !bIsCom, pd);
+        nResult = scan_run_pass(device, XFT_BINARY, bIsCliAssembly, pDb, pOptions, pResult, !bIsCom, pd, debug);
 
         if (bIsCom) {
             result_merge(pResult, &comResult, 0);
@@ -1028,7 +1066,7 @@ static int scan_engine_run(xx_io_device *device, DBase *pDb, xx_scan_options *pO
             xx_scan_result_free(&comResult);
         }
     } else {
-        nResult = scan_run_pass(device, fileType, bIsCliAssembly, pDb, pOptions, pResult, 1, pd);
+        nResult = scan_run_pass(device, fileType, bIsCliAssembly, pDb, pOptions, pResult, 1, pd, debug);
     }
 
 scan_done:
@@ -1085,5 +1123,81 @@ int die_engine_detect_file_types(const char *pFileName, die_engine_file_type_fn 
 int die_engine_scan_pass_device(xx_io_device *device, DBase *database, xx_scan_options *options,
                                 XFileType type, xx_scan_result *result, xx_pd_struct *pd)
 {
-    return scan_engine_run(device, database, options, type, result, pd);
+    return scan_engine_run(device, database, options, type, result, pd, NULL);
+}
+
+/* A debugger owns a single target/rule execution, not archive recursion. Keep
+ * the standard scan-pass construction, format objects and cleanup unchanged. */
+int die_engine_scan_file_type_debug_pd(const char *file_name, DBase *database,
+    xx_scan_options *options, XFileType file_type, xx_scan_result *result,
+    xx_pd_struct *progress, const die_engine_debug_config *config)
+{
+    xx_scan_options local;
+    xx_pd_struct private_progress = {0};
+    xx_pd_struct *pd = progress ? progress : &private_progress;
+    xx_io_device *source = NULL;
+    xx_io_device *view = NULL;
+    int64_t total, size;
+    int scanned = 0;
+    int i;
+
+    if (!result) return 0;
+    x_memset(result, 0, sizeof(*result));
+    if (!file_name || !file_name[0] || !database || !options || !config) {
+        xx_pd_set_error(pd, XXFC_ERR_NULL_PARAM, "Missing DIE debugger argument");
+        goto done;
+    }
+    if (config->size < sizeof(*config) || config->version != DIE_ENGINE_DEBUG_VERSION ||
+        (unsigned int)file_type >= (unsigned int)XFT_COUNT) {
+        xx_pd_set_error(pd, XXFC_ERR_INVALID_ARG, "Invalid DIE debugger configuration");
+        goto done;
+    }
+    local = *options;
+    local.file_name = file_name;
+    if (local.recursive_scan || local.first_wrapper_only || local.all_types_scan ||
+        local.overlay_scan || local.resources_scan || local.archives_scan) {
+        xx_pd_set_error(pd, XXFC_ERR_INVALID_ARG, "DIE debugger requires a single input pass");
+        goto done;
+    }
+    if (local.offset < 0 || local.size < -1 ||
+        (local.size >= 0 && local.offset > INT64_MAX - local.size)) {
+        xx_pd_set_error(pd, XXFC_ERR_INVALID_ARG, "Invalid DIE debugger input range");
+        goto done;
+    }
+    if (xx_pd_is_stopped(pd)) goto done;
+    source = xx_io_file_open(file_name, "rb");
+    if (!source) {
+        xx_pd_set_error(pd, XXFC_ERR_IO, "Cannot open DIE debugger input");
+        goto done;
+    }
+    total = xx_io_total_size(source);
+    if (total < 0) {
+        xx_pd_set_error(pd, XXFC_ERR_IO, "Cannot determine DIE debugger input size");
+        goto done;
+    }
+    size = local.size < 0 ? total - local.offset : local.size;
+    if (local.offset > total || size > total - local.offset) {
+        xx_pd_set_error(pd, XXFC_ERR_OUT_OF_BOUNDS, "DIE debugger range exceeds input");
+        goto done;
+    }
+    view = xx_io_sub_open_ro(source, local.offset, size);
+    if (!view) {
+        xx_pd_set_error(pd, XXFC_ERR_OUT_OF_MEMORY, "Cannot create DIE debugger input view");
+        goto done;
+    }
+    scanned = scan_engine_run(view, database, &local, file_type, result, pd, config);
+    for (i = 0; i < result->nCount; ++i) {
+        xx_scan_record *record = &result->pRecords[i];
+        if (record->offset < 0 || record->offset > INT64_MAX - local.offset) {
+            xx_pd_set_error(pd, XXFC_ERR_OUT_OF_BOUNDS, "DIE debugger record offset overflows");
+            scanned = 0;
+            break;
+        }
+        record->offset += local.offset;
+    }
+done:
+    if (view) xx_io_close(view);
+    if (source) xx_io_close(source);
+    if (!scanned && pd->error_string[0]) (void)xx_scan_result_add_error(result, pd->error_string, NULL);
+    return scanned && !xx_pd_is_stopped(pd);
 }

@@ -969,8 +969,18 @@ static bool sh_read_footer(Abstractformat *self, int64_t image_size, sh_footer *
     uint8_t raw[SH_FOOTER_SIZE];
     unsigned index;
     xx_mem_zero(footer, sizeof(*footer));
-    if (image_size < SH_FOOTER_SIZE || !sh_read_at(self->device, self->base_address + image_size - SH_FOOTER_SIZE, raw, sizeof(raw)) || raw[0] != SH_FOOTER_TAG) {
-        return false;
+    if (image_size < SH_FOOTER_SIZE || !sh_read_at(self->device, self->base_address + image_size - SH_FOOTER_SIZE, raw, sizeof(raw))) return false;
+    if (raw[0] != SH_FOOTER_TAG) {
+        /* Earlier standalone volumes end with only the last three pointers:
+         * catalog end, zero data base and [PVM]. There is no serial or script
+         * pointer. Accept only an actual bounded, nonempty volume catalog;
+         * sh_parse still validates every catalog record and its stride. */
+        footer->offset = image_size - 12;
+        footer->records_end = xx_data_get_u32(raw + 17, 4, 0, false);
+        footer->pvl = xx_data_get_u32(raw + 21, 4, 0, false);
+        footer->pvm = xx_data_get_u32(raw + 25, 4, 0, false);
+        return footer->pvl == 0U && footer->pvm > 0U && (int64_t)footer->pvm + SH_BLOCK_TAG_SIZE < footer->records_end &&
+               (int64_t)footer->records_end <= footer->offset && sh_tag_at(self, footer->pvm, "\x05[PVM]", SH_BLOCK_TAG_SIZE);
     }
     for (index = 1U; index <= SH_SERIAL_DIGITS; ++index) {
         if (raw[index] < '0' || raw[index] > '9') return false;

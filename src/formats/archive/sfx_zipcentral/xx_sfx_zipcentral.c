@@ -7,6 +7,7 @@
 #include "xxfclib/formats/archive/sfx_zipcentral/xx_sfx_zipcentral.h"
 #include "../../common/xx_executable_carrier.h"
 #include "xx_demolition_password.h"
+#include "xx_autoplay_password.h"
 
 /* A complete ZIP directory authenticates the payload independently of the
  * executable image. Some UPX PEs claim SizeOfHeaders=4096 while their first
@@ -446,6 +447,7 @@ static xx_archive_record_state *sfx_carrier_records(Abstractformat *f, const xx_
     demo->preferred = -1;
     demo->remaining_work = UINT64_C(1073741824);
     demolition_locate(f, demo, pd);
+    autoplay_locate(f, opts, demo, pd);
     if (!sfx_carrier_normalize_record(r, state, pd) || !demolition_record(r, state, demo, pd)) {
         demolition_free(demo);
         xx_zip_free_archive_records_reading(&r->inner.format, state);

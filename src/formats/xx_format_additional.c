@@ -1,9 +1,18 @@
+#include "xxfclib/formats/installer/tarma_installer/xx_tarma_installer.h"
 /* Copyright (c) 2026 hors<horsicq@gmail.com>
  * SPDX-License-Identifier: MIT
  */
 #include "xx_format_additional.h"
 #include "xxfclib/formats/archive/stor_resource/xx_stor_resource.h"
 #include "xxfclib/formats/archive/installshield_obl/xx_installshield_obl.h"
+#include "xxfclib/formats/archive/pftw_pkg/xx_pftw_pkg.h"
+#include "xxfclib/formats/archive/sod_installer/xx_sod_installer.h"
+#include "xxfclib/formats/archive/starforce_ovl/xx_starforce_ovl.h"
+#include "xxfclib/formats/archive/stuffit5/xx_stuffit5.h"
+#include "xxfclib/formats/archive/self_unstuffer/xx_self_unstuffer.h"
+#include "xxfclib/formats/archive/secura/xx_secura.h"
+#include "xxfclib/formats/archive/patchwise/xx_patchwise.h"
+#include "xxfclib/formats/archive/installjammer/xx_installjammer.h"
 #include "xxfclib/formats/installer/natata_ebook/xx_natata_ebook.h"
 #include "xxfclib/formats/archive/eid/xx_eid.h"
 #include "xxfclib/formats/archive/apple_diags/xx_apple_diags.h"
@@ -194,6 +203,37 @@ xx_file_type_t xx_format_detect_additional(xx_io_device *device)
     if (size <= 0) goto done;
     prefix_size = size < (int64_t)sizeof(prefix) ? (size_t)size : sizeof(prefix);
     if (xx_io_seek64(device, 0, SEEK_SET) != 0 || !probe_read_exact(device, prefix, prefix_size)) goto done;
+    if(size>=14 && (!xx_rt_memcmp(prefix,"tiz1",4) || !xx_rt_memcmp(prefix,"tiz2",4))) {
+        xx_tarma_installer *reader=xx_tarma_installer_create(device,0);
+        bool valid=reader && xx_tarma_installer_check_is_valid(&reader->format,NULL);
+        xx_tarma_installer_free(reader);
+        if(valid) { result=XX_FILE_TYPE_TARMA_INSTALLER;goto done; }
+    }
+    if (size >= 512 && xx_installjammer_fast_detect(device, 0, false)) {
+        result = XX_FILE_TYPE_INSTALLJAMMER; goto done;
+    }
+    if (size >= 18 && xx_patchwise_fast_detect(device, 0, false)) {
+        result = XX_FILE_TYPE_PATCHWISE; goto done;
+    }
+    if (size >= 18 && xx_secura_fast_detect(device, 0, false)) {
+        result = XX_FILE_TYPE_SECURA; goto done;
+    }
+    if (size >= 18 && xx_self_unstuffer_fast_detect(device, 0, false)) {
+        result = XX_FILE_TYPE_SELF_UNSTUFFER; goto done;
+    }
+    if (size >= 18 && xx_starforce_ovl_fast_detect(device, 0, false)) {
+        result = XX_FILE_TYPE_STARFORCE_OVL; goto done;
+    }
+    if (size >= 100 && ((prefix[0] == 'M' && prefix[1] == 'Z') || !xx_rt_memcmp(prefix, "\xbd\x05\xfe\xef", 4U)) &&
+        xx_stuffit5_fast_detect(device, 0, false)) {
+        result = XX_FILE_TYPE_STUFFIT5; goto done;
+    }
+    if (size >= 32 && (prefix[0]|((unsigned)prefix[1]<<8))>=1980U && (prefix[0]|((unsigned)prefix[1]<<8))<=2100U && prefix[3]==0 && prefix[2]>=1 && prefix[2]<=12 && xx_sod_installer_fast_detect(device, 0, false)) {
+        result = XX_FILE_TYPE_SOD_INSTALLER; goto done;
+    }
+    if (prefix_size >= 36U && xx_pftw_pkg_fast_detect(device, 0, false)) {
+        result = XX_FILE_TYPE_PFTW_PKG; goto done;
+    }
     if (prefix_size >= 12U && !xx_rt_memcmp(prefix, "pOdA", 4U) && xx_installshield_obl_fast_detect(device, 0, false)) {
         result = XX_FILE_TYPE_INSTALLSHIELD_OBL; goto done;
     }

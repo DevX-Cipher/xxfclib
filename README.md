@@ -170,6 +170,61 @@ KERNEL32 only and links in the CRT-free builds; condition variables are
 resolved at run time, so on Windows XP `xx_cond_create` returns NULL. Other
 platforms use POSIX threads.
 
+`<xxfclib/threads/xx_thread_pool.h>` adds a fixed-size worker pool with a FIFO
+task queue. `xx_thread_pool_create(0)` uses the logical CPU count;
+`xx_thread_pool_create_ex(workers, max_pending, stack_size)` also sets an
+optional queue limit and worker stack size. Submission never waits for queue
+space. The pool uses semaphores, so it also works on Windows XP.
+
+```c
+#include <xxfclib/threads/xx_thread_pool.h>
+
+static void square(void *arg)
+{
+    int *value = (int *)arg;
+    *value *= *value;
+}
+
+/* Keep values alive until the pool has finished using them. */
+static bool square_values(int *values, size_t count)
+{
+    xx_thread_pool_t *pool = xx_thread_pool_create(4);
+    if (!pool) return false;
+    for (size_t i = 0; i < count; ++i) {
+        if (!xx_thread_pool_submit(pool, square, &values[i])) {
+            xx_thread_pool_destroy(pool, XX_THREAD_POOL_DRAIN);
+            return false;
+        }
+    }
+    return xx_thread_pool_destroy(pool, XX_THREAD_POOL_DRAIN);
+}
+```
+
+`xx_thread_pool_wait` waits for an idle point with the same timeout/result
+conventions as semaphore waits. `xx_thread_pool_get_stats` reports queued and
+active tasks, plus an `idle` flag that includes cancellation cleanup.
+`xx_thread_pool_submit_ex` accepts an optional cleanup callback,
+called once for each accepted task after execution or cancellation; a rejected
+submission leaves ownership with the caller. Idle waits include cleanup.
+Callbacks can submit tasks and query statistics, but cannot wait for, shut down
+or destroy their own pool.
+
+`XX_THREAD_POOL_DRAIN` completes accepted work; `XX_THREAD_POOL_CANCEL_PENDING`
+discards queued work and lets active tasks finish. Shutdown stops submissions;
+destroy also joins workers and releases the pool. The owner serializes shutdown
+calls and prevents other client calls or waits from overlapping destruction.
+FIFO controls dequeue order, not completion order across workers.
+
+For the full library, enable `XXFC_BUILD_THREAD_TESTS` to register the threading
+tests. A focused build uses the same production sources without the format
+readers:
+
+```sh
+cmake -S tests/threads -B build/thread-tests -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/thread-tests
+ctest --test-dir build/thread-tests --output-on-failure
+```
+
 ## Formats and algorithms subset
 
 Standalone consumers can include `xxformats.cmake` to build the format readers,

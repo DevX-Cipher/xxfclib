@@ -47,6 +47,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 option(BUILD_SHARED_LIBS "Build xxfclib as a shared/dynamic library instead of static" OFF)
 option(XXFC_BUILD_BOTH "Build both static and shared library targets" OFF)
 option(XXFC_BUILD_TESTS "Build test suite to verify linkage and functionality" OFF)
+option(XXFC_BUILD_THREAD_TESTS "Build the focused threading and thread pool tests" OFF)
 option(XXFC_BUILD_DISASM_TESTS "Build the focused DIE disassembly regression test" OFF)
 option(XXFC_BUILD_SCAN_TESTS "Build the focused scan and subdevice regression tests" OFF)
 option(XXFC_BUILD_ZIP_SUPPORT_TESTS "Build the focused ZIP method regression tests" OFF)
@@ -337,6 +338,9 @@ set(XXFCLIB_PUBLIC_HEADERS
     include/xxfclib/scan/xx_scan.h
     include/xxfclib/sig/xx_sig.h
     include/xxfclib/die_engine/die_engine.h
+    include/xxfclib/die_engine/die_engine_debug.h
+    include/xxfclib/js/xx_js.h
+    include/xxfclib/js/xx_js_debug.h
     include/xxfclib/memory/xx_memory.h
     include/xxfclib/formats/xx_memory_map.h
     include/xxfclib/strings/xx_string.h
@@ -346,6 +350,7 @@ set(XXFCLIB_PUBLIC_HEADERS
     include/xxfclib/formats/xx_data_signature.h
     include/xxfclib/list/xx_list.h
     include/xxfclib/threads/xx_threads.h
+    include/xxfclib/threads/xx_thread_pool.h
     include/xxfclib/sort/xx_sort.h
     include/xxfclib/var/xx_var.h
     include/xxfclib/global/xx_global.h
@@ -1212,6 +1217,13 @@ set(XXFCLIB_PUBLIC_HEADERS
     include/xxfclib/formats/installer/natata_ebook/xx_natata_ebook.h
     include/xxfclib/formats/archive/stor_resource/xx_stor_resource.h
     include/xxfclib/formats/archive/installshield_obl/xx_installshield_obl.h
+    include/xxfclib/formats/archive/pftw_pkg/xx_pftw_pkg.h
+    include/xxfclib/formats/archive/sod_installer/xx_sod_installer.h
+    include/xxfclib/formats/archive/starforce_ovl/xx_starforce_ovl.h
+    include/xxfclib/formats/archive/self_unstuffer/xx_self_unstuffer.h
+    include/xxfclib/formats/archive/secura/xx_secura.h
+    include/xxfclib/formats/archive/patchwise/xx_patchwise.h
+    include/xxfclib/formats/archive/installjammer/xx_installjammer.h
     include/xxfclib/formats/video/interplay_mve/xx_interplay_mve.h
     include/xxfclib/formats/video/westwood_vqa/xx_westwood_vqa.h
     include/xxfclib/formats/video/autodesk_flic/xx_autodesk_flic.h
@@ -1986,6 +1998,7 @@ set(XXFCLIB_SOURCES
     src/data/platforms/xx_data_neon.c
     src/list/xx_list.c
     src/threads/xx_threads.c
+    src/threads/xx_thread_pool.c
     src/sort/xx_sort_list.c
     src/var/xx_var.c
     src/algo/crc/xx_crc.c
@@ -3962,6 +3975,13 @@ set(XXFCLIB_SOURCES
     src/formats/installer/natata_ebook/xx_natata_ebook.c
     src/formats/archive/stor_resource/xx_stor_resource.c
     src/formats/archive/installshield_obl/xx_installshield_obl.c
+    src/formats/archive/pftw_pkg/xx_pftw_pkg.c
+    src/formats/archive/sod_installer/xx_sod_installer.c
+    src/formats/archive/starforce_ovl/xx_starforce_ovl.c
+    src/formats/archive/self_unstuffer/xx_self_unstuffer.c
+    src/formats/archive/secura/xx_secura.c
+    src/formats/archive/patchwise/xx_patchwise.c
+    src/formats/archive/installjammer/xx_installjammer.c
     src/formats/video/scummvm_dxa/xx_scummvm_dxa.c
     src/formats/video/scummvm_dxa/xx_scummvm_dxa_reader_adapters.c
     src/formats/video/interplay_mve/xx_interplay_mve.c
@@ -5682,12 +5702,16 @@ if(XXFC_BUILD_TESTS OR XXFC_BUILD_SCAN_TESTS)
     add_test(NAME test_io_sub COMMAND test_io_sub)
 endif()
 
-if(XXFC_BUILD_TESTS)
+if(XXFC_BUILD_TESTS OR XXFC_BUILD_THREAD_TESTS)
     enable_testing()
     add_executable(test_threads tests/test_threads.c)
     target_link_libraries(test_threads PRIVATE xxfclib::xxfclib)
     add_test(NAME test_threads COMMAND test_threads)
     set_tests_properties(test_threads PROPERTIES TIMEOUT 60)
+    add_executable(test_thread_pool tests/test_thread_pool.c)
+    target_link_libraries(test_thread_pool PRIVATE xxfclib::xxfclib)
+    add_test(NAME test_thread_pool COMMAND test_thread_pool)
+    set_tests_properties(test_thread_pool PROPERTIES TIMEOUT 60)
 endif()
 
 if(XXFC_BUILD_DISASM_TESTS)
@@ -7670,3 +7694,70 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_stor_resource_tests.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_lyme_sfx_tests.cmake")
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_installshield_obl_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_pftw_pkg_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_autoplay_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_sod_installer_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_starforce_ovl_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_stuffit5_sfx_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_self_unstuffer_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_secura_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_patchwise_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_installjammer_tests.cmake")
+
+# Focused JS regression and performance harness, excluded from normal builds.
+option(XXFC_BUILD_JS_TESTS "Build focused JavaScript correctness and performance tests" OFF)
+if(XXFC_BUILD_JS_TESTS)
+    enable_testing()
+    add_subdirectory(tests/js_performance)
+endif()
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_tarma_legacy_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_sfxcab_bss_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_kirikiri_xp3_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_ar_legacy_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_aixbff_volume_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_bigf_nameless_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_binhex_name_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_cfl_lzo_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_lz4_overlay_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_amigalzx_crlf_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_cramfs_page_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_gob_terminal_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_gst_prefix_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_ibmzpak_short_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_insa_empty_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_isskin_overlay_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_ivt_empty_key_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_ivt_index_only_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_asymetrix_empty_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_instalit_footer_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_jgpak_banner_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_kboom_short_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_lofi_memory_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_macbinary_paint_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_macbinary_secondary_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_makeself_nvidia_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_mi10_padding_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_mpq_hash_count_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_mva_volume_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_pdb_empty_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_pyz_namespace_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_refpack_alignment_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_rnca_order_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_rtpatch_metadata_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_sfx7zip_resource_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_lzma_context_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_sfxarj_resource_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_arq_advisory_tests.cmake")

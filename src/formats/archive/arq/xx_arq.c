@@ -5,7 +5,7 @@
  *
  *   optional container prelude, 12 bytes:
  *     0..3   67 57 04 02        magic
- *     4..7   u32 LE total uncompressed size of the chain
+ *     4..7   u32 LE advertised uncompressed size (may be stale)
  *     8..11  u32 LE, zero
  *
  *   member record:
@@ -25,12 +25,14 @@
  *       +25  eight zero bytes
  *
  * The chain ends with a record whose name length is zero: a complete
- * header-shaped index entry whose other fields duplicate the last member.
+ * header-shaped index entry. Its trailer normally duplicates the last member,
+ * but updated archives can leave a stale copy.
  *
  * The prelude only appears when Crusher! wraps the chain, as in its
  * self-extracting stub. A bare .ARQ/.SKU/.IRD file starts at the first member
- * and carries no total-size field, so the sum-of-members cross-check applies
- * only to the wrapped shape.
+ * and carries no total-size field. Updated SFX archives can retain an old
+ * advertised total and a stale terminator trailer. Member boundaries, sizes
+ * and packed CRCs are authoritative; neither advisory field bounds decoding.
  *
  * The packed CRC-32 is verified while parsing. That is what makes the format
  * safely identifiable: four magic bytes plus a signature byte would not be,
@@ -259,7 +261,6 @@ static xx_arq_stream *xx_arq_parse(Abstractformat *self, xx_pd_struct *pd)
     uint32_t leading_magic;
     bool has_container = false;
     uint32_t declared = 0U;
-    uint64_t total_uncompressed = 0U;
     int64_t input_size;
     int64_t span;
     int64_t offset;
@@ -314,10 +315,10 @@ static xx_arq_stream *xx_arq_parse(Abstractformat *self, xx_pd_struct *pd)
         name_size = xx_data_get_u16(prefix + 6, 2, 0, false);
 
         if (name_size == 0U) {
-            /* The terminating index record. It must be present in full, and
-             * when the chain is wrapped the declared total must agree with
-             * what the members actually add up to. */
-            if (count == 0U || !xx_arq_range_within(span, offset, XX_ARQ_TERMINATOR_SIZE) || (has_container && total_uncompressed != (uint64_t)declared)) {
+            /* The terminating index must be present in full. Its trailer and
+             * the prelude total can be stale after replacing a member. Every
+             * actual member has already passed bounds and packed CRC checks. */
+            if (count == 0U || !xx_arq_range_within(span, offset, XX_ARQ_TERMINATOR_SIZE)) {
                 goto fail;
             }
             stream = (xx_arq_stream *)xx_mem_alloc(sizeof(*stream));
@@ -413,11 +414,6 @@ static xx_arq_stream *xx_arq_parse(Abstractformat *self, xx_pd_struct *pd)
             goto fail;
         }
 
-        total_uncompressed += members[count].uncompressed_size;
-        if (has_container && total_uncompressed > (uint64_t)declared) {
-            ++count;
-            goto fail;
-        }
         offset = members[count].data_offset + members[count].compressed_size;
         ++count;
     }
@@ -675,7 +671,7 @@ static bool xx_arq_decode(Abstractformat *self, const xx_arq_member *member, uin
         xx_mem_free(packed);
         return false;
     }
-    if (member->uncompressed_size != 0U && !xx_lzh5_decode_memory(packed, member->compressed_size, plain, member->uncompressed_size, 5, &written)) {
+    if (member->uncompressed_size != 0U && (!xx_lzh5_decode_memory(packed, member->compressed_size, plain, member->uncompressed_size, 5, &written) || written != member->uncompressed_size)) {
         xx_mem_free(plain);
         xx_mem_free(packed);
         return false;

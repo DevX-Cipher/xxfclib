@@ -35,7 +35,8 @@ typedef struct {
  * repeated scans to both of the lexer lookup loops. */
 #define JS_LEX_LITERAL(text, token) {text, sizeof(text) - 1, token}
 
-static const JSLexLiteral g_keywords[] = {JS_LEX_LITERAL("break", T_BREAK),
+static const JSLexLiteral g_keywords[] = {JS_LEX_LITERAL("debugger", T_DEBUGGER),
+                                         JS_LEX_LITERAL("break", T_BREAK),
                                          JS_LEX_LITERAL("case", T_CASE),
                                          JS_LEX_LITERAL("catch", T_CATCH),
                                          JS_LEX_LITERAL("continue", T_CONTINUE),
@@ -171,9 +172,16 @@ static int prev_allows_regexp(JSLexer *pLexer)
     }
 }
 
+/* CRLF is one line terminator; standalone CR and LF also end a line. */
+static const char *lex_after_line_end(const char *p)
+{
+    return p + ((*p == '\r' && p[1] == '\n') ? 2 : 1);
+}
+
 int js_lex_run(JSLexer *pLexer, const char *pSource, char **ppError)
 {
     const char *p = pSource;
+    const char *pLineStart = pSource;
     int nLine = 1;
     int bNewLineBefore = 0;
 
@@ -184,6 +192,7 @@ int js_lex_run(JSLexer *pLexer, const char *pSource, char **ppError)
      * first identifier of a BOM-prefixed script from absorbing it.      */
     if (((unsigned char)p[0] == 0xEF) && ((unsigned char)p[1] == 0xBB) && ((unsigned char)p[2] == 0xBF)) {
         p += 3;
+        pLineStart = p;
     }
 
     for (;;) {
@@ -195,26 +204,27 @@ int js_lex_run(JSLexer *pLexer, const char *pSource, char **ppError)
                 break;
             }
 
-            if ((*p == '\n')) {
+            if (*p == '\n' || *p == '\r') {
+                p = lex_after_line_end(p);
                 nLine++;
+                pLineStart = p;
                 bNewLineBefore = 1;
-                p++;
-            } else if ((*p == ' ') || (*p == '\t') || (*p == '\r') || (*p == '\f') || (*p == '\v')) {
+            } else if ((*p == ' ') || (*p == '\t') || (*p == '\f') || (*p == '\v')) {
                 p++;
             } else if ((p[0] == '/') && (p[1] == '/')) {
-                while (*p && (*p != '\n')) {
+                while (*p && (*p != '\n') && (*p != '\r')) {
                     p++;
                 }
             } else if ((p[0] == '/') && (p[1] == '*')) {
                 p += 2;
 
                 while (*p && !((p[0] == '*') && (p[1] == '/'))) {
-                    if (*p == '\n') {
+                    if (*p == '\n' || *p == '\r') {
+                        p = lex_after_line_end(p);
                         nLine++;
+                        pLineStart = p;
                         bNewLineBefore = 1;
-                    }
-
-                    p++;
+                    } else p++;
                 }
 
                 if (*p) {
@@ -231,6 +241,7 @@ int js_lex_run(JSLexer *pLexer, const char *pSource, char **ppError)
 
         xx_rt_memset(&token, 0, sizeof(token));
         token.nLine = nLine;
+        token.nColumn = (int)(p - pLineStart) + 1;
         token.bNewLineBefore = bNewLineBefore;
         bNewLineBefore = 0;
 
@@ -252,16 +263,16 @@ int js_lex_run(JSLexer *pLexer, const char *pSource, char **ppError)
 
             nSize = (size_t)(p - pStart);
             token.type = T_IDENT;
-            token.pText = xx_js_strndup(pStart, nSize);
-
             for (i = 0; g_keywords[i].pText; i++) {
                 if ((g_keywords[i].nSize == nSize) && (g_keywords[i].pText[0] == pStart[0]) &&
                     (xx_rt_memcmp(g_keywords[i].pText, pStart, nSize) == 0)) {
                     token.type = g_keywords[i].type;
+                    token.pText = (char *)g_keywords[i].pText;
                     break;
                 }
             }
 
+            if (token.type == T_IDENT) token.pText = xx_js_strndup(pStart, nSize);
             tok_push(pLexer, token);
             continue;
         }
@@ -373,11 +384,22 @@ int js_lex_run(JSLexer *pLexer, const char *pSource, char **ppError)
             }
 
             {
-                char *pCopy = xx_js_strndup(pStart, (size_t)(p - pStart));
-
+                size_t nLength = (size_t)(p - pStart);
+                size_t i = 0;
+                double nValue = 0;
+                /* Every integer with at most 15 decimal digits is exact in
+                 * binary64. Keep fractional / exponent / larger literals on
+                 * strtod so its rounding and range behavior is preserved. */
+                if (nLength <= 15) {
+                    for (; i < nLength && is_digit((unsigned char)pStart[i]); i++) nValue = nValue * 10 + (pStart[i] - '0');
+                }
                 token.type = T_NUMBER;
-                token.nNum = xx_rt_strtod(pCopy, NULL);
-                xx_js_free(pCopy);
+                if (i == nLength) token.nNum = nValue;
+                else {
+                    char *pCopy = xx_js_strndup(pStart, nLength);
+                    token.nNum = xx_rt_strtod(pCopy, NULL);
+                    xx_js_free(pCopy);
+                }
             }
 
             tok_push(pLexer, token);
@@ -466,19 +488,10 @@ int js_lex_run(JSLexer *pLexer, const char *pSource, char **ppError)
                             }
                             break;
                         case '\n':
-                            nLine++;
-                            p++;
-                            break;
                         case '\r':
-                            /* CRLF is a single line terminator, so the continuation
-                             * swallows both bytes.                                 */
-                            p++;
-
-                            if (*p == '\n') {
-                                p++;
-                            }
-
+                            p = lex_after_line_end(p);
                             nLine++;
+                            pLineStart = p;
                             break;
                         case 0: break;
                         default:
@@ -487,12 +500,17 @@ int js_lex_run(JSLexer *pLexer, const char *pSource, char **ppError)
                             break;
                     }
                 } else {
-                    if (*p == '\n') {
+                    if (*p == '\n' || *p == '\r') {
+                        const char *pEnd = lex_after_line_end(p);
+                        /* Preserve the existing accepted raw-string bytes. */
+                        xx_buf_append(&buf, p, (size_t)(pEnd - p));
+                        p = pEnd;
                         nLine++;
+                        pLineStart = p;
+                    } else {
+                        xx_buf_append_char(&buf, *p);
+                        p++;
                     }
-
-                    xx_buf_append_char(&buf, *p);
-                    p++;
                 }
             }
 
@@ -520,7 +538,10 @@ int js_lex_run(JSLexer *pLexer, const char *pSource, char **ppError)
 
             while (*q) {
                 if (*q == '\\') {
-                    if (q[1] == 0) {
+                    /* A regex literal cannot cross a line terminator, even
+                     * with a preceding backslash. Leave normal lexing to
+                     * account for the newline on this invalid input. */
+                    if (q[1] == 0 || q[1] == '\n' || q[1] == '\r') {
                         break;
                     }
 
@@ -534,7 +555,7 @@ int js_lex_run(JSLexer *pLexer, const char *pSource, char **ppError)
                     bInClass = 0;
                 } else if ((*q == '/') && (!bInClass)) {
                     break;
-                } else if (*q == '\n') {
+                } else if (*q == '\n' || *q == '\r') {
                     break;
                 }
 
@@ -652,7 +673,9 @@ void js_lex_free(JSLexer *pLexer)
     size_t i = 0;
 
     for (i = 0; i < pLexer->nCount; i++) {
-        xx_js_free(pLexer->pTokens[i].pText);
+        /* Keyword text points at the immutable literal table. */
+        JSTokType type = pLexer->pTokens[i].type;
+        if (type == T_IDENT || type == T_STRING || type == T_REGEXP) xx_js_free(pLexer->pTokens[i].pText);
         xx_js_free(pLexer->pTokens[i].pText2);
     }
 

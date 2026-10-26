@@ -87,6 +87,10 @@ typedef struct xx_amigalzx_stream_s {
     uint8_t *cache;
     size_t cache_size;
     int64_t cache_key;
+    /* Optional, fully verified reversal of text-mode LF -> CRLF expansion.
+     * Member coordinates then address this logical view plus base_address. */
+    xx_io_device *restored_io;
+    uint8_t *restored_bytes;
 } xx_amigalzx_stream;
 
 static void xx_amigalzx_vtable_destroy(Abstractformat *self);
@@ -142,6 +146,8 @@ static void xx_amigalzx_stream_free(void *pointer)
         xx_str_free(stream->items[index].name);
     }
     xx_mem_free(stream->cache);
+    if (stream->restored_io) xx_io_close(stream->restored_io);
+    xx_mem_free(stream->restored_bytes);
     xx_mem_free(stream->items);
     xx_mem_free(stream);
 }
@@ -295,7 +301,7 @@ static bool xx_amigalzx_close_group(xx_amigalzx_stream *stream, int64_t span, si
     return true;
 }
 
-static xx_amigalzx_stream *xx_amigalzx_parse(Abstractformat *self, xx_pd_struct *pd)
+static xx_amigalzx_stream *xx_amigalzx_parse_raw(Abstractformat *self, xx_pd_struct *pd)
 {
     xx_amigalzx_stream *stream;
     xx_amigalzx_member member;
@@ -451,6 +457,94 @@ static xx_amigalzx_stream *xx_amigalzx_parse(Abstractformat *self, xx_pd_struct 
 
 fail:
     xx_amigalzx_stream_free(stream);
+    return NULL;
+}
+
+static bool xx_amigalzx_member_read(Abstractformat *self, xx_amigalzx_stream *stream, int64_t offset, uint8_t *bytes, size_t size)
+{
+    if (stream && stream->restored_io) {
+        Abstractformat view = *self;
+        if (offset < self->base_address) return false;
+        view.device = stream->restored_io;
+        view.base_address = 0;
+        return xx_amigalzx_read_at(&view, offset - self->base_address, bytes, size);
+    }
+    return xx_amigalzx_read_at(self, offset, bytes, size);
+}
+
+/* A transfer in text mode inserts CR before every LF, including binary
+ * headers and compressed bytes. Try the inverse only after normal parsing
+ * fails, and accept it only if every header AND every decoded member CRC
+ * verifies. This is never an unchecked salvage path. */
+static xx_amigalzx_stream *xx_amigalzx_parse(Abstractformat *self, xx_pd_struct *pd)
+{
+    xx_amigalzx_stream *stream = xx_amigalzx_parse_raw(self, pd);
+    uint8_t magic[3], *bytes = NULL;
+    xx_io_device *device = NULL;
+    Abstractformat view;
+    int64_t total, span;
+    size_t input, output = 0U;
+    uint64_t decoded_total = 0U;
+    bool changed = false;
+    if (stream || !self || !self->device || self->base_address < 0 || (pd && xx_pd_is_stopped(pd))) return stream;
+    total = xx_io_total_size(self->device);
+    if (total < self->base_address) return NULL;
+    span = total - self->base_address;
+    if (span < 42 || span > INT64_C(64) * 1024 * 1024 || !xx_amigalzx_read_at(self, self->base_address, magic, sizeof(magic)) ||
+        xx_rt_memcmp(magic, "LZX", 3U) != 0) return NULL;
+    bytes = (uint8_t *)xx_mem_alloc((size_t)span);
+    if (!bytes || !xx_amigalzx_read_at(self, self->base_address, bytes, (size_t)span)) goto fail;
+    for (input = 0U; input < (size_t)span; ++input) {
+        /* A complete text-mode expansion leaves no bare LF. */
+        if (bytes[input] == '\n') goto fail;
+        if (bytes[input] == '\r' && input + 1U < (size_t)span && bytes[input + 1U] == '\n') {
+            ++input;
+            changed = true;
+        }
+        bytes[output++] = bytes[input];
+    }
+    if (!changed || (pd && xx_pd_is_stopped(pd))) goto fail;
+    device = xx_io_mem_open_ro(bytes, output);
+    if (!device) goto fail;
+    view = *self;
+    view.device = device;
+    view.base_address = 0;
+    stream = xx_amigalzx_parse_raw(&view, pd);
+    if (!stream) goto fail;
+    for (size_t index = 0U; index < stream->count; ++index) {
+        const xx_amigalzx_member *member = &stream->items[index];
+        size_t at = (size_t)member->header_offset;
+        uint8_t saved[4];
+        uint32_t crc, stored;
+        uint8_t *plain = NULL;
+        size_t plain_size = 0U;
+        if (!xx_amigalzx_range_within((int64_t)output, member->header_offset, member->header_size) || member->header_size < 31 ||
+            member->uncompressed_size < 0 || (uint64_t)member->uncompressed_size > (uint64_t)XX_AMIGALZX_MAX_DECODED - decoded_total) goto fail;
+        decoded_total += (uint64_t)member->uncompressed_size;
+        xx_rt_memcpy(saved, bytes + at + 26U, 4U);
+        stored = xx_data_get_u32(saved, 4, 0, false);
+        xx_rt_memset(bytes + at + 26U, 0, 4U);
+        crc = xx_crc32_calc(0U, bytes + at, (size_t)member->header_size);
+        xx_rt_memcpy(bytes + at + 26U, saved, 4U);
+        if (crc != stored || !xx_amigalzx_decode(&view, member, stream, &plain, &plain_size, pd)) {
+            xx_mem_free(plain);
+            goto fail;
+        }
+        xx_mem_free(plain);
+    }
+    for (size_t index = 0U; index < stream->count; ++index) {
+        stream->items[index].header_offset += self->base_address;
+        stream->items[index].data_offset += self->base_address;
+    }
+    if (stream->cache) stream->cache_key += self->base_address;
+    stream->archive_size = span;
+    stream->restored_io = device;
+    stream->restored_bytes = bytes;
+    return stream;
+fail:
+    xx_amigalzx_stream_free(stream);
+    if (device) xx_io_close(device);
+    xx_mem_free(bytes);
     return NULL;
 }
 
@@ -816,7 +910,7 @@ static const uint8_t *xx_amigalzx_group_plain(Abstractformat *self, xx_amigalzx_
 
     packed = (uint8_t *)xx_mem_alloc((size_t)member->compressed_size);
     if (!packed) return NULL;
-    if (!xx_amigalzx_read_at(self, member->data_offset, packed, (size_t)member->compressed_size)) {
+    if (!xx_amigalzx_member_read(self, stream, member->data_offset, packed, (size_t)member->compressed_size)) {
         xx_mem_free(packed);
         return NULL;
     }
@@ -891,7 +985,7 @@ static bool xx_amigalzx_decode(Abstractformat *self, const xx_amigalzx_member *m
         /* parse narrows a stored member to exactly its own bytes, so the two
          * sizes must agree; a disagreement means the narrowing was skipped
          * and the copy below would hand out a neighbour's data. */
-        if (member->compressed_size != member->uncompressed_size || !xx_amigalzx_read_at(self, member->data_offset, buffer, (size_t)member->uncompressed_size)) {
+        if (member->compressed_size != member->uncompressed_size || !xx_amigalzx_member_read(self, stream, member->data_offset, buffer, (size_t)member->uncompressed_size)) {
             xx_mem_free(buffer);
             return false;
         }

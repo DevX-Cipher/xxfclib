@@ -363,13 +363,32 @@ cd_i64 die_engine_profile_start(DieEngine *pEngine)
     return (cd_i64)x_clock_ms();
 }
 
+/* The debugger receives owned execution-thread output through its callback.
+ * Its UI adapter copies/sanitizes the borrowed line before returning. */
+static void die_engine_debug_log_line(DieEngine *pEngine, const char *prefix, const char *text, const char *suffix)
+{
+    size_t a = x_strlen(prefix), b = x_strlen(text), c = x_strlen(suffix);
+    char *line;
+    if (a > SIZE_MAX - b || a + b > SIZE_MAX - c - 1) return;
+    line = (char *)cd_malloc(a + b + c + 1);
+    if (!line) return;
+    x_memcpy(line, prefix, a);
+    x_memcpy(line + a, text, b);
+    x_memcpy(line + a + b, suffix, c + 1);
+    pEngine->pDebug->log(line, pEngine->pDebug->log_user);
+    cd_free(line);
+}
+
 void die_engine_profile_text(DieEngine *pEngine, const char *pText)
 {
     if (!pEngine->pOptions->profiling) {
         return;
     }
 
-    x_printf("[WARNING] %s\n", pText);
+    if (pEngine->pDebug && pEngine->pDebug->log)
+        die_engine_debug_log_line(pEngine, "[WARNING] ", pText, "\n");
+    else
+        x_printf("[WARNING] %s\n", pText);
 }
 
 X_PRINTF_LIKE(3, 4) void die_engine_profile_end(DieEngine *pEngine, cd_i64 nStart, const char *pFormat, ...)
@@ -385,7 +404,13 @@ X_PRINTF_LIKE(3, 4) void die_engine_profile_end(DieEngine *pEngine, cd_i64 nStar
     x_vsnprintf(sInfo, sizeof(sInfo), pFormat, args);
     X_VA_END(args);
 
-    x_printf("[WARNING] %s [%lld ms]\n", sInfo, (long long)((cd_i64)x_clock_ms() - nStart));
+    if (pEngine->pDebug && pEngine->pDebug->log) {
+        char suffix[64];
+        x_snprintf(suffix, sizeof(suffix), " [%lld ms]\n", (long long)((cd_i64)x_clock_ms() - nStart));
+        die_engine_debug_log_line(pEngine, "[WARNING] ", sInfo, suffix);
+    } else {
+        x_printf("[WARNING] %s [%lld ms]\n", sInfo, (long long)((cd_i64)x_clock_ms() - nStart));
+    }
 }
 
 void die_engine_profile_free(DieEngine *pEngine)
@@ -3531,10 +3556,12 @@ static JSVal fn_include_script(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pAr
         DBSignature *pRecord = &pEngine->pDb->pRecords[i];
 
         if ((pRecord->fileType == XFT_UNKNOWN) && (cd_stricmp_ascii(pRecord->pName, pScript) == 0)) {
+            const char *source_name = pEngine->pDebug && pRecord->pFilePath && pRecord->pFilePath[0]
+                ? pRecord->pFilePath : pRecord->pName;
             if (js_is_bytecode(pRecord->pText, pRecord->nSize)) {
-                js_eval_nested_bytecode(pCtx, pRecord->pText, pRecord->nSize, pRecord->pName);
+                js_eval_nested_bytecode(pCtx, pRecord->pText, pRecord->nSize, source_name);
             } else {
-                js_eval_nested(pCtx, pRecord->pText, pRecord->pName);
+                js_eval_nested(pCtx, pRecord->pText, source_name);
             }
             bFound = 1;
             break;
@@ -3559,15 +3586,22 @@ static JSVal fn_log(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *p
     (void)pUser;
 
     if (pEngine->pOptions->profiling) {
-        static cd_i64 s_nLastLogTime = 0;
         cd_i64 now = (cd_i64)x_clock_ms();
-        cd_i64 delta = (s_nLastLogTime > 0) ? (now - s_nLastLogTime) : 0;
-        s_nLastLogTime = now;
-        x_printf("[WARNING] LOG %s [+%lld ms]\n", pText ? pText : "", (long long)delta);
+        cd_i64 delta = (pEngine->nLastLogTime > 0) ? (now - pEngine->nLastLogTime) : 0;
+        pEngine->nLastLogTime = now;
+        if (pEngine->pDebug && pEngine->pDebug->log) {
+            char suffix[64];
+            x_snprintf(suffix, sizeof(suffix), " [+%lld ms]\n", (long long)delta);
+            die_engine_debug_log_line(pEngine, "[WARNING] LOG ", pText ? pText : "", suffix);
+        } else {
+            x_printf("[WARNING] LOG %s [+%lld ms]\n", pText ? pText : "", (long long)delta);
+        }
     }
 
-    if (pEngine->pOptions->show_messages) {
-        x_fprintf(x_stderr(), "%s\n", pText);
+    if (pEngine->pDebug && pEngine->pDebug->log) {
+        die_engine_debug_log_line(pEngine, "", pText ? pText : "", "\n");
+    } else if (pEngine->pOptions->show_messages) {
+        x_fprintf(x_stderr(), "%s\n", pText ? pText : "");
     }
 
     cd_free(pText);

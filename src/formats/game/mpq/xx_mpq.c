@@ -452,8 +452,11 @@ static bool mpq_parse_inner(Abstractformat *format, mpq_stream **result)
         block_offset = xx_data_get_u32(header + 20U, 4, 0, false);
         hash_entries = xx_data_get_u32(header + 24U, 4, 0, false);
         block_entries = xx_data_get_u32(header + 28U, 4, 0, false);
+        /* Enumeration visits every physical slot and performs no masked hash
+         * lookup. Non-power-of-two tables used by protected StarCraft maps
+         * therefore need no different lookup algorithm or relaxed bounds. */
         if (version > 3U || header_size < MPQ_HEADER_SIZE || (uint64_t)header_size > archive_size || archive_size > available || sector_shift > 15U ||
-            hash_entries == 0U || hash_entries > MPQ_MAX_TABLE_ENTRIES || (hash_entries & (hash_entries - 1U)) != 0U || block_entries == 0U ||
+            hash_entries == 0U || hash_entries > MPQ_MAX_TABLE_ENTRIES || block_entries == 0U ||
             block_entries > MPQ_MAX_TABLE_ENTRIES)
             continue;
         if (version >= 1U) {
@@ -619,7 +622,7 @@ static bool mpq_sector_key(const uint32_t *crypt, const uint8_t *packed, size_t 
     return true;
 }
 
-static bool mpq_wave_key(const uint32_t *crypt, const uint8_t *packed, size_t packed_size, size_t raw_size, uint32_t *file_key)
+static bool mpq_wave_key(const uint32_t *crypt, const uint8_t *packed, size_t packed_size, size_t raw_size, uint32_t *file_key, bool *padded_wave)
 {
     unsigned i;
     unsigned matches = 0U;
@@ -632,13 +635,44 @@ static bool mpq_wave_key(const uint32_t *crypt, const uint8_t *packed, size_t pa
         if ((key & 255U) != i) continue;
         xx_mem_copy(first, packed, sizeof(first));
         mpq_decrypt_block(crypt, first, sizeof(first), key);
-        if (xx_data_get_u32(first, 4, 0, false) == 0x46464952U && xx_data_get_u32(first + 4U, 4, 0, false) == raw_size - 8U &&
+        uint32_t riff_size = xx_data_get_u32(first + 4U, 4, 0, false);
+        bool padded = (riff_size & 1U) != 0U && riff_size == raw_size - 9U;
+        if (xx_data_get_u32(first, 4, 0, false) == 0x46464952U && (riff_size == raw_size - 8U || padded) &&
             xx_data_get_u32(first + 8U, 4, 0, false) == 0x45564157U) {
             *file_key = key;
+            *padded_wave = padded;
             if (++matches > 1U) return false;
         }
     }
     return matches == 1U;
+}
+
+/* Only the new one-byte recovery case needs this extra authentication.
+ * Every RIFF chunk must fit, including the final odd data chunk whose zero
+ * alignment byte is outside the producer's recorded RIFF length. */
+static bool mpq_padded_wave_valid(const uint8_t *plain, size_t size)
+{
+    size_t at = 12U, end;
+    bool format = false, data = false;
+    if (size < 46U || xx_rt_memcmp(plain, "RIFF", 4) || xx_rt_memcmp(plain + 8, "WAVE", 4)) return false;
+    end = (size_t)xx_data_get_u32(plain + 4, 4, 0, false) + 8U;
+    if (!(end & 1U) || end != size - 1U || plain[end] != 0U) return false;
+    while (at < end) {
+        uint32_t n;
+        if (end - at < 8U) return false;
+        n = xx_data_get_u32(plain + at + 4U, 4, 0, false);
+        if ((size_t)n > end - at - 8U) return false;
+        if (!xx_rt_memcmp(plain + at, "fmt ", 4)) {
+            if (format || n < 16U) return false;
+            format = true;
+        } else if (!xx_rt_memcmp(plain + at, "data", 4)) {
+            if (data || !format) return false;
+            data = true;
+        }
+        at += 8U + n;
+        if (n & 1U) ++at;
+    }
+    return at == size && format && data;
 }
 
 /* Old sector CRC arrays actually contain Adler-32 over decrypted compressed
@@ -849,7 +883,7 @@ static bool mpq_write_member(Abstractformat *format, mpq_stream *stream, const m
     uint8_t *packed = NULL, *plain = NULL, *offsets = NULL;
     uint32_t crypt[0x500], key = 0U;
     size_t packed_size, raw_size, sector_size, count, table_size = 0U, i;
-    bool compressed, single, checksums, result = false;
+    bool compressed, single, checksums, padded_wave = false, result = false;
     int64_t source_cursor = -1;
     int error = XXFC_ERR_INVALID_ARG;
     const char *reason = "Invalid MPQ sector framing or compressed data";
@@ -916,7 +950,7 @@ static bool mpq_write_member(Abstractformat *format, mpq_stream *stream, const m
             if (!mpq_sector_table_valid(offsets, count, table_size, packed_size, raw_size, sector_size, checksums)) goto done;
         }
     } else {
-        if (member->encrypted && (compressed || !mpq_wave_key(crypt, packed, packed_size, raw_size, &key))) {
+        if (member->encrypted && (compressed || !mpq_wave_key(crypt, packed, packed_size, raw_size, &key, &padded_wave))) {
             error = XXFC_ERR_INVALID_ARG;
             reason = "MPQ encrypted member has no recoverable WAVE or sector-table key";
             goto done;
@@ -952,6 +986,7 @@ static bool mpq_write_member(Abstractformat *format, mpq_stream *stream, const m
                 goto done;
         }
     }
+    if (padded_wave && !mpq_padded_wave_valid(plain, raw_size)) goto done;
     result = mpq_write_all(destination, plain, raw_size, pd);
     if (!result) {
         error = XXFC_ERR_IO;

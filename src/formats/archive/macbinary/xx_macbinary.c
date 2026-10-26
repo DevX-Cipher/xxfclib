@@ -265,6 +265,49 @@ static bool mb_header_is_plausible(const uint8_t *header, size_t name_length)
     return true;
 }
 
+/* Some PNTG exporters omitted both fork lengths. Recover only the exact end
+ * of a complete MacPaint document: a 512-byte header (version 0 or 2), then
+ * 720 independent PackBits scanlines of 72 bytes, followed by at most the
+ * ordinary MacBinary alignment padding. No general empty-header fallback. */
+static bool mb_macpaint_length(Abstractformat *format, int64_t size, uint32_t *length)
+{
+    uint8_t *bytes;
+    size_t n, at = 512U;
+    bool ok = false;
+    if (size < 128 + 512 + 1440 || size > 128 * 1024) return false;
+    n = (size_t)size - MB_HEADER_SIZE;
+    bytes = (uint8_t *)xx_mem_alloc(n);
+    if (!bytes) return false;
+    if (!mb_read_at(format->device, format->base_address + MB_HEADER_SIZE, bytes, n)) goto done;
+    if (xx_data_get_u32(bytes, 4, 0, true) != 0U && xx_data_get_u32(bytes, 4, 0, true) != 2U) goto done;
+    for (unsigned row = 0; row < 720U; ++row) {
+        size_t out = 0;
+        while (out < 72U) {
+            unsigned code;
+            size_t count;
+            if (at >= n) goto done;
+            code = bytes[at++];
+            if (code == 128U) continue;
+            count = code < 128U ? code + 1U : 257U - code;
+            if (count > 72U - out) goto done;
+            if (code < 128U) {
+                if (count > n - at) goto done;
+                at += count;
+            } else {
+                if (at >= n) goto done;
+                ++at;
+            }
+            out += count;
+        }
+    }
+    if (size > mb_round_up((int64_t)MB_HEADER_SIZE + (int64_t)at)) goto done;
+    *length = (uint32_t)at;
+    ok = true;
+done:
+    xx_mem_free(bytes);
+    return ok;
+}
+
 static void mb_stream_free(void *opaque)
 {
     mb_stream *stream = (mb_stream *)opaque;
@@ -326,7 +369,7 @@ static bool mb_parse(Abstractformat *format, bool verified_only, mb_stream **res
         comment_length = xx_data_get_u16(header + MB_OFF_COMMENT_LENGTH, 2, 0, true);
     } else {
         if (verified_only) return false;
-        if (version_written >= MB_VERSION_II) {
+        if (version_written == MB_VERSION_II || version_written == MB_VERSION_III) {
             /* A MacBinary II header whose CRC does not verify is accepted
              * only when nothing else in it is suspect -- some writers left
              * the field stale -- and the file ends exactly where the header
@@ -336,7 +379,9 @@ static bool mb_parse(Abstractformat *format, bool verified_only, mb_stream **res
             comment_length = xx_data_get_u16(header + MB_OFF_COMMENT_LENGTH, 2, 0, true);
             needs_exact_fit = true;
         } else if (!mb_all_zero(header + MB_OFF_COMMENT_LENGTH, MB_OFF_RESERVED - MB_OFF_COMMENT_LENGTH)) {
-            /* MacBinary I defines nothing in bytes 99..125 and wrote them
+            /* MacBinary I defines nothing in bytes 99..125, including the
+             * later version byte. Unknown, unverified values there must not
+             * be mistaken for a recognised II/III extension layout. It wrote them
              * as zero (126..127, later the computer and OS id, are seen
              * set).  Some writers left garbage there, so such a header is
              * taken only when the file size matches it exactly; the bytes
@@ -350,19 +395,40 @@ static bool mb_parse(Abstractformat *format, bool verified_only, mb_stream **res
     rsrc_length = xx_data_get_u32(header + MB_OFF_RSRC_LENGTH, 4, 0, true);
     fork_limit = verified ? MB_MAX_FORK_VERIFIED : MB_MAX_FORK_UNVERIFIED;
     if (data_length > fork_limit || rsrc_length > fork_limit) return false;
-    /* An unverified header describing no content at all is just a run of
-     * zero bytes in the length fields; nothing would confirm it. */
-    if (!verified && data_length == 0U && rsrc_length == 0U) return false;
+    /* Zero lengths alone do not authenticate an unverified header. A
+     * complete, tightly bounded legacy MacPaint document is the exception. */
+    if (!verified && data_length == 0U && rsrc_length == 0U) {
+        if (version_written >= MB_VERSION_II || needs_exact_fit || xx_rt_memcmp(header + MB_OFF_TYPE, "PNTG", 4U) ||
+            !mb_macpaint_length(format, size, &data_length)) return false;
+    }
 
     /* Bound every region against the real file before it is used.  All the
      * values are below 2^31 + 2^17 each, so the sums cannot overflow. */
     data_offset = (int64_t)MB_HEADER_SIZE + mb_round_up((int64_t)secondary_length);
     end = data_offset + (int64_t)data_length;
-    if (end > size) return false;
     if (rsrc_length != 0U) {
         rsrc_offset = data_offset + mb_round_up((int64_t)data_length);
         end = rsrc_offset + (int64_t)rsrc_length;
-        if (end > size) return false;
+    }
+    if (end > size) {
+        /* Some revision-II exporters calculated a valid CRC over an
+         * uninitialised extension area, then wrote only the ordinary forks.
+         * Prefer the advertised layout whenever it fits. This fallback is
+         * confined to CRC-verified II, nonzero reserved extension bytes,
+         * plausible legacy metadata and an exact fork-only physical extent.
+         * III headers and ordinary truncated secondary headers still fail. */
+        if (!verified || version_written != MB_VERSION_II || version_needed > MB_VERSION_II || secondary_length == 0U ||
+            mb_all_zero(header + MB_OFF_SIGNATURE, 14U) || !xx_rt_memcmp(header + MB_OFF_SIGNATURE, "mBIN", 4U) ||
+            !mb_header_is_plausible(header, name_length) || (data_length == 0U && rsrc_length == 0U)) return false;
+        data_offset = MB_HEADER_SIZE;
+        end = data_offset + data_length;
+        if (rsrc_length != 0U) {
+            rsrc_offset = data_offset + mb_round_up(data_length);
+            end = rsrc_offset + rsrc_length;
+        }
+        if (end > size || size > mb_round_up(end)) return false;
+        secondary_length = 0U;
+        comment_length = 0U;
     }
     /* The padding after the last fork is optional; take it when present. */
     padded_end = mb_round_up(end);

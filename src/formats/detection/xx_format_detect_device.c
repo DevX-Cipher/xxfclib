@@ -2683,6 +2683,21 @@ xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev)
         return XX_FILE_TYPE_BINARY;
     }
 
+    /* A SOVL container starts directly with its first zlib member. Validate
+     * the indexed footer before the broad signature reader claims that one
+     * stream and loses the rest of the container. */
+    if (total_size >= 20) {
+        uint8_t footer_magic[4];
+        if (xx_io_seek64(dev, total_size - 4, SEEK_SET) == 0 && xx_format_read_probe_exact(dev, footer_magic, sizeof(footer_magic)) &&
+            xx_rt_memcmp(footer_magic, "SOVL", sizeof(footer_magic)) == 0) {
+            xx_file_type_t indexed = xx_format_detect_additional(dev);
+            if (indexed == XX_FILE_TYPE_STARFORCE_OVL) {
+                (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+                return indexed;
+            }
+        }
+        (void)xx_io_seek64(dev, (int64_t)magic_size, SEEK_SET);
+    }
     {
         xx_file_type_t signature_type = xx_format_detect_signature_readers(dev, NULL);
         if (signature_type != XX_FILE_TYPE_UNKNOWN) {

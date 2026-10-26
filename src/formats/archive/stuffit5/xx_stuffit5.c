@@ -38,6 +38,7 @@
 #include "xxfclib/codepages/xx_codepage.h"
 #include "xxfclib/rt/xx_rt.h"
 #include "xxfclib/formats/archive/stuffit5/xx_stuffit5.h"
+#include "xxfclib/formats/executable/pe/xx_pe.h"
 
 #include "xxfclib/algo/crc/xx_crc.h"
 #include "xxfclib/algo/store/xx_store.h"
@@ -93,6 +94,39 @@ static bool sit5_read_at(xx_io_device *device, int64_t offset, void *buffer, siz
         done += (size_t)amount;
     }
     return true;
+}
+
+/* The BD05FEEF self-extractor envelope points past its opaque license block
+ * to a normal StuffIt archive. Authenticate that pointer, never scan payloads
+ * or execute a launcher to find the archive. Offsets are envelope-relative. */
+static bool sit5_locate_archive(Abstractformat *format,int64_t total,int64_t *base,uint8_t header[SIT5_HEADER_SIZE])
+{
+    int64_t at=format->base_address;uint8_t envelope[12];uint32_t relative;
+    if(total-at<(int64_t)SIT5_HEADER_SIZE || !sit5_read_at(format->device,at,header,SIT5_HEADER_SIZE))return false;
+    if(!xx_rt_memcmp(header,"StuffIt (c)1997-",16U)) { *base=at;return true; }
+    if(header[0]=='M' && header[1]=='Z') {
+        xx_pe *pe=xx_pe_create(format->device,at);int64_t extent;uint32_t section;
+        if(!pe)return false;
+        extent=xx_pe_get_format_size(&pe->format,NULL);
+        if(extent>0) {
+            extent=pe->size_of_headers;
+            for(section=0;section<pe->number_of_sections;++section) {
+                uint64_t end=(uint64_t)pe->sections[section].raw_offset+pe->sections[section].raw_size;
+                if(pe->sections[section].raw_size && end>(uint64_t)extent)extent=(int64_t)end;
+            }
+        }
+        xx_pe_free(pe);
+        if(extent<=0 || extent>total-at-12)return false;
+        at+=extent;
+    }
+    if(total-at<12 || !sit5_read_at(format->device,at,envelope,sizeof(envelope)) ||
+        xx_rt_memcmp(envelope,"\xbd\x05\xfe\xef",4U) || xx_data_get_u32(envelope+4,4,0,true)>INT32_MAX)return false;
+    relative=xx_data_get_u32(envelope+8,4,0,true);
+    if(relative<12U || relative>16U*1024U*1024U || relative>(uint64_t)(total-at) ||
+        total-at-relative<(int64_t)SIT5_HEADER_SIZE)return false;
+    at+=relative;
+    if(!sit5_read_at(format->device,at,header,SIT5_HEADER_SIZE))return false;
+    *base=at;return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1434,7 +1468,7 @@ static char *sit5_join(const char *prefix, const char *component, const char *su
     return result;
 }
 
-static bool sit5_parse(Abstractformat *format, sit5_stream **result)
+static bool sit5_parse_impl(Abstractformat *format, sit5_stream **result)
 {
     uint8_t header[SIT5_HEADER_SIZE];
     uint8_t second[SIT5_SECOND_MAX];
@@ -1455,8 +1489,9 @@ static bool sit5_parse(Abstractformat *format, sit5_stream **result)
     base = format->base_address;
     total = xx_io_total_size(format->device);
     if (total < 0 || base > total) return false;
+    if (!sit5_locate_archive(format,total,&base,header)) return false;
     size = total - base;
-    if (size < (int64_t)SIT5_HEADER_SIZE || !sit5_read_at(format->device, base, header, sizeof(header)) || xx_rt_memcmp(header, "StuffIt (c)1997-", 16U) != 0 ||
+    if (xx_rt_memcmp(header, "StuffIt (c)1997-", 16U) != 0 ||
         header[82] != SIT5_VERSION)
         return false;
     archive_size = (int64_t)xx_data_get_u32(header + 84U, 4, 0, true);
@@ -1481,7 +1516,7 @@ static bool sit5_parse(Abstractformat *format, sit5_stream **result)
     stream = (sit5_stream *)xx_mem_calloc(1U, sizeof(*stream));
     entry = (uint8_t *)xx_mem_alloc(SIT5_ENTRY_MAX + 1U);
     if (!stream || !entry) goto fail;
-    stream->archive_size = archive_size;
+    stream->archive_size = archive_size + (base-format->base_address);
     stream->root_entries = xx_data_get_u16(header + 92U, 2, 0, true);
     stream->archive_flags = header[83];
     path[0] = NULL;
@@ -1638,6 +1673,14 @@ fail:
     return false;
 }
 
+static bool sit5_parse(Abstractformat *format,sit5_stream **result)
+{
+    int64_t saved;bool ok;
+    if(!format || !format->device || (saved=xx_io_tell(format->device))<0)return false;
+    ok=sit5_parse_impl(format,result);
+    (void)xx_io_seek64(format->device,saved,SEEK_SET);return ok;
+}
+
 static bool sit5_copy_options(xx_list_s *destination, const xx_list_s *source)
 {
     size_t index;
@@ -1767,8 +1810,7 @@ void xx_stuffit5_free(xx_stuffit5 *archive)
 bool xx_stuffit5_check_is_valid(Abstractformat *format, xx_pd_struct *pd)
 {
     sit5_stream *stream;
-    (void)pd;
-    if (!sit5_parse(format, &stream)) return false;
+    if ((pd && xx_pd_is_stopped(pd)) || !sit5_parse(format, &stream)) return false;
     sit5_stream_free(stream);
     return true;
 }
@@ -1777,8 +1819,7 @@ bool xx_stuffit5_handle_base_info(Abstractformat *format, xx_pd_struct *pd)
 {
     sit5_stream *stream;
     xx_stuffit5 *archive;
-    (void)pd;
-    if (!format || !sit5_parse(format, &stream)) {
+    if (!format || (pd && xx_pd_is_stopped(pd)) || !sit5_parse(format, &stream)) {
         if (format) format->is_valid = false;
         return false;
     }
@@ -1789,6 +1830,8 @@ bool xx_stuffit5_handle_base_info(Abstractformat *format, xx_pd_struct *pd)
     archive->archive_flags = stream->archive_flags;
     format->number_of_archive_records = stream->count;
     format->format_size = stream->archive_size;
+    format->overlay_size = xx_io_total_size(format->device)-format->base_address-stream->archive_size;
+    format->overlay_offset = format->overlay_size>0?format->base_address+stream->archive_size:-1;
     format->file_type = XX_STUFFIT5_FILE_TYPE;
     format->format_type = XX_TYPE_ARCHIVE;
     format->is_archive = true;
@@ -1812,7 +1855,7 @@ xx_archive_record_state *xx_stuffit5_create_archive_records_reading(Abstractform
 {
     sit5_stream *stream;
     xx_archive_record_state *state;
-    (void)pd;
+    if (pd && xx_pd_is_stopped(pd)) return NULL;
     if (!sit5_parse(format, &stream)) return NULL;
     if (stream->count == 0U) {
         sit5_stream_free(stream);

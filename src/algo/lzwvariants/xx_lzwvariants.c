@@ -17,6 +17,7 @@
 
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/rt/xx_rt.h"
+#include "xx_kboom_internal.h"
 
 /* ------------------------------------------------------------------ K-BOOM */
 
@@ -95,7 +96,7 @@ static bool kboom_unlink(kboom_trie *trie, uint32_t node)
     return true;
 }
 
-bool xx_lzwvariants_kboom_decode_memory(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, size_t *written)
+static bool kboom_decode_memory(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, size_t *written, bool exact)
 {
     kboom_reader reader;
     kboom_trie trie;
@@ -110,8 +111,8 @@ bool xx_lzwvariants_kboom_decode_memory(const uint8_t *input, size_t input_size,
     bool result = false;
 
     if (written) *written = 0U;
-    if ((!input && input_size != 0U) || (!output && output_size != 0U)) return false;
-    if (output_size == 0U) return true;
+    if ((!input && input_size != 0U) || (!exact && !output && output_size != 0U)) return false;
+    if (output_size == 0U) return !exact || input_size == 0U;
 
     block = (uint16_t *)xx_mem_alloc((size_t)KBOOM_CAPACITY * 5U * sizeof(uint16_t));
     if (!block) return false;
@@ -141,6 +142,7 @@ bool xx_lzwvariants_kboom_decode_memory(const uint8_t *input, size_t input_size,
         uint32_t emit;
 
         if (!kboom_reader_next(&reader, &code)) break;
+        if (exact && code >= free_slot) goto done;
 
         /* Walk the trie to the root, laying the phrase down backwards from
          * scratch[KBOOM_SCRATCH_TOP]. */
@@ -158,7 +160,8 @@ bool xx_lzwvariants_kboom_decode_memory(const uint8_t *input, size_t input_size,
          * below reads from scratch, never from the output. */
         for (emit = 0U; emit < length; ++emit) {
             if (produced >= output_size) break;
-            output[produced++] = scratch[start + emit];
+            if (output) output[produced] = scratch[start + emit];
+            ++produced;
         }
 
         if (previous_code != KBOOM_NIL) {
@@ -227,12 +230,22 @@ bool xx_lzwvariants_kboom_decode_memory(const uint8_t *input, size_t input_size,
         previous_length = length;
     }
 
-    result = (produced == output_size);
+    result = produced == output_size && (!exact || reader.position == input_size);
 done:
     xx_mem_free(block);
     if (!result) return false;
     if (written) *written = produced;
     return true;
+}
+
+bool xx_lzwvariants_kboom_decode_memory(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, size_t *written)
+{
+    return kboom_decode_memory(input, input_size, output, output_size, written, false);
+}
+
+bool xx_kboom_decode_exact_memory(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, size_t *written)
+{
+    return kboom_decode_memory(input, input_size, output, output_size, written, true);
 }
 
 /* ----------------------------------------------------------------- NewWave */

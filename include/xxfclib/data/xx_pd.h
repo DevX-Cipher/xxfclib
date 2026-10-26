@@ -53,7 +53,7 @@ typedef struct xx_pd_record {
  */
 typedef struct xx_pd_struct {
     xx_pd_record records[XX_PD_LEVELS];
-    volatile bool is_stop;  /**< Cancellation flag: if true, all loops and functions safe-stop */
+    volatile bool is_stop;  /**< Cancellation flag; use xx_pd_stop/xx_pd_is_stopped for shared access. */
     int last_error;         /**< Last error code (0 if OK) */
     char error_string[128]; /**< Last error message */
     void *user_data;        /**< Optional user context pointer */
@@ -118,6 +118,11 @@ XXFC_API void xx_pd_leave_level(xx_pd_struct *pd, int level);
 /**
  * @brief Request all active operations watching this struct to safely stop.
  * @param pd Pointer to xx_pd_struct (may be NULL).
+ * This helper may be called from another thread while the object remains alive.
+ * The stop flag is synchronized without changing xx_pd_struct's layout. Other
+ * fields, including progress records and errors, remain worker-owned; copy them
+ * under the application's lock instead of reading them concurrently. Initialize
+ * or reset the object only while no other thread can access it.
  */
 XXFC_API void xx_pd_stop(xx_pd_struct *pd);
 
@@ -125,6 +130,8 @@ XXFC_API void xx_pd_stop(xx_pd_struct *pd);
  * @brief Check if stop was requested on the progress struct.
  * @param pd Pointer to xx_pd_struct (may be NULL).
  * @return true if stop was requested, false otherwise (or if pd is NULL).
+ * Reading the stop flag through this helper is safe across threads. A bound
+ * observer is invoked only on the thread that registered it.
  */
 XXFC_API bool xx_pd_is_stopped(const xx_pd_struct *pd);
 

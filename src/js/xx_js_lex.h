@@ -60,6 +60,7 @@ typedef enum {
     T_NULL,
     T_TRUE,
     T_FALSE,
+    T_DEBUGGER,
 
     /* punctuators */
     T_LBRACE,
@@ -117,6 +118,7 @@ typedef enum {
 typedef struct {
     JSTokType type;
     int nLine;
+    int nColumn;
     int bNewLineBefore;
     double nNum;
     char *pText;

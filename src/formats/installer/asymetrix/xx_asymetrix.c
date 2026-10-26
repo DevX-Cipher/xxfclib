@@ -422,37 +422,44 @@ static xx_asymetrix_stream *xx_asymetrix_parse(Abstractformat *self, xx_pd_struc
         member_volume = xx_data_get_u32(record + XX_ASYMETRIX_RECORD_VOLUME, 4, 0, false) >> 16;
         member_offset = (int64_t)xx_data_get_u32(record + XX_ASYMETRIX_RECORD_OFFSET, 4, 0, false);
         member_size = (int64_t)xx_data_get_u32(record + XX_ASYMETRIX_RECORD_SIZE, 4, 0, false);
+        /* Empty records have no block chain. Their location fields can be
+         * uninitialised writer memory and do not participate in ordering. */
+        if (member_size == 0) {
+            member_offset = data_offset;
+            goto publish_member;
+        }
 
         /* Records are written sorted by (volume, offset).  That order is what
          * lets the next record delimit this member's block region in one pass
          * instead of a quadratic rescan, and a directory that is not sorted is
          * not this format's directory. */
         if (member_volume < 1U || member_volume < previous_volume) goto fail;
-        previous_volume = member_volume;
-
-        if (index == 0U) {
+        if (previous_volume == 0U) {
             /* The first member must be the first thing after the directory and
-             * must live on this volume; no zero-size member exists. */
-            if (member_volume != volume || member_offset != data_offset || member_size == 0) {
+             * must live on this volume. Empty records carry no location. */
+            if (member_volume != volume || member_offset != data_offset) {
                 goto fail;
             }
         }
+        previous_volume = member_volume;
         /* Sorted by volume, so everything from here on begins on a later disk
          * and cannot be resolved from this file. */
         if (member_volume != volume) continue;
 
         region_end = span;
-        if (index + 1U < count) {
+        for (uint32_t next_index = index + 1U; next_index < count; ++next_index) {
             uint8_t next[XX_ASYMETRIX_RECORD_STRIDE];
-            int64_t next_offset = record_offset + XX_ASYMETRIX_RECORD_STRIDE;
+            int64_t next_offset = XX_ASYMETRIX_HEADER_SIZE + (int64_t)next_index * XX_ASYMETRIX_RECORD_STRIDE;
 
             if (!xx_asymetrix_read_at(self, self->base_address + next_offset, next, sizeof(next))) {
                 goto fail;
             }
+            if (xx_data_get_u32(next + XX_ASYMETRIX_RECORD_SIZE, 4, 0, false) == 0U) continue;
             if ((xx_data_get_u32(next + XX_ASYMETRIX_RECORD_VOLUME, 4, 0, false) >> 16) == volume) {
                 region_end = (int64_t)xx_data_get_u32(next + XX_ASYMETRIX_RECORD_OFFSET, 4, 0, false);
                 if (region_end < member_offset || region_end > span) goto fail;
             }
+            break;
         }
 
         if (member_size > XX_ASYMETRIX_MAX_DECODED) continue;
@@ -466,6 +473,7 @@ static xx_asymetrix_stream *xx_asymetrix_parse(Abstractformat *self, xx_pd_struc
             goto fail;
         }
 
+publish_member:
         xx_mem_zero(&member, sizeof(member));
         owned = xx_str_dup(name);
         if (!owned) goto fail;

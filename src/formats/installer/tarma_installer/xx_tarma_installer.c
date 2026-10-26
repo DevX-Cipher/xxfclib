@@ -570,6 +570,8 @@ static bool tz_pe_overlay(Abstractformat *format, int64_t size, int64_t *overlay
     return true;
 }
 
+#include "xx_tarma_legacy.h"
+
 static bool tz_section_header_ok(const uint8_t *h)
 {
     return xx_rt_memcmp(h + 0x10U, "tiz3", 4U) == 0 && (xx_data_get_u32(h + 0x40U, 4, 0, false) ^ xx_data_get_u32(h + 0x44U, 4, 0, false)) == TZ_XOR_KEY &&
@@ -881,6 +883,13 @@ void xx_tarma_installer_init(xx_tarma_installer *archive, xx_io_device *device, 
 {
     if (!archive) return;
     xx_mem_zero(archive, sizeof(*archive));
+    archive->format.device=device;archive->format.base_address=base_address;
+    { int64_t legacy_offset;
+      if(tl_locate(&archive->format,&legacy_offset)) {
+        pm_init(&archive->format,device,base_address,XX_TARMA_INSTALLER_FILE_TYPE,"tiz");
+        archive->format.handle_base_info=xx_tarma_installer_handle_base_info;
+        archive->payload_offset=legacy_offset;archive->payload_end=xx_io_total_size(device)-base_address;return;
+      } }
     xx_format_init(&archive->format, device, base_address);
     archive->format.endian = XX_ENDIAN_LITTLE;
     archive->format.file_type = XX_TARMA_INSTALLER_FILE_TYPE;
@@ -923,6 +932,7 @@ void xx_tarma_installer_free(xx_tarma_installer *archive)
 bool xx_tarma_installer_check_is_valid(Abstractformat *format, xx_pd_struct *pd)
 {
     tz_layout layout;
+    if(tl_selected(format))return pm_valid(format,pd);
     (void)pd;
     return tz_locate(format, &layout, NULL);
 }
@@ -934,6 +944,11 @@ bool xx_tarma_installer_handle_base_info(Abstractformat *format, xx_pd_struct *p
     uint64_t unpacked = 0U;
     char version[32];
     bool result = false;
+    if(tl_selected(format)) {
+        bool valid=pm_handle(format,pd);
+        if(valid)((xx_tarma_installer *)format)->number_of_records=format->number_of_archive_records;
+        return valid;
+    }
     if (!format) return false;
     c = tz_cursor_create(format);
     if (!c) return false;
@@ -977,6 +992,7 @@ int64_t xx_tarma_installer_get_format_size(Abstractformat *format, xx_pd_struct 
 
 uint64_t xx_tarma_installer_get_number_of_archive_records(Abstractformat *format, xx_pd_struct *pd)
 {
+    if(tl_selected(format))return pm_count(format,pd);
     return format && (format->base_info_handled || xx_tarma_installer_handle_base_info(format, pd)) ? ((xx_tarma_installer *)format)->number_of_records : 0U;
 }
 
@@ -984,6 +1000,7 @@ xx_archive_record_state *xx_tarma_installer_create_archive_records_reading(Abstr
 {
     tz_stream *stream;
     xx_archive_record_state *state;
+    if(tl_selected(format))return pm_create_records(format,options,pd);
     if (!format) return NULL;
     stream = (tz_stream *)xx_mem_calloc(1U, sizeof(*stream));
     if (!stream) return NULL;
@@ -1024,6 +1041,7 @@ const xx_archive_record *xx_tarma_installer_get_current_archive_record(Abstractf
 bool xx_tarma_installer_archive_record_move_to_next(Abstractformat *format, xx_archive_record_state *state, xx_pd_struct *pd)
 {
     tz_stream *stream;
+    if(tl_selected(format))return pm_next(format,state,pd);
     if (!format || !state || state->format != format || !state->has_record || !(stream = (tz_stream *)state->internal_state) || !tz_cursor_next(stream->cursor, pd) ||
         !tz_set_record(&state->current_record, stream->cursor)) {
         if (state) state->has_record = false;
@@ -1036,6 +1054,7 @@ bool xx_tarma_installer_archive_record_move_to_next(Abstractformat *format, xx_a
 bool xx_tarma_installer_unpack_current_archive_record(Abstractformat *format, xx_archive_record_state *state, xx_pd_struct *pd)
 {
     tz_stream *stream;
+    if(tl_selected(format))return pm_unpack(format,state,pd);
     const xx_var *path_option;
     const char *base = NULL;
     char *owned_base = NULL;
@@ -1076,6 +1095,7 @@ done:
 bool xx_tarma_installer_unpack_current_to_device(Abstractformat *format, xx_archive_record_state *state, xx_io_device *destination, xx_pd_struct *pd)
 {
     tz_stream *stream;
+    if(tl_selected(format))return tl_to_device(format,state,destination,pd);
     if (!format || !state || state->format != format || !state->has_record || !(stream = (tz_stream *)state->internal_state) || (pd && xx_pd_is_stopped(pd)))
         return false;
     return tz_cursor_unpack(stream->cursor, destination, pd);

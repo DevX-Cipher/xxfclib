@@ -16,7 +16,11 @@
 
 static const uint8_t k_anchor0[] = {0x4D, 0x5A};
 
+static const uint8_t k_anchor1[]={'t','i','z','1'};
+static const uint8_t k_anchor2[]={'t','i','z','2'};
 static const xx_format_search_anchor k_anchors[] = {
+    {k_anchor1,sizeof(k_anchor1),0U},
+    {k_anchor2,sizeof(k_anchor2),0U},
     {k_anchor0, sizeof(k_anchor0), 0U},
 };
 
@@ -36,7 +40,7 @@ static void xx_tarma_installer_search_close(Abstractformat *format)
 
 static const xx_format_search_desc k_desc = {
     k_types, sizeof(k_types) / sizeof(k_types[0]), k_anchors, sizeof(k_anchors) / sizeof(k_anchors[0]), xx_tarma_installer_search_open, xx_tarma_installer_search_close,
-    false};
+    true};
 
 static xx_format_search_state *xx_tarma_installer_create_format_search(xx_format_extractor *self, xx_io_device *device, const xx_list_s *options, xx_pd_struct *pd)
 {

@@ -14,7 +14,8 @@
  *   0x00  u16  magic 0xC8E9 ('\xe9\xc8')
  *   0x02  u32  opaque stamp (constant per member, semantics unknown)
  *   0x06  u8   flags (0x00, 0x01 or 0x20 in the corpus)
- *   0x07  u8   method: 0 = stored, 1 = PKWARE DCL ("implode")
+ *   0x07  u8   method: 0 = stored, 1 = PKWARE DCL ("implode"),
+ *                    3 = eight opaque prefix bytes followed by DCL
  *   0x08  u32  uncompressed size
  *   0x0C  u32  compressed size (payload bytes that follow the header)
  *   0x10  char name[12] (8.3, NUL padded, not terminated when full)
@@ -51,10 +52,12 @@
 
 #define GST_METHOD_STORE 0U
 #define GST_METHOD_DCL 1U
+#define GST_METHOD_PREFIXED_DCL 3U
 
 typedef struct gst_member_s {
     char *name;
     int64_t header_offset;
+    int64_t header_size;
     int64_t data_offset;
     int64_t packed_size;
     uint64_t unpacked_size;
@@ -176,17 +179,19 @@ static bool gst_parse(Abstractformat *format, gst_stream **result)
         member.unpacked_size = unpacked;
         member.packed_size = (int64_t)packed;
         member.crc32 = xx_data_get_u32(header + 28U, 4, 0, false);
-        if (member.method != GST_METHOD_STORE && member.method != GST_METHOD_DCL) goto fail;
+        if (member.method != GST_METHOD_STORE && member.method != GST_METHOD_DCL && member.method != GST_METHOD_PREFIXED_DCL) goto fail;
+        member.header_size = (int64_t)GST_HEADER_SIZE + (member.method == GST_METHOD_PREFIXED_DCL ? 8 : 0);
+        if (size - cursor < member.header_size || (uint64_t)packed > (uint64_t)(size - cursor - member.header_size)) goto fail;
         if (member.method == GST_METHOD_STORE && (uint64_t)member.packed_size != member.unpacked_size) goto fail;
         member.name = gst_normalize_name(header + 16U, GST_NAME_SIZE);
         if (!member.name) goto fail;
         member.header_offset = format->base_address + cursor;
-        member.data_offset = member.header_offset + (int64_t)GST_HEADER_SIZE;
+        member.data_offset = member.header_offset + member.header_size;
         if (!gst_add_member(stream, &member)) {
             xx_str_free(member.name);
             goto fail;
         }
-        cursor += (int64_t)GST_HEADER_SIZE + member.packed_size;
+        cursor += member.header_size + member.packed_size;
     }
     /* No trailer, no count: the chain landing exactly on EOF is the test. */
     if (cursor != size || stream->count == 0U) goto fail;
@@ -198,7 +203,7 @@ static bool gst_parse(Abstractformat *format, gst_stream **result)
         for (index = 0U; index < stream->count; ++index) {
             uint8_t *plain = NULL;
             size_t plain_size = 0U;
-            if (!stream->items[index].alternate_magic) continue;
+            if (!stream->items[index].alternate_magic && stream->items[index].method != GST_METHOD_PREFIXED_DCL) continue;
             if (!gst_decode_member(format, &stream->items[index], &plain, &plain_size)) goto fail;
             xx_mem_free(plain);
         }
@@ -244,7 +249,7 @@ static bool gst_set_record(xx_archive_record *record, const gst_member *member)
     xx_archive_record_cleanup(record);
     xx_archive_record_init(record);
     record->header_offset = member->header_offset;
-    record->header_size = (int64_t)GST_HEADER_SIZE;
+    record->header_size = member->header_size;
     record->data_offset = member->data_offset;
     record->compressed_size = member->packed_size;
     return xx_archive_record_set_original_name(record, member->name) &&
@@ -274,7 +279,7 @@ static bool gst_decode_member(Abstractformat *format, const gst_member *member, 
         if (output_size != 0U) xx_mem_copy(output, packed, output_size);
         written = output_size;
         decoded = true;
-    } else if (member->method == GST_METHOD_DCL) {
+    } else if (member->method == GST_METHOD_DCL || member->method == GST_METHOD_PREFIXED_DCL) {
         decoded = xx_dcl_decode_memory(packed, (size_t)member->packed_size, output, output_size, &written);
     }
     /* The stored CRC-32 is the format's own assertion about the plaintext;

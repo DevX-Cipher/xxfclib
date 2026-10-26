@@ -23,7 +23,7 @@
  * Its first u16 is
  * the page's unused tail, and then packs entries end to end:
  *
- *   u8       name length, never zero
+ *   u8       name length; only the tree's smallest key may be empty
  *   n bytes  the internal name
  *   LEB128   absolute file offset, from the base address
  *   LEB128   declared stream size
@@ -45,9 +45,8 @@
  * "CK" signature and every block inherits the previous 32 KiB of output as
  * its dictionary -- the scheme CAB uses.
  *
- * Entries whose declared size is zero, and the internal files that carry the
- * title's own indexes rather than content, are skipped rather than published:
- * they are not members a caller can extract anything meaningful from.
+ * Zero-size entries are skipped. Internal index streams are normally hidden
+ * when content exists, but are preserved in index-only companion containers.
  *
  * Internal names routinely contain characters no host file system accepts --
  * topic streams are named ">00000001" -- so they are mapped to '_'.
@@ -75,6 +74,7 @@ typedef struct xx_ivt_member_s {
     uint32_t method;
     uint64_t timestamp;
     bool is_folder;
+    bool internal_index;
 } xx_ivt_member;
 
 typedef struct xx_ivt_stream_s {
@@ -285,7 +285,7 @@ static bool xx_ivt_walk_tree(xx_ivt_tree *tree, uint32_t ordinal, unsigned depth
     if (count == 0U || unused > XX_IVT_PAGE_SIZE - 12) goto done;
     if (depth == 0U) {
         size_t length = page[12];
-        if (length == 0U || length > XX_IVT_PAGE_SIZE - 13U) goto done;
+        if ((length == 0U && tree->leaf_count != 0U) || length > XX_IVT_PAGE_SIZE - 13U) goto done;
         xx_mem_copy(first_key, page + 13, length);
         *first_size = length;
         tree->leaves[tree->leaf_count++] = ordinal;
@@ -429,7 +429,8 @@ static xx_ivt_stream *xx_ivt_parse(Abstractformat *self, xx_pd_struct *pd)
             if (position >= XX_IVT_PAGE_SIZE) goto fail;
             name_length = (int64_t)page[position];
             ++position;
-            if (name_length == 0) goto fail;
+            /* An empty key is legal only as the tree's smallest key. */
+            if (name_length == 0 && (leaf_ordinal != 0U || entry != 0)) goto fail;
             if (position + name_length > XX_IVT_PAGE_SIZE) goto fail;
 
             name = xx_ivt_make_name(page + position, name_length);
@@ -447,10 +448,10 @@ static xx_ivt_stream *xx_ivt_parse(Abstractformat *self, xx_pd_struct *pd)
 
             ++seen_entries;
 
-            /* A zero-size entry names nothing, and the title's own index
-             * files are not extractable content; both are skipped, and both
-             * still count towards the entry total. */
-            if (stream_size == 0 || xx_ivt_is_system_name(name, name_length)) {
+            /* A zero-size entry has no payload, but still counts towards the
+             * directory's declared total. Index filtering happens only after
+             * the whole directory proves whether content streams exist. */
+            if (stream_size == 0) {
                 xx_str_free(name);
                 name = NULL;
                 continue;
@@ -494,6 +495,7 @@ static xx_ivt_stream *xx_ivt_parse(Abstractformat *self, xx_pd_struct *pd)
             /* The directory carries no timestamp for an internal file. */
             member.timestamp = 0U;
             member.is_folder = false;
+            member.internal_index = xx_ivt_is_system_name(name, name_length);
 
             if (!xx_ivt_add(stream, &member)) goto fail;
             name = NULL;
@@ -507,8 +509,48 @@ static xx_ivt_stream *xx_ivt_parse(Abstractformat *self, xx_pd_struct *pd)
     }
 
     if (seen_entries != total_entries) goto fail;
-    /* A directory of nothing but system files and empty entries describes no
-     * extractable content. */
+    /* Index-only IVI companions contain useful lookup streams but no topic
+     * content. Preserve those streams when they are the entire container;
+     * normal titles keep the existing content-only presentation. */
+    {
+        size_t i, kept = 0U;
+        bool has_content = false;
+        for (i = 0U; i < stream->count; ++i) {
+            if (!stream->items[i].internal_index) has_content = true;
+        }
+        if (has_content) {
+            for (i = 0U; i < stream->count; ++i) {
+                if (stream->items[i].internal_index) xx_str_free(stream->items[i].name);
+                else stream->items[kept++] = stream->items[i];
+            }
+            stream->count = kept;
+        }
+    }
+    /* Preserve a nonempty unnamed stream without overwriting any stored
+     * name. Mark the numeric alias slots in one pass, then choose a free
+     * slot; the bounded bitmap avoids quadratic retry scans. */
+    if (stream->count != 0U && stream->items[0].name[0] == '\0') {
+        uint8_t *used = (uint8_t *)xx_mem_calloc(stream->count + 1U, 1U);
+        size_t i, number;
+        char alias[40];
+        if (!used) goto fail;
+        for (i = 1U; i < stream->count; ++i) {
+            const uint8_t *candidate = (const uint8_t *)stream->items[i].name;
+            size_t j, value = 0U;
+            if (xx_rt_strlen((const char *)candidate) != 25U ||
+                xx_ivt_key_compare(candidate, 15U, (const uint8_t *)"unnamed-stream-", 15U) != 0 ||
+                xx_ivt_key_compare(candidate + 21U, 4U, (const uint8_t *)".bin", 4U) != 0) continue;
+            for (j = 15U; j < 21U && candidate[j] >= '0' && candidate[j] <= '9'; ++j) value = value * 10U + candidate[j] - '0';
+            if (j == 21U && value <= stream->count) used[value] = 1U;
+        }
+        for (number = 0U; number <= stream->count && used[number]; ++number) {}
+        xx_mem_free(used);
+        xx_rt_snprintf(alias, sizeof(alias), "unnamed-stream-%06u.bin", (unsigned)number);
+        xx_str_free(stream->items[0].name);
+        stream->items[0].name = xx_str_dup(alias);
+        if (!stream->items[0].name) goto fail;
+    }
+    /* A directory containing only zero-size entries has no payload. */
     if (stream->count == 0U) goto fail;
     if (pd && xx_pd_is_stopped(pd)) goto fail;
 

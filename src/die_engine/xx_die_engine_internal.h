@@ -30,6 +30,7 @@
 #define DIE_ENGINE_INTERNAL_H
 
 #include "xxfclib/die_engine/die_engine.h"
+#include "xxfclib/die_engine/die_engine_debug.h"
 #include "xxfclib/js/xx_js.h"
 
 #include "xx_die_engine_compat.h"
@@ -110,6 +111,8 @@ struct DieEngine {
     xx_data_sig_context sigContext;
 
     JSCtx *pJs;
+    const die_engine_debug_config *pDebug; /* Borrowed for the synchronous debug pass. */
+    cd_i64 nLastLogTime;
 
     BLRecord *pBlackList;
     int nBlackListCount;

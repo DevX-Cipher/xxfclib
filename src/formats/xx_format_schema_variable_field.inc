@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT
  * An explicitly typed final text field may occupy the remainder of an entry.
  * Existing fixed-size fields retain their original validation. No public ABI. */
-static int64_t sx_variable_field_limit(const wchar_t *type)
+int64_t sx_variable_field_limit(const wchar_t *type)
 {
     if (!type) return 0;
     if (!xx_rt_wcsncmp(type,L"stuffitx_p2_",12) && type[12]>=L'0' && type[12]<=L'7' && !type[13]) return 17;

@@ -31,6 +31,7 @@
  */
 
 #include "xx_js_internal.h"
+#include <xxfclib/threads/xx_threads.h>
 
 typedef enum {
     RE_CHAR = 0, /* single literal byte             */
@@ -68,9 +69,17 @@ struct RENode {
 
 struct REAlt {
     RENode *pFirst;
+    size_t nMinBytes;
+    size_t nCheckOffset;
+    unsigned char pFirstBytes[32];
+    unsigned char nCheckChar;
+    int bCanEmpty;
+    int bAnchored;
+    int bCheckChar;
 };
 
 struct JSRegExp {
+    volatile long nRefs;
     char *pSource;
     char *pFlags;
     int bGlobal;
@@ -79,6 +88,8 @@ struct JSRegExp {
     int nGroups;
     REAlt *pAlts;
     int nAltCount;
+    int bAllAnchored;
+    int nSingleFirstByte;
 };
 
 typedef struct {
@@ -908,10 +919,121 @@ static REAlt *parse_alternatives(REParser *pParser, int *pnCount)
     return pAlts;
 }
 
+/* These are necessary conditions only. The matcher still decides whether a
+ * candidate matches, preserving capture state and alternative ordering. */
+static size_t re_size_add(size_t a, size_t b)
+{
+    return b > (size_t)-1 - a ? (size_t)-1 : a + b;
+}
+
+static size_t re_size_mul(size_t a, size_t b)
+{
+    return a && b > (size_t)-1 / a ? (size_t)-1 : a * b;
+}
+
+static void analyze_alts(REAlt *pAlts, int nCount, int bIgnoreCase)
+{
+    int i;
+
+    for (i = 0; i < nCount; i++) {
+        REAlt *pAlt = &pAlts[i];
+        RENode *pNode;
+        int bNeedFirst = 1;
+        int bFixed = 1;
+        size_t nFixedOffset = 0;
+
+        pAlt->nMinBytes = 0;
+        pAlt->nCheckOffset = 0;
+        pAlt->nCheckChar = 0;
+        pAlt->bCheckChar = 0;
+        pAlt->bAnchored = pAlt->pFirst && pAlt->pFirst->type == RE_BOL;
+        xx_rt_memset(pAlt->pFirstBytes, 0, sizeof(pAlt->pFirstBytes));
+
+        for (pNode = pAlt->pFirst; pNode; pNode = pNode->pNext) {
+            size_t nAtomMin = 0;
+            unsigned char first[32];
+            int j;
+
+            xx_rt_memset(first, 0, sizeof(first));
+            if (pNode->type == RE_GROUP) {
+                analyze_alts(pNode->pAlts, pNode->nAltCount, bIgnoreCase);
+                nAtomMin = (size_t)-1;
+                for (j = 0; j < pNode->nAltCount; j++) {
+                    REAlt *pChild = &pNode->pAlts[j];
+                    int k;
+                    if (pChild->nMinBytes < nAtomMin) nAtomMin = pChild->nMinBytes;
+                    for (k = 0; k < 32; k++) first[k] |= pChild->pFirstBytes[k];
+                }
+            } else if (pNode->type == RE_LOOKAHEAD) {
+                /* Assertions consume no bytes, but their nested groups use
+                 * the same necessary-condition filters as ordinary groups. */
+                analyze_alts(pNode->pAlts, pNode->nAltCount, bIgnoreCase);
+            } else if (pNode->type == RE_CHAR) {
+                nAtomMin = 1;
+                class_set(first, pNode->nChar);
+                if (bIgnoreCase) {
+                    if (pNode->nChar >= 'a' && pNode->nChar <= 'z') class_set(first, (unsigned char)(pNode->nChar - 'a' + 'A'));
+                    if (pNode->nChar >= 'A' && pNode->nChar <= 'Z') class_set(first, (unsigned char)(pNode->nChar - 'A' + 'a'));
+                }
+            } else if (pNode->type == RE_ANY || pNode->type == RE_CLASS) {
+                int bC2 = 0, bC3 = 0;
+                nAtomMin = 1;
+                if (pNode->type == RE_ANY) {
+                    xx_rt_memset(first, 0xFF, sizeof(first));
+                    first['\n' >> 3] &= (unsigned char)~(1u << ('\n' & 7));
+                } else {
+                    xx_rt_memcpy(first, pNode->pClass, sizeof(first));
+                    if (bIgnoreCase) {
+                        for (j = 'a'; j <= 'z'; j++) {
+                            unsigned char nUpper = (unsigned char)(j - 'a' + 'A');
+                            if (class_get(first, (unsigned char)j) || class_get(first, nUpper)) {
+                                class_set(first, (unsigned char)j);
+                                class_set(first, nUpper);
+                            }
+                        }
+                    }
+                    for (j = 16; j < 24; j++) bC2 |= first[j];
+                    for (j = 24; j < 32; j++) bC3 |= first[j];
+                    /* A Latin-1 class atom can consume a UTF-8 pair. */
+                    if (bC2) class_set(first, 0xC2);
+                    if (bC3) class_set(first, 0xC3);
+                }
+            } else if (pNode->type == RE_BACKREF) {
+                /* Unmatched captures are empty; participating captures can
+                 * begin with any byte. No fixed-size assumption is safe. */
+                xx_rt_memset(first, 0xFF, sizeof(first));
+            }
+
+            if (pNode->nMax != 0 && bNeedFirst) {
+                for (j = 0; j < 32; j++) pAlt->pFirstBytes[j] |= first[j];
+                if (nAtomMin && pNode->nMin) bNeedFirst = 0;
+            }
+            pAlt->nMinBytes = re_size_add(pAlt->nMinBytes, re_size_mul(nAtomMin, (size_t)pNode->nMin));
+
+            if (bFixed) {
+                if (pNode->type == RE_CHAR && pNode->nMin == pNode->nMax) {
+                    if (pNode->nMin) {
+                        nFixedOffset = re_size_add(nFixedOffset, (size_t)pNode->nMin);
+                        pAlt->nCheckOffset = nFixedOffset - 1;
+                        pAlt->nCheckChar = pNode->nChar;
+                        pAlt->bCheckChar = 1;
+                    }
+                } else if (pNode->type == RE_CHAR || pNode->type == RE_ANY || pNode->type == RE_CLASS ||
+                           pNode->type == RE_GROUP || pNode->type == RE_BACKREF) {
+                    bFixed = 0;
+                }
+            }
+        }
+        pAlt->bCanEmpty = bNeedFirst;
+    }
+}
+
 JSRegExp *jsregexp_compile(const char *pPattern, const char *pFlags, char **ppError)
 {
     JSRegExp *pRegExp = (JSRegExp *)xx_js_calloc(1, sizeof(JSRegExp));
     REParser parser;
+
+    pRegExp->nRefs = 1;
 
     pRegExp->pSource = xx_js_strdup(pPattern ? pPattern : "");
     pRegExp->pFlags = xx_js_strdup(pFlags ? pFlags : "");
@@ -948,12 +1070,69 @@ JSRegExp *jsregexp_compile(const char *pPattern, const char *pFlags, char **ppEr
         return NULL;
     }
 
+    analyze_alts(pRegExp->pAlts, pRegExp->nAltCount, pRegExp->bIgnoreCase);
+    {
+        int i;
+        int bNullable = 0;
+        int nFirstCount = 0;
+        unsigned char first[32];
+        xx_rt_memset(first, 0, sizeof(first));
+        pRegExp->bAllAnchored = 1;
+        pRegExp->nSingleFirstByte = -1;
+        for (i = 0; i < pRegExp->nAltCount; i++) {
+            int j;
+            if (!pRegExp->pAlts[i].bAnchored) pRegExp->bAllAnchored = 0;
+            bNullable |= pRegExp->pAlts[i].bCanEmpty;
+            for (j = 0; j < 32; j++) first[j] |= pRegExp->pAlts[i].pFirstBytes[j];
+        }
+        if (!bNullable) {
+            for (i = 0; i < 256; i++) {
+                if (class_get(first, (unsigned char)i)) {
+                    nFirstCount++;
+                    pRegExp->nSingleFirstByte = i;
+                }
+            }
+            /* ASCII cannot be a UTF-8 continuation byte, so memchr cannot
+             * introduce starts skipped by the engine's Latin-1 stepping. */
+            if (nFirstCount != 1 || pRegExp->nSingleFirstByte > 0x7F) pRegExp->nSingleFirstByte = -1;
+        }
+    }
+
     return pRegExp;
+}
+
+JSRegExp *jsregexp_ref(JSRegExp *pRegExp)
+{
+    if (pRegExp) xx_atomic_add(&pRegExp->nRefs, 1);
+    return pRegExp;
+}
+
+static size_t re_alts_memory_size(REAlt *pAlts, int nCount)
+{
+    size_t nSize = re_size_mul((size_t)nCount, sizeof(REAlt));
+    int i;
+    for (i = 0; i < nCount; i++) {
+        RENode *pNode;
+        for (pNode = pAlts[i].pFirst; pNode; pNode = pNode->pNext) {
+            nSize = re_size_add(nSize, sizeof(RENode));
+            if (pNode->pAlts) nSize = re_size_add(nSize, re_alts_memory_size(pNode->pAlts, pNode->nAltCount));
+        }
+    }
+    return nSize;
+}
+
+size_t jsregexp_memory_size(JSRegExp *pRegExp)
+{
+    size_t nSize;
+    if (!pRegExp) return 0;
+    nSize = re_size_add(sizeof(JSRegExp), xx_rt_strlen(pRegExp->pSource) + 1);
+    nSize = re_size_add(nSize, xx_rt_strlen(pRegExp->pFlags) + 1);
+    return re_size_add(nSize, re_alts_memory_size(pRegExp->pAlts, pRegExp->nAltCount));
 }
 
 void jsregexp_free(JSRegExp *pRegExp)
 {
-    if (pRegExp == NULL) {
+    if (pRegExp == NULL || xx_atomic_add(&pRegExp->nRefs, -1) != 1) {
         return;
     }
 
@@ -1030,6 +1209,12 @@ typedef struct {
     long nSteps;
     long nStepLimit; /* RE_MAX_STEPS scaled by the subject size, see above */
     int nDepth;
+    /* An unbounded leading ASCII atom has no captures or assertions before
+     * it. Once one start fails, later starts inside the same consumed run
+     * can only try a subset of the suffix positions already tried. */
+    RENode *pSearchPrefix;
+    size_t nSearchStart;
+    size_t nPrefixEnd;
     int bAborted; /* a budget fired: the result is 'do not know', not 'no match' */
 } REMatcher;
 
@@ -1054,6 +1239,11 @@ static int single_match(REMatcher *pMatcher, RENode *pNode, size_t nPos)
 {
     unsigned char nChar = 0;
     int nWidth = 1;
+
+    if (pMatcher->nSteps++ > pMatcher->nStepLimit) {
+        pMatcher->bAborted = 1;
+        return 0;
+    }
 
     if (nPos >= pMatcher->nSize) {
         return 0;
@@ -1097,7 +1287,7 @@ static int single_match(REMatcher *pMatcher, RENode *pNode, size_t nPos)
  * nStart. Both offsets are inside the subject by construction.             */
 static int backref_at(REMatcher *pMatcher, size_t nStart, size_t nLength, size_t nPos)
 {
-    if ((nPos + nLength) > pMatcher->nSize) {
+    if (nPos > pMatcher->nSize || nLength > pMatcher->nSize - nPos) {
         return 0;
     }
 
@@ -1105,6 +1295,10 @@ static int backref_at(REMatcher *pMatcher, size_t nStart, size_t nLength, size_t
         size_t i = 0;
 
         for (i = 0; i < nLength; i++) {
+            if (pMatcher->nSteps++ > pMatcher->nStepLimit) {
+                pMatcher->bAborted = 1;
+                return 0;
+            }
             if (re_lower(pMatcher->pText[nPos + i]) != re_lower(pMatcher->pText[nStart + i])) {
                 return 0;
             }
@@ -1113,7 +1307,23 @@ static int backref_at(REMatcher *pMatcher, size_t nStart, size_t nLength, size_t
         return 1;
     }
 
-    return (xx_rt_memcmp(pMatcher->pText + nPos, pMatcher->pText + nStart, nLength) == 0) ? 1 : 0;
+    /* Bound uncounted native comparison work, without charging the entire
+     * capture for a mismatch near its beginning. */
+    {
+        size_t i = 0;
+        while (i < nLength) {
+            size_t nChunk = nLength - i;
+            if (nChunk > 64) nChunk = 64;
+            if (pMatcher->nSteps > pMatcher->nStepLimit || nChunk > (size_t)(pMatcher->nStepLimit - pMatcher->nSteps)) {
+                pMatcher->bAborted = 1;
+                return 0;
+            }
+            pMatcher->nSteps += (long)nChunk;
+            if (xx_rt_memcmp(pMatcher->pText + nPos + i, pMatcher->pText + nStart + i, nChunk) != 0) return 0;
+            i += nChunk;
+        }
+    }
+    return 1;
 }
 
 static int is_word_at(REMatcher *pMatcher, size_t nPos)
@@ -1123,6 +1333,30 @@ static int is_word_at(REMatcher *pMatcher, size_t nPos)
     }
 
     return is_word_char((unsigned char)pMatcher->pText[nPos]);
+}
+
+static void record_search_prefix(REMatcher *pMatcher, RENode *pNode, size_t nPos, size_t nEnd)
+{
+    if (pNode == pMatcher->pSearchPrefix && nPos == pMatcher->nSearchStart) {
+        pMatcher->nPrefixEnd = nEnd;
+    }
+}
+
+/* Necessary conditions only. Kept shared between root and nested alternatives
+ * so groups benefit from the immutable metadata without changing their order. */
+static int alt_possible(REMatcher *pMatcher, REAlt *pAlt, size_t nPos)
+{
+    unsigned char nChar;
+    if (nPos > pMatcher->nSize || pAlt->nMinBytes > pMatcher->nSize - nPos) return 0;
+    if (pAlt->bAnchored && pAlt->pFirst->nMin > 0 && nPos != 0 &&
+        (!pMatcher->pRegExp->bMultiline || pMatcher->pText[nPos - 1] != '\n')) return 0;
+    if (!pAlt->bCanEmpty && (nPos == pMatcher->nSize ||
+        !class_get(pAlt->pFirstBytes, (unsigned char)pMatcher->pText[nPos]))) return 0;
+    if (!pAlt->bCheckChar) return 1;
+    if (pAlt->nCheckOffset >= pMatcher->nSize - nPos) return 0;
+    nChar = (unsigned char)pMatcher->pText[nPos + pAlt->nCheckOffset];
+    return pMatcher->pRegExp->bIgnoreCase ?
+        re_lower((char)nChar) == re_lower((char)pAlt->nCheckChar) : nChar == pAlt->nCheckChar;
 }
 
 static int m_simple(REMatcher *pMatcher, RENode *pNode, RECont *pCont, size_t nPos, size_t *pnEnd)
@@ -1137,6 +1371,7 @@ static int m_simple(REMatcher *pMatcher, RENode *pNode, RECont *pCont, size_t nP
         for (nCount = 0; nCount < nMin; nCount++) {
             nWidth = single_match(pMatcher, pNode, nCurrent);
             if (!nWidth) {
+                record_search_prefix(pMatcher, pNode, nPos, nCurrent);
                 return 0;
             }
             nCurrent += (size_t)nWidth;
@@ -1148,11 +1383,13 @@ static int m_simple(REMatcher *pMatcher, RENode *pNode, RECont *pCont, size_t nP
             }
 
             if (nCount >= nMax) {
+                record_search_prefix(pMatcher, pNode, nPos, nCurrent);
                 return 0;
             }
 
             nWidth = single_match(pMatcher, pNode, nCurrent);
             if (!nWidth) {
+                record_search_prefix(pMatcher, pNode, nPos, nCurrent);
                 return 0;
             }
 
@@ -1166,6 +1403,7 @@ static int m_simple(REMatcher *pMatcher, RENode *pNode, RECont *pCont, size_t nP
         nCount++;
     }
 
+    record_search_prefix(pMatcher, pNode, nPos, nCurrent);
     if (nCount < nMin) {
         return 0;
     }
@@ -1223,6 +1461,7 @@ static int m_group(REMatcher *pMatcher, RENode *pGroup, int nDone, RECont *pExit
             int32_t nSaved0 = 0;
             int32_t nSaved1 = 0;
 
+            if (!alt_possible(pMatcher, &pGroup->pAlts[i], nPos)) continue;
             if (pGroup->nGroupIndex > 0) {
                 nSaved0 = pMatcher->pCaps[pGroup->nGroupIndex * 2];
                 nSaved1 = pMatcher->pCaps[pGroup->nGroupIndex * 2 + 1];
@@ -1493,7 +1732,7 @@ int jsregexp_exec(JSRegExp *pRegExp, const char *pText, size_t nTextSize, size_t
     REMatcher matcher;
     size_t nPos = 0;
 
-    if (pRegExp == NULL) {
+    if (pRegExp == NULL || nStart > nTextSize) {
         return 0;
     }
 
@@ -1504,6 +1743,14 @@ int jsregexp_exec(JSRegExp *pRegExp, const char *pText, size_t nTextSize, size_t
     matcher.nSteps = 0;
     matcher.nDepth = 0;
     matcher.bAborted = 0;
+    matcher.pSearchPrefix = NULL;
+    if (pRegExp->nAltCount == 1 && pRegExp->pAlts[0].pFirst) {
+        RENode *pFirst = pRegExp->pAlts[0].pFirst;
+        if (pFirst->type == RE_CHAR && pFirst->nChar < 128 && pFirst->nMax < 0) {
+            matcher.pSearchPrefix = pFirst;
+        }
+    }
+    matcher.nSearchStart = matcher.nPrefixEnd = nStart;
 
     {
         uint64_t nLimit = (uint64_t)RE_MAX_STEPS + (uint64_t)nTextSize * (uint64_t)RE_STEPS_PER_BYTE;
@@ -1518,16 +1765,35 @@ int jsregexp_exec(JSRegExp *pRegExp, const char *pText, size_t nTextSize, size_t
     for (nPos = nStart; nPos <= nTextSize; nPos++) {
         int i = 0;
 
+        if (pRegExp->bAllAnchored && nPos != 0) {
+            const char *pNewline;
+            if (!pRegExp->bMultiline) break;
+            if (pText[nPos - 1] != '\n') {
+                pNewline = (const char *)xx_rt_memchr(pText + nPos, '\n', nTextSize - nPos);
+                if (!pNewline) break;
+                nPos = (size_t)(pNewline - pText) + 1;
+            }
+        }
+        if (!pRegExp->bAllAnchored && pRegExp->nSingleFirstByte >= 0) {
+            const char *pFirst = (const char *)xx_rt_memchr(pText + nPos, pRegExp->nSingleFirstByte, nTextSize - nPos);
+            if (!pFirst) break;
+            nPos = (size_t)(pFirst - pText);
+        }
+
+        matcher.nSearchStart = matcher.nPrefixEnd = nPos;
         for (i = 0; i <= pRegExp->nGroups; i++) {
             pnCaps[i * 2] = -1;
             pnCaps[i * 2 + 1] = -1;
         }
 
         for (i = 0; i < pRegExp->nAltCount; i++) {
+            REAlt *pAlt = &pRegExp->pAlts[i];
             size_t nEnd = 0;
             RECont body;
 
-            if (pRegExp->pAlts[i].pFirst == NULL) {
+            if (!alt_possible(&matcher, pAlt, nPos)) continue;
+
+            if (pAlt->pFirst == NULL) {
                 pnCaps[0] = (int32_t)nPos;
                 pnCaps[1] = (int32_t)nPos;
 
@@ -1535,7 +1801,7 @@ int jsregexp_exec(JSRegExp *pRegExp, const char *pText, size_t nTextSize, size_t
             }
 
             body.nKind = 0;
-            body.pNode = pRegExp->pAlts[i].pFirst;
+            body.pNode = pAlt->pFirst;
             body.pRepeat = NULL;
             body.nDone = 0;
             body.nLastPos = 0;
@@ -1553,6 +1819,12 @@ int jsregexp_exec(JSRegExp *pRegExp, const char *pText, size_t nTextSize, size_t
             /* The budget covers the whole search: an attempt that was cut
              * short must not let a later offset pose as the first match.   */
             break;
+        }
+        if (matcher.nPrefixEnd > nPos) {
+            /* The for-loop advances to the first untested character. ASCII
+             * prefixes end at byte boundaries; the normal UTF handling below
+             * still determines the next legal start after non-ASCII input. */
+            nPos = matcher.nPrefixEnd - 1;
         }
         if (nPos < nTextSize) {
             int nWidth;
@@ -1600,8 +1872,10 @@ static JSVal fn_regexp_test(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv,
 {
     JSRegExp *pRegExp = js_get_regexp(thisVal);
     JSVal text;
+    int32_t sCaps[32];
     int32_t *pCaps = NULL;
     int bResult = 0;
+    size_t nStart = 0;
 
     (void)pUser;
 
@@ -1610,9 +1884,19 @@ static JSVal fn_regexp_test(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv,
     }
 
     text = js_to_string(pCtx, (nArgc > 0) ? pArgv[0] : js_undefined());
-    pCaps = (int32_t *)xx_js_malloc((size_t)(pRegExp->nGroups + 1) * 2 * sizeof(int32_t));
-    bResult = jsregexp_exec(pRegExp, js_str_data(text), js_str_len(text), 0, pCaps);
-    xx_js_free(pCaps);
+    if (pRegExp->bGlobal) {
+        JSVal lastIndex = js_get(pCtx, thisVal, "lastIndex");
+        int64_t nLastIndex = js_to_int64(pCtx, lastIndex);
+        js_release(pCtx, lastIndex);
+        if (nLastIndex > 0) nStart = (size_t)nLastIndex;
+    }
+    /* Most detection patterns need only the whole match and a few captures.
+     * Keep the common case off the heap; larger patterns retain full captures. */
+    pCaps = pRegExp->nGroups < 16 ? sCaps :
+        (int32_t *)xx_js_malloc((size_t)(pRegExp->nGroups + 1) * 2 * sizeof(int32_t));
+    bResult = jsregexp_exec(pRegExp, js_str_data(text), js_str_len(text), nStart, pCaps);
+    if (pRegExp->bGlobal) js_set(pCtx, thisVal, "lastIndex", js_num(bResult ? (double)pCaps[1] : 0));
+    if (pCaps != sCaps) xx_js_free(pCaps);
     js_release(pCtx, text);
 
     return js_bool(bResult);
@@ -1622,6 +1906,7 @@ static JSVal fn_regexp_exec(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv,
 {
     JSRegExp *pRegExp = js_get_regexp(thisVal);
     JSVal text;
+    int32_t sCaps[32];
     int32_t *pCaps = NULL;
     JSVal result = js_null();
     size_t nStart = 0;
@@ -1645,7 +1930,10 @@ static JSVal fn_regexp_exec(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv,
         }
     }
 
-    pCaps = (int32_t *)xx_js_malloc((size_t)(pRegExp->nGroups + 1) * 2 * sizeof(int32_t));
+    /* Most detection patterns need only the whole match and a few captures.
+     * Keep the common case off the heap; larger patterns retain full captures. */
+    pCaps = pRegExp->nGroups < 16 ? sCaps :
+        (int32_t *)xx_js_malloc((size_t)(pRegExp->nGroups + 1) * 2 * sizeof(int32_t));
 
     if ((nStart <= js_str_len(text)) && jsregexp_exec(pRegExp, js_str_data(text), js_str_len(text), nStart, pCaps)) {
         int g = 0;
@@ -1661,8 +1949,8 @@ static JSVal fn_regexp_exec(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv,
         }
 
         result.u.o->nArrayLen = pRegExp->nGroups + 1;
-        jsobj_put_hidden(pCtx, result.u.o, "index", js_num((double)pCaps[0]));
-        jsobj_put_hidden(pCtx, result.u.o, "input", js_dup(text));
+        jsobj_put_hidden_static(pCtx, result.u.o, "index", js_num((double)pCaps[0]));
+        jsobj_put_hidden_static(pCtx, result.u.o, "input", js_dup(text));
 
         if (pRegExp->bGlobal) {
             js_set(pCtx, thisVal, "lastIndex", js_num((double)pCaps[1]));
@@ -1671,7 +1959,7 @@ static JSVal fn_regexp_exec(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv,
         js_set(pCtx, thisVal, "lastIndex", js_num(0));
     }
 
-    xx_js_free(pCaps);
+    if (pCaps != sCaps) xx_js_free(pCaps);
     js_release(pCtx, text);
 
     return result;
@@ -1708,30 +1996,36 @@ JSRegExp *js_get_regexp(JSVal value)
     return NULL;
 }
 
-JSVal js_new_regexp_val(JSCtx *pCtx, const char *pPattern, const char *pFlags)
+JSVal js_new_regexp_shared_val(JSCtx *pCtx, JSRegExp *pRegExp)
 {
     JSObj *pObj = jsobj_new(pCtx, JCLASS_REGEXP, pCtx->pRegExpProto);
+    pObj->pRegExp = jsregexp_ref(pRegExp);
+
+    jsobj_put_hidden_static(pCtx, pObj, "source", js_str(pCtx, pRegExp->pSource));
+    jsobj_put_hidden_static(pCtx, pObj, "flags", js_str(pCtx, pRegExp->pFlags));
+    jsobj_put_hidden_static(pCtx, pObj, "global", js_bool(pObj->pRegExp->bGlobal));
+    jsobj_put_hidden_static(pCtx, pObj, "ignoreCase", js_bool(pObj->pRegExp->bIgnoreCase));
+    jsobj_put_hidden_static(pCtx, pObj, "multiline", js_bool(pObj->pRegExp->bMultiline));
+    jsobj_put_hidden_static(pCtx, pObj, "lastIndex", js_num(0));
+
+    return jsval_obj(pObj);
+}
+
+JSVal js_new_regexp_val(JSCtx *pCtx, const char *pPattern, const char *pFlags)
+{
     char *pError = NULL;
+    JSRegExp *pRegExp = jsregexp_compile(pPattern, pFlags, &pError);
+    JSVal result;
 
-    pObj->pRegExp = jsregexp_compile(pPattern, pFlags, &pError);
-
-    if (pObj->pRegExp == NULL) {
-        JSVal result = js_throw(pCtx, "SyntaxError: Invalid regular expression: %s", pError ? pError : "");
-
+    if (!pRegExp) {
+        result = js_throw(pCtx, "SyntaxError: Invalid regular expression: %s", pError ? pError : "");
         xx_js_free(pError);
-        jsobj_unref(pCtx, pObj);
-
         return result;
     }
 
-    jsobj_put_hidden(pCtx, pObj, "source", js_str(pCtx, pPattern));
-    jsobj_put_hidden(pCtx, pObj, "flags", js_str(pCtx, pFlags ? pFlags : ""));
-    jsobj_put_hidden(pCtx, pObj, "global", js_bool(pObj->pRegExp->bGlobal));
-    jsobj_put_hidden(pCtx, pObj, "ignoreCase", js_bool(pObj->pRegExp->bIgnoreCase));
-    jsobj_put_hidden(pCtx, pObj, "multiline", js_bool(pObj->pRegExp->bMultiline));
-    jsobj_put_hidden(pCtx, pObj, "lastIndex", js_num(0));
-
-    return jsval_obj(pObj);
+    result = js_new_regexp_shared_val(pCtx, pRegExp);
+    jsregexp_free(pRegExp);
+    return result;
 }
 
 void js_install_regexp(JSCtx *pCtx)

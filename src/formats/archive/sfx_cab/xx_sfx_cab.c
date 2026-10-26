@@ -186,6 +186,8 @@ static bool sfx_cab_probe_at(Abstractformat *format, pm_stream *unused, int64_t 
     return valid;
 }
 
+#include "xx_sfx_cab_legacy_bss.h"
+#include "xx_sfx_cab_resources.h"
 static bool sfx_cab_find(xx_sfx_cab *archive, xx_pd_struct *pd)
 {
     int64_t low, total;
@@ -195,7 +197,8 @@ static bool sfx_cab_find(xx_sfx_cab *archive, xx_pd_struct *pd)
     if (!archive || !archive->format.device) return false;
     if (archive->payload_offset >= 0) return true;
     total = pm_available(&archive->format);
-    if (!executable_carrier_carrier(&archive->format, &low, true, false, pd) || low < 0 || low >= total) return false;
+    if ((!executable_carrier_carrier(&archive->format, &low, true, false, pd) &&
+         !sfx_cab_legacy_bss(&archive->format,&low,pd)) || low < 0 || low >= total) return false;
     size = (size_t)((total - low) > 16777216 ? 16777216 : total - low);
     data = (uint8_t *)xx_mem_alloc(size);
     if (!data) return false;
@@ -214,7 +217,7 @@ static bool sfx_cab_find(xx_sfx_cab *archive, xx_pd_struct *pd)
         }
     }
     xx_mem_free(data);
-    return false;
+    return sfx_cab_resources(archive,pd);
 }
 
 static bool sfx_cab_prefix_record(xx_archive_record_state *state)

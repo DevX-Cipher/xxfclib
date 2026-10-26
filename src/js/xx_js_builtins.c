@@ -118,25 +118,12 @@ static JSVal fn_object_ctor(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv,
 
 static JSVal fn_object_keys(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
 {
-    JSVal result = js_new_array(pCtx);
     JSVal object = ARG(0);
-    int64_t nCount = 0;
 
     (void)thisVal;
     (void)pUser;
 
-    if (object.tag == JT_OBJ) {
-        JSPropMap *pMap = &object.u.o->props;
-        size_t i = 0;
-
-        for (i = 0; i < pMap->nSize; i++) {
-            if ((!pMap->pEntries[i].bDeleted) && (!pMap->pEntries[i].bDontEnum)) {
-                js_set_index(pCtx, result, nCount++, js_str(pCtx, pMap->pEntries[i].pKey));
-            }
-        }
-    }
-
-    return result;
+    return (object.tag == JT_OBJ) ? jsobj_keys(pCtx, object.u.o) : js_new_array(pCtx);
 }
 
 static JSVal fn_object_hasownproperty(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
@@ -212,14 +199,9 @@ static JSVal fn_object_defineproperty(JSCtx *pCtx, JSVal thisVal, int nArgc, JSV
     if ((object.tag == JT_OBJ) && (descriptor.tag == JT_OBJ)) {
         JSVal value = js_get(pCtx, descriptor, "value");
         JSVal enumerable = js_get(pCtx, descriptor, "enumerable");
-        JSProp *pProp = NULL;
 
         jsobj_put(pCtx, object.u.o, js_str_data(key), js_str_len(key), value);
-        pProp = jsprops_find(&object.u.o->props, js_str_data(key), js_str_len(key));
-
-        if (pProp && (!js_to_bool(pCtx, enumerable))) {
-            pProp->bDontEnum = 1;
-        }
+        jsobj_set_enumerable(pCtx, object.u.o, js_str_data(key), js_str_len(key), js_to_bool(pCtx, enumerable));
 
         js_release(pCtx, enumerable);
     }
@@ -248,6 +230,7 @@ static JSVal fn_function_apply(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pAr
 {
     JSVal newThis = ARG(0);
     JSVal args = ARG(1);
+    JSVal localArgs[8];
     JSVal *pCallArgs = NULL;
     int64_t nCount = 0;
     int64_t i = 0;
@@ -276,7 +259,11 @@ static JSVal fn_function_apply(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pAr
         }
 
         if (nCount > 0) {
-            pCallArgs = (JSVal *)xx_js_malloc((size_t)nCount * sizeof(JSVal));
+            pCallArgs = localArgs;
+
+            if (nCount > (int64_t)(sizeof(localArgs) / sizeof(localArgs[0]))) {
+                pCallArgs = (JSVal *)xx_js_malloc((size_t)nCount * sizeof(JSVal));
+            }
 
             for (i = 0; i < nCount; i++) {
                 pCallArgs[i] = js_get_index(pCtx, args, i);
@@ -290,7 +277,9 @@ static JSVal fn_function_apply(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pAr
         js_release(pCtx, pCallArgs[i]);
     }
 
-    xx_js_free(pCallArgs);
+    if (pCallArgs != localArgs) {
+        xx_js_free(pCallArgs);
+    }
 
     return result;
 }
@@ -441,7 +430,7 @@ static JSVal fn_array_pop(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
     xx_rt_snprintf(sKey, sizeof(sKey), "%lld", (long long)(nLength - 1));
 
     if (thisVal.tag == JT_OBJ) {
-        jsprops_del(pCtx, &thisVal.u.o->props, sKey);
+        jsobj_del(pCtx, thisVal.u.o, sKey);
         thisVal.u.o->nArrayLen = nLength - 1;
     }
 
@@ -463,6 +452,10 @@ static JSVal fn_array_shift(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv,
         return js_undefined();
     }
 
+    if (thisVal.tag == JT_OBJ && js_array_shift_dense(pCtx, thisVal.u.o, &result)) {
+        return result;
+    }
+
     result = js_get_index(pCtx, thisVal, 0);
 
     for (i = 1; i < nLength; i++) {
@@ -472,7 +465,7 @@ static JSVal fn_array_shift(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv,
     xx_rt_snprintf(sKey, sizeof(sKey), "%lld", (long long)(nLength - 1));
 
     if (thisVal.tag == JT_OBJ) {
-        jsprops_del(pCtx, &thisVal.u.o->props, sKey);
+        jsobj_del(pCtx, thisVal.u.o, sKey);
         thisVal.u.o->nArrayLen = nLength - 1;
     }
 
@@ -486,6 +479,10 @@ static JSVal fn_array_unshift(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArg
 
     (void)pUser;
 
+    if (thisVal.tag == JT_OBJ && js_array_unshift_dense(pCtx, thisVal.u.o, nArgc, pArgv)) {
+        return js_num((double)(nLength + nArgc));
+    }
+
     for (i = nLength - 1; i >= 0; i--) {
         js_set_index(pCtx, thisVal, i + nArgc, js_get_index(pCtx, thisVal, i));
     }
@@ -497,46 +494,187 @@ static JSVal fn_array_unshift(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArg
     return js_num((double)(nLength + nArgc));
 }
 
+/* Append primitives without allocating temporary JS strings. Object conversion
+ * stays on the ordinary ToString path, exactly once and in argument order. */
+static int append_value_string(JSCtx *pCtx, xx_buf_t *pBuf, JSVal value)
+{
+    JSVal text;
+    char sNumber[64];
+
+    if (!xx_buf_ok(pBuf)) {
+        return 0;
+    }
+
+    switch (value.tag) {
+        case JT_STR: return xx_buf_append(pBuf, js_str_data(value), js_str_len(value));
+        case JT_UNDEF: return xx_buf_append(pBuf, "undefined", 9);
+        case JT_NULL: return xx_buf_append(pBuf, "null", 4);
+        case JT_BOOL: return xx_buf_append(pBuf, value.u.b ? "true" : "false", value.u.b ? 4 : 5);
+        case JT_NUM:
+            if (!js_int_to_buf(sNumber, value.u.n)) {
+                xx_rt_dtoa_shortest(value.u.n, sNumber, sizeof(sNumber));
+            }
+            return xx_buf_append_str(pBuf, sNumber);
+        default: break;
+    }
+
+    text = js_to_string(pCtx, value);
+
+    if (js_has_exception(pCtx)) {
+        js_release(pCtx, text);
+        return 0;
+    }
+
+    xx_buf_append(pBuf, js_str_data(text), js_str_len(text));
+    js_release(pCtx, text);
+
+    return xx_buf_ok(pBuf);
+}
+
+/* xx_buf already owns terminated storage. Transfer it rather than copying the
+ * completed string a second time. This also rejects partial buffers on OOM. */
+static JSVal string_from_buffer(JSCtx *pCtx, xx_buf_t *pBuf)
+{
+    size_t nCapacity = pBuf->capacity;
+    size_t nSize = 0;
+    char *pData = xx_buf_detach(pBuf, &nSize);
+
+    if (!pData) {
+        return js_throw(pCtx, "RangeError: string allocation failed");
+    }
+
+    return js_str_take(pCtx, pData, nSize, nCapacity ? nCapacity : 1);
+}
+
+/* Validate the whole range before borrowing it: primitive conversion cannot
+ * call script, whereas a hole or object must retain the observable Get and
+ * ToString order of the general path. Separator conversion has already run. */
+static int array_join_dense_primitives(JSCtx *pCtx, JSVal array, int64_t nLength,
+                                      const char *pSeparator, size_t nSeparatorSize, JSVal *pResult)
+{
+    JSObj *pArray;
+    JSVal *pItems;
+    size_t i, nCapacity = 0, nOffset = 0;
+    char *pText;
+
+    if (array.tag != JT_OBJ || array.u.o->cls != JCLASS_ARRAY) return 0;
+    pArray = array.u.o;
+    if (pArray->bArraySparse || pArray->nArrayLen != nLength ||
+        pArray->nArrayUsed != (size_t)nLength || pArray->nArrayHoles) return 0;
+    pItems = pArray->pArrayData ? pArray->pArrayData + pArray->nArrayStart : NULL;
+    if (nLength > 1) {
+        if (nSeparatorSize > ((size_t)-2) / (size_t)(nLength - 1)) goto too_large;
+        nCapacity = nSeparatorSize * (size_t)(nLength - 1);
+    }
+    for (i = 0; i < (size_t)nLength; i++) {
+        size_t nPiece;
+        switch (pItems[i].tag) {
+            case JT_UNDEF:
+            case JT_NULL: nPiece = 0; break;
+            case JT_BOOL: nPiece = pItems[i].u.b ? 4 : 5; break;
+            case JT_NUM: nPiece = 64; break; /* includes a temporary terminator */
+            case JT_STR: nPiece = pItems[i].u.s->nSize; break;
+            default: return 0;
+        }
+        if (nPiece > (size_t)-2 - nCapacity) goto too_large;
+        nCapacity += nPiece;
+    }
+
+    pText = (char *)xx_js_malloc(nCapacity + 1);
+    for (i = 0; i < (size_t)nLength; i++) {
+        JSVal item = pItems[i];
+        const char *pPiece = NULL;
+        size_t nPiece = 0;
+        if (i && nSeparatorSize) {
+            xx_rt_memcpy(pText + nOffset, pSeparator, nSeparatorSize);
+            nOffset += nSeparatorSize;
+        }
+        switch (item.tag) {
+            case JT_STR: pPiece = item.u.s->pData; nPiece = item.u.s->nSize; break;
+            case JT_BOOL: pPiece = item.u.b ? "true" : "false"; nPiece = item.u.b ? 4 : 5; break;
+            case JT_NUM: {
+                int nDigits = js_int_to_buf(pText + nOffset, item.u.n);
+                if (nDigits > 0) nPiece = (size_t)nDigits;
+                else {
+                    xx_rt_dtoa_shortest(item.u.n, pText + nOffset, 64);
+                    nPiece = xx_rt_strlen(pText + nOffset);
+                }
+                nOffset += nPiece;
+                continue;
+            }
+            default: break;
+        }
+        if (nPiece) {
+            xx_rt_memcpy(pText + nOffset, pPiece, nPiece);
+            nOffset += nPiece;
+        }
+    }
+    pText[nOffset] = 0;
+    *pResult = js_str_take(pCtx, pText, nOffset, nCapacity + 1);
+    return 1;
+
+too_large:
+    *pResult = js_throw(pCtx, "RangeError: string allocation failed");
+    return 1;
+}
+
 static JSVal fn_array_join(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
 {
     int64_t nLength = js_array_length(pCtx, thisVal);
     xx_buf_t buf;
     int64_t i = 0;
-    JSVal separator;
-    JSVal result;
+    JSVal separator = js_undefined();
+    const char *pSeparator = ",";
+    size_t nSeparatorSize = 1;
 
     (void)pUser;
 
     if ((nArgc > 0) && (pArgv[0].tag != JT_UNDEF)) {
         separator = js_to_string(pCtx, pArgv[0]);
-    } else {
-        separator = js_str(pCtx, ",");
+
+        if (js_has_exception(pCtx)) {
+            js_release(pCtx, separator);
+            return js_undefined();
+        }
+
+        pSeparator = js_str_data(separator);
+        nSeparatorSize = js_str_len(separator);
+    }
+
+    {
+        JSVal result;
+        if (array_join_dense_primitives(pCtx, thisVal, nLength, pSeparator, nSeparatorSize, &result)) {
+            js_release(pCtx, separator);
+            return result;
+        }
     }
 
     xx_buf_init(&buf);
 
     for (i = 0; i < nLength; i++) {
         JSVal item = js_get_index(pCtx, thisVal, i);
+        int bOkay = !js_has_exception(pCtx);
 
-        if (i > 0) {
-            xx_buf_append(&buf, js_str_data(separator), js_str_len(separator));
+        if (bOkay && (i > 0)) {
+            bOkay = xx_buf_append(&buf, pSeparator, nSeparatorSize);
         }
 
-        if ((item.tag != JT_UNDEF) && (item.tag != JT_NULL)) {
-            JSVal text = js_to_string(pCtx, item);
-
-            xx_buf_append(&buf, js_str_data(text), js_str_len(text));
-            js_release(pCtx, text);
+        if (bOkay && (item.tag != JT_UNDEF) && (item.tag != JT_NULL)) {
+            bOkay = append_value_string(pCtx, &buf, item);
         }
 
         js_release(pCtx, item);
+
+        if (!bOkay) {
+            xx_buf_free(&buf);
+            js_release(pCtx, separator);
+            return js_has_exception(pCtx) ? js_undefined() : js_throw(pCtx, "RangeError: string allocation failed");
+        }
     }
 
-    result = js_strn(pCtx, buf.data, buf.size);
-    xx_buf_free(&buf);
     js_release(pCtx, separator);
 
-    return result;
+    return string_from_buffer(pCtx, &buf);
 }
 
 static JSVal fn_array_slice(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
@@ -608,7 +746,7 @@ static JSVal fn_array_splice(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv
         xx_rt_snprintf(sKey, sizeof(sKey), "%lld", (long long)i);
 
         if (thisVal.tag == JT_OBJ) {
-            jsprops_del(pCtx, &thisVal.u.o->props, sKey);
+            jsobj_del(pCtx, thisVal.u.o, sKey);
         }
     }
 
@@ -985,9 +1123,19 @@ static JSVal fn_string_charcodeat(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *
     return result;
 }
 
-static int64_t find_substring(const char *pText, size_t nTextSize, const char *pNeedle, size_t nNeedleSize, size_t nStart)
+/* Long needles use the KMP failure function, so repeated prefixes cannot turn
+ * indexOf/split/replace into quadratic scans. Short needles have a fixed upper
+ * bound and avoid the prefix-table setup. The reverse mode visits bytes from
+ * the end and returns the last match without scanning an already matched tail. */
+static int64_t search_substring(JSCtx *pCtx, const char *pText, size_t nTextSize, const char *pNeedle,
+                                size_t nNeedleSize, size_t nStart, int bReverse)
 {
-    size_t i = 0;
+    size_t i;
+    size_t j;
+    size_t nScanSize;
+    size_t localPrefix[128];
+    size_t *pPrefix = localPrefix;
+    int64_t nResult = -1;
 
     if (nNeedleSize == 0) {
         return (int64_t)((nStart > nTextSize) ? nTextSize : nStart);
@@ -997,13 +1145,96 @@ static int64_t find_substring(const char *pText, size_t nTextSize, const char *p
         return -1;
     }
 
-    for (i = nStart; i + nNeedleSize <= nTextSize; i++) {
-        if (xx_rt_memcmp(pText + i, pNeedle, nNeedleSize) == 0) {
-            return (int64_t)i;
+    if (bReverse) {
+        if (nStart > nTextSize - nNeedleSize) {
+            nStart = nTextSize - nNeedleSize;
+        }
+        nScanSize = nStart + nNeedleSize;
+    } else {
+        if (nStart > nTextSize - nNeedleSize) {
+            return -1;
+        }
+        pText += nStart;
+        nTextSize -= nStart;
+        nScanSize = nTextSize;
+    }
+
+    if (nNeedleSize <= 16) {
+        if (bReverse) {
+            for (i = nStart + 1; i > 0; i--) {
+                if ((unsigned char)pText[i + nNeedleSize - 2] == (unsigned char)pNeedle[nNeedleSize - 1] &&
+                    ((nNeedleSize == 1) || (xx_rt_memcmp(pText + i - 1, pNeedle, nNeedleSize - 1) == 0))) {
+                    return (int64_t)(i - 1);
+                }
+            }
+        } else {
+            size_t nLast = nScanSize - nNeedleSize;
+            i = 0;
+            while (i <= nLast) {
+                /* Probe the last byte first: a long repeated prefix such as
+                 * aaaa...ab should skip the whole text when b is absent. */
+                const char *pFound = (const char *)xx_rt_memchr(pText + i + nNeedleSize - 1,
+                    (unsigned char)pNeedle[nNeedleSize - 1], nLast - i + 1);
+                if (!pFound) {
+                    break;
+                }
+                i = (size_t)(pFound - pText) - (nNeedleSize - 1);
+                if ((nNeedleSize == 1) || (xx_rt_memcmp(pText + i, pNeedle, nNeedleSize - 1) == 0)) {
+                    return (int64_t)(nStart + i);
+                }
+                i++;
+            }
+        }
+        return -1;
+    }
+
+    if (nNeedleSize > sizeof(localPrefix) / sizeof(localPrefix[0])) {
+        if (nNeedleSize > (size_t)-1 / sizeof(size_t)) {
+            js_throw(pCtx, "RangeError: search pattern is too large");
+            return -1;
+        }
+        pPrefix = (size_t *)xx_js_malloc(nNeedleSize * sizeof(size_t));
+        if (!pPrefix) {
+            js_throw(pCtx, "RangeError: search allocation failed");
+            return -1;
         }
     }
 
-    return -1;
+    pPrefix[0] = 0;
+    for (i = 1, j = 0; i < nNeedleSize; i++) {
+        unsigned char c = (unsigned char)pNeedle[bReverse ? nNeedleSize - 1 - i : i];
+        while (j && (c != (unsigned char)pNeedle[bReverse ? nNeedleSize - 1 - j : j])) {
+            j = pPrefix[j - 1];
+        }
+        if (c == (unsigned char)pNeedle[bReverse ? nNeedleSize - 1 - j : j]) {
+            j++;
+        }
+        pPrefix[i] = j;
+    }
+
+    for (i = 0, j = 0; i < nScanSize; i++) {
+        unsigned char c = (unsigned char)pText[bReverse ? nScanSize - 1 - i : i];
+        while (j && (c != (unsigned char)pNeedle[bReverse ? nNeedleSize - 1 - j : j])) {
+            j = pPrefix[j - 1];
+        }
+        if (c == (unsigned char)pNeedle[bReverse ? nNeedleSize - 1 - j : j]) {
+            j++;
+        }
+        if (j == nNeedleSize) {
+            nResult = (int64_t)(bReverse ? nScanSize - 1 - i : nStart + i + 1 - nNeedleSize);
+            break;
+        }
+    }
+
+    if (pPrefix != localPrefix) {
+        xx_js_free(pPrefix);
+    }
+    return nResult;
+}
+
+static int64_t find_substring(JSCtx *pCtx, const char *pText, size_t nTextSize, const char *pNeedle, size_t nNeedleSize, size_t nStart)
+{
+    return search_substring(pCtx, pText, nTextSize, pNeedle, nNeedleSize, nStart, 0);
 }
 
 static JSVal fn_string_indexof(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
@@ -1019,12 +1250,12 @@ static JSVal fn_string_indexof(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pAr
         nStart = 0;
     }
 
-    nResult = find_substring(js_str_data(text), js_str_len(text), js_str_data(needle), js_str_len(needle), (size_t)nStart);
+    nResult = find_substring(pCtx, js_str_data(text), js_str_len(text), js_str_data(needle), js_str_len(needle), (size_t)nStart);
 
     js_release(pCtx, text);
     js_release(pCtx, needle);
 
-    return js_num((double)nResult);
+    return js_has_exception(pCtx) ? js_undefined() : js_num((double)nResult);
 }
 
 static JSVal fn_string_lastindexof(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
@@ -1039,7 +1270,6 @@ static JSVal fn_string_lastindexof(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal 
 
     if (nNeedleSize <= nTextSize) {
         size_t nStart = nTextSize - nNeedleSize;
-        size_t i = 0;
 
         /* An absent or NaN position means +Infinity, i.e. no upper bound. */
         if (nArgc > 1) {
@@ -1058,18 +1288,13 @@ static JSVal fn_string_lastindexof(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal 
             }
         }
 
-        for (i = nStart + 1; i > 0; i--) {
-            if (xx_rt_memcmp(js_str_data(text) + i - 1, js_str_data(needle), nNeedleSize) == 0) {
-                nResult = (int64_t)(i - 1);
-                break;
-            }
-        }
+        nResult = search_substring(pCtx, js_str_data(text), nTextSize, js_str_data(needle), nNeedleSize, nStart, 1);
     }
 
     js_release(pCtx, text);
     js_release(pCtx, needle);
 
-    return js_num((double)nResult);
+    return js_has_exception(pCtx) ? js_undefined() : js_num((double)nResult);
 }
 
 static JSVal fn_string_slice(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
@@ -1319,19 +1544,35 @@ static JSVal fn_string_trim(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv,
 
 static JSVal fn_string_concat(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
 {
-    JSVal result = this_string(pCtx, thisVal);
-    int i = 0;
+    JSVal text = this_string(pCtx, thisVal);
+    xx_buf_t buf;
+    int i;
 
     (void)pUser;
 
-    for (i = 0; i < nArgc; i++) {
-        JSVal next = js_concat_str(pCtx, result, pArgv[i]);
-
-        js_release(pCtx, result);
-        result = next;
+    if (js_has_exception(pCtx) || (nArgc == 0)) {
+        return text;
     }
 
-    return result;
+    xx_buf_init(&buf);
+    xx_buf_append(&buf, js_str_data(text), js_str_len(text));
+    js_release(pCtx, text);
+
+    for (i = 0; i < nArgc; i++) {
+        if (!append_value_string(pCtx, &buf, pArgv[i])) {
+            xx_buf_free(&buf);
+            return js_has_exception(pCtx) ? js_undefined() : js_throw(pCtx, "RangeError: string allocation failed");
+        }
+    }
+
+    return string_from_buffer(pCtx, &buf);
+}
+
+/* Assignment fusion must use the captured native function's identity: the
+ * public concat property can be replaced or bound by JavaScript. */
+int js_is_string_concat(JSObj *pObj)
+{
+    return pObj && pObj->cls == JCLASS_NATIVE && !pObj->pBoundTarget && pObj->nativeFn == fn_string_concat;
 }
 
 static JSVal fn_string_split(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
@@ -1411,7 +1652,7 @@ static JSVal fn_string_split(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv
             }
         } else {
             for (;;) {
-                int64_t nFound = find_substring(pData, nSize, js_str_data(separator), nSepSize, nPos);
+                int64_t nFound = find_substring(pCtx, pData, nSize, js_str_data(separator), nSepSize, nPos);
 
                 if ((nFound < 0) || (nCount >= nLimit)) {
                     break;
@@ -1686,7 +1927,7 @@ static JSVal fn_string_replace(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pAr
         xx_js_free(pCaps);
     } else {
         JSVal needle = js_to_string(pCtx, pattern);
-        int64_t nFound = find_substring(pData, nSize, js_str_data(needle), js_str_len(needle), 0);
+        int64_t nFound = find_substring(pCtx, pData, nSize, js_str_data(needle), js_str_len(needle), 0);
 
         if (nFound < 0) {
             xx_buf_append(&buf, pData, nSize);
@@ -2461,10 +2702,14 @@ static void json_stringify_raw(JSCtx *pCtx, xx_buf_t *pBuf, JSVal value, int nDe
         case JT_NULL: xx_buf_append_str(pBuf, "null"); break;
         case JT_BOOL: xx_buf_append_str(pBuf, value.u.b ? "true" : "false"); break;
         case JT_NUM: {
-            JSVal text = js_number_to_string(pCtx, value.u.n, 10);
-
-            xx_buf_append(pBuf, js_str_data(text), js_str_len(text));
-            js_release(pCtx, text);
+            /* Number formatting needs no short-lived JSStr allocation. */
+            char sNumber[64];
+            int nSize = js_int_to_buf(sNumber, value.u.n);
+            if (nSize <= 0) {
+                xx_rt_dtoa_shortest(value.u.n, sNumber, sizeof(sNumber));
+                nSize = (int)xx_rt_strlen(sNumber);
+            }
+            xx_buf_append(pBuf, sNumber, (size_t)nSize);
             break;
         }
         case JT_STR: json_quote(pBuf, js_str_data(value), js_str_len(value)); break;
@@ -2556,7 +2801,11 @@ static JSVal fn_json_stringify(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pAr
 
     xx_buf_init(&buf);
     json_stringify_value(pCtx, &buf, ARG(0), 0);
-    result = js_strn(pCtx, buf.data, buf.size);
+    if (js_has_exception(pCtx)) {
+        xx_buf_free(&buf);
+        return js_undefined();
+    }
+    result = string_from_buffer(pCtx, &buf);
     xx_buf_free(&buf);
 
     return result;

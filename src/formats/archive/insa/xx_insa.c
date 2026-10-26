@@ -29,7 +29,7 @@ static bool pm_parse(Abstractformat *format, pm_stream *stream, xx_pd_struct *pd
     uint8_t version[2];
     int64_t span = pm_available(format), pos = 2;
     uint64_t total_plain = 0U;
-    if (span < 7 || span > INSA_MAX_PACKED || !pm_read(format, 0, version, sizeof(version)) || xx_data_get_u16(version, 2, 0, false) != 1U) return false;
+    if (span < 6 || span > INSA_MAX_PACKED || !pm_read(format, 0, version, sizeof(version)) || xx_data_get_u16(version, 2, 0, false) != 1U) return false;
     while (pos < span) {
         uint8_t field[4];
         uint8_t *packed = NULL, *plain = NULL;
@@ -37,11 +37,20 @@ static bool pm_parse(Abstractformat *format, pm_stream *stream, xx_pd_struct *pd
         size_t remaining, low, high, written = 0U;
         char name[32];
         pm_member *member;
-        if ((pd && xx_pd_is_stopped(pd)) || stream->count >= INSA_MAX_RECORDS || span - pos < 5 || !pm_read(format, pos, field, sizeof(field))) return false;
+        if ((pd && xx_pd_is_stopped(pd)) || stream->count >= INSA_MAX_RECORDS || span - pos < 4 || !pm_read(format, pos, field, sizeof(field))) return false;
         raw = xx_data_get_u32(field, 4, 0, false);
         pos += 4;
         remaining = (size_t)(span - pos);
-        if (raw == 0U || raw > INSA_MAX_MEMBER || total_plain > INSA_MAX_TOTAL - raw || remaining == 0U || remaining > INSA_MAX_PACKED) return false;
+        /* A zero-length member consists of its size word alone; there is no
+         * LH1 stream to scan and the next record begins immediately. */
+        if (raw == 0U) {
+            xx_rt_snprintf(name, sizeof(name), "File_%u.bin", (unsigned)(stream->count + 1U));
+            if (!pm_add(format, stream, name, pos, 0)) return false;
+            member = &stream->items[stream->count - 1U];
+            xx_rt_snprintf(member->name, sizeof(member->name), "%s", name);
+            continue;
+        }
+        if (raw > INSA_MAX_MEMBER || total_plain > INSA_MAX_TOTAL - raw || remaining == 0U || remaining > INSA_MAX_PACKED) return false;
         packed = (uint8_t *)xx_mem_alloc(remaining);
         plain = (uint8_t *)xx_mem_alloc(raw);
         if (!packed || !plain || !pm_read(format, pos, packed, remaining)) {

@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: MIT
  * Included after sx_records. PSA's real reader retains the inner FAT base;
  * only this callback permits authenticated outer-container header fields. */
+#if SX_ALIAS_READER_FACTORY
+#include "xxfclib/formats/filesystem/psa_disk/xx_psa_disk.h"
+#endif
 static xx_data_struct_record_state *sx_disknext_records(Abstractformat *f,const xx_data_struct*d,xx_pd_struct*pd)
 {
 #if SX_ALIAS_READER_FACTORY

@@ -35,6 +35,7 @@
 
 typedef struct xx_bigf_member_s {
     char *name;
+    char *stored_name;
     int64_t header_offset;
     int64_t header_size;
     int64_t data_offset;
@@ -103,6 +104,7 @@ static void xx_bigf_stream_free(void *pointer)
     if (!stream) return;
     for (index = 0U; index < stream->count; ++index) {
         xx_str_free(stream->items[index].name);
+        if (stream->items[index].stored_name) xx_str_free(stream->items[index].stored_name);
     }
     xx_mem_free(stream->items);
     xx_mem_free(stream);
@@ -156,6 +158,7 @@ static xx_bigf_stream *xx_bigf_parse(Abstractformat *self, xx_pd_struct *pd)
     int64_t offset;
     int64_t count;
     int64_t index;
+    bool unnamed = false;
 
     if (!self || !self->device || self->base_address < 0) return NULL;
     total = xx_io_total_size(self->device);
@@ -180,6 +183,7 @@ static xx_bigf_stream *xx_bigf_parse(Abstractformat *self, xx_pd_struct *pd)
         size_t name_length = 0U;
         int64_t data_offset;
         int64_t data_size;
+        int64_t entry_offset = offset;
 
         if (pd && xx_pd_is_stopped(pd)) goto fail;
         if (!xx_bigf_range_within(span, offset, XX_BIGF_ENTRY_FIXED) || !xx_bigf_read_at(self, self->base_address + offset, entry, sizeof(entry))) {
@@ -215,14 +219,15 @@ static xx_bigf_stream *xx_bigf_parse(Abstractformat *self, xx_pd_struct *pd)
             name[name_length++] = (char)byte;
         }
         name[name_length] = '\0';
-        if (name_length == 0U || !xx_bigf_range_within(span, data_offset, data_size)) {
+        if (!xx_bigf_range_within(span, data_offset, data_size)) {
             xx_str_free(name);
             goto fail;
         }
 
         xx_mem_zero(&member, sizeof(member));
         member.name = name;
-        member.header_offset = self->base_address + offset;
+        member.header_offset = self->base_address + entry_offset;
+        member.header_size = offset - entry_offset;
         member.data_offset = self->base_address + data_offset;
         member.compressed_size = data_size;
         member.uncompressed_size = data_size;
@@ -230,8 +235,26 @@ static xx_bigf_stream *xx_bigf_parse(Abstractformat *self, xx_pd_struct *pd)
             xx_str_free(name);
             goto fail;
         }
+        if (name_length == 0U) unnamed = true;
     }
     if (stream->count == 0U) goto fail;
+    if (unnamed) {
+        uint32_t first_data = xx_data_get_u32(header + 12, 4, 0, true);
+        /* Nameless mask libraries use the same directory grammar. Keep all
+         * payloads beyond the full directory. The archive length field is
+         * informational: some writers leave the final member's size there. */
+        if ((uint64_t)span > UINT32_MAX ||
+            first_data < (uint64_t)offset || first_data > (uint64_t)span) goto fail;
+        for (index = 0; index < (int64_t)stream->count; ++index) {
+            xx_bigf_member *member = &stream->items[index];
+            char prefix[24];
+            if (member->compressed_size && member->data_offset - self->base_address < first_data) goto fail;
+            xx_rt_snprintf(prefix, sizeof(prefix), "%06u-", (unsigned int)index);
+            member->stored_name = member->name;
+            member->name = xx_str_concat(prefix, member->stored_name[0] ? member->stored_name : "member.bin");
+            if (!member->name) goto fail;
+        }
+    }
     stream->archive_size = span;
     return stream;
 
@@ -358,6 +381,8 @@ static bool xx_bigf_set_record(xx_archive_record *record, const xx_bigf_member *
     record->data_offset = member->data_offset;
     record->compressed_size = member->compressed_size;
     return xx_archive_record_set_original_name(record, member->name) &&
+           (!member->stored_name || xx_archive_record_set_meta_str(record, XX_META_ID_COMMENT,
+                member->stored_name[0] ? member->stored_name : "Unnamed BIGF member")) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSED_SIZE, (uint64_t)member->compressed_size) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_UNCOMPRESSED_SIZE, (uint64_t)member->uncompressed_size) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSION_METHOD, member->method) &&

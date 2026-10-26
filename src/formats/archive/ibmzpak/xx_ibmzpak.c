@@ -148,7 +148,7 @@ static bool xx_ibmzpak_add(xx_ibmzpak_stream *stream, const xx_ibmzpak_member *m
 /* Forward declarations: the parse and the decode
  * call into each other's helpers. */
 static uint8_t *xx_ibmzpak_load(Abstractformat *self, int64_t data_offset, int64_t size);
-static char *xx_ibmzpak_make_name(const uint8_t *field);
+static char *xx_ibmzpak_make_name(const uint8_t *field, size_t field_size);
 static xx_ibmzpak_stream *xx_ibmzpak_parse(Abstractformat *self, xx_pd_struct *pd);
 static bool xx_ibmzpak_decode(Abstractformat *self, const xx_ibmzpak_member *member, uint8_t **out, size_t *out_size, xx_pd_struct *pd);
 
@@ -183,7 +183,7 @@ static uint8_t *xx_ibmzpak_load(Abstractformat *self, int64_t data_offset, int64
 /* The stored names are either a DOS path rooted at the install target
  * ("\MYDEL.BAT") or a bare 8.3 name space padded inside the fixed buffer
  * ("epfw_dos.pif   "). Returns a '/'-separated copy, or NULL. */
-static char *xx_ibmzpak_make_name(const uint8_t *field)
+static char *xx_ibmzpak_make_name(const uint8_t *field, size_t field_size)
 {
     char *name;
     uint8_t character;
@@ -196,7 +196,7 @@ static char *xx_ibmzpak_make_name(const uint8_t *field)
     size_t parts = 0U;
     size_t component = 0U;
 
-    while (terminator < (size_t)XX_IBMZPAK_NAME_SIZE && field[terminator] != 0U) {
+    while (terminator < field_size && field[terminator] != 0U) {
         ++terminator;
     }
     /* The field is a fixed, zero-filled 80-byte buffer. A name that fills it
@@ -204,10 +204,10 @@ static char *xx_ibmzpak_make_name(const uint8_t *field)
      * is not that buffer -- with only an eight-byte header to go on, this and
      * the printable-character test are what keep unrelated data from
      * presenting itself as a directory entry. */
-    if (terminator == 0U || terminator >= (size_t)XX_IBMZPAK_NAME_SIZE) {
+    if (terminator == 0U || terminator >= field_size) {
         return NULL;
     }
-    for (index = terminator; index < (size_t)XX_IBMZPAK_NAME_SIZE; ++index) {
+    for (index = terminator; index < field_size; ++index) {
         if (field[index] != 0U) return NULL;
     }
     for (index = 0U; index < terminator; ++index) {
@@ -263,7 +263,7 @@ static char *xx_ibmzpak_make_name(const uint8_t *field)
     return name;
 }
 
-static xx_ibmzpak_stream *xx_ibmzpak_parse(Abstractformat *self, xx_pd_struct *pd)
+static xx_ibmzpak_stream *xx_ibmzpak_parse_width(Abstractformat *self, xx_pd_struct *pd, size_t name_size)
 {
     static const uint8_t magic[5] = {'-', 'Z', 'P', 'A', 'K'};
     xx_ibmzpak_stream *stream;
@@ -282,7 +282,7 @@ static xx_ibmzpak_stream *xx_ibmzpak_parse(Abstractformat *self, xx_pd_struct *p
     total = xx_io_total_size(self->device);
     if (total < self->base_address) return NULL;
     span = total - self->base_address;
-    if (span < XX_IBMZPAK_HEADER_SIZE + XX_IBMZPAK_MIN_PACKED_SIZE + XX_IBMZPAK_ENTRY_SIZE + XX_IBMZPAK_COUNT_SIZE) {
+    if (span < XX_IBMZPAK_HEADER_SIZE + XX_IBMZPAK_MIN_PACKED_SIZE + (int64_t)(name_size + 8U) + XX_IBMZPAK_COUNT_SIZE) {
         return NULL;
     }
     if (!xx_ibmzpak_read_at(self, self->base_address, header, sizeof(header))) {
@@ -302,7 +302,7 @@ static xx_ibmzpak_stream *xx_ibmzpak_parse(Abstractformat *self, xx_pd_struct *p
 
     /* count <= 65535 and the entry size is 88, so the product is bounded well
      * below any overflow. */
-    directory_size = count * XX_IBMZPAK_ENTRY_SIZE;
+    directory_size = count * (int64_t)(name_size + 8U);
     directory_offset = span - XX_IBMZPAK_COUNT_SIZE - directory_size;
     /* The payload must still leave room for one minimal stream, so the
      * directory can never start at or before the fixed header. This is what a
@@ -327,15 +327,15 @@ static xx_ibmzpak_stream *xx_ibmzpak_parse(Abstractformat *self, xx_pd_struct *p
         bool measured;
 
         if (pd && xx_pd_is_stopped(pd)) goto fail;
-        entry_offset = directory_offset + (index * XX_IBMZPAK_ENTRY_SIZE);
-        if (!xx_ibmzpak_range_within(span, entry_offset, XX_IBMZPAK_ENTRY_SIZE) || !xx_ibmzpak_read_at(self, self->base_address + entry_offset, entry, sizeof(entry))) {
+        entry_offset = directory_offset + index * (int64_t)(name_size + 8U);
+        if (!xx_ibmzpak_range_within(span, entry_offset, (int64_t)(name_size + 8U)) || !xx_ibmzpak_read_at(self, self->base_address + entry_offset, entry, name_size + 8U)) {
             goto fail;
         }
 
-        name = xx_ibmzpak_make_name(entry);
+        name = xx_ibmzpak_make_name(entry, name_size);
         if (!name) goto fail;
 
-        packed_size = (int64_t)xx_data_get_u32(entry + XX_IBMZPAK_NAME_SIZE, 4, 0, false);
+        packed_size = (int64_t)xx_data_get_u32(entry + name_size, 4, 0, false);
         if (packed_size < XX_IBMZPAK_MIN_PACKED_SIZE) {
             xx_str_free(name);
             goto fail;
@@ -371,14 +371,14 @@ static xx_ibmzpak_stream *xx_ibmzpak_parse(Abstractformat *self, xx_pd_struct *p
         xx_mem_zero(&member, sizeof(member));
         member.name = name;
         member.header_offset = self->base_address + entry_offset;
-        member.header_size = XX_IBMZPAK_ENTRY_SIZE;
+        member.header_size = (int64_t)(name_size + 8U);
         member.data_offset = self->base_address + data_offset;
         member.compressed_size = packed_size;
         member.uncompressed_size = (int64_t)produced;
         member.method = XX_IBMZPAK_METHOD_DCL;
         /* Date at +0x54, time at +0x56, published as the usual packed dword. */
         member.timestamp =
-            ((uint64_t)xx_data_get_u16(entry + XX_IBMZPAK_NAME_SIZE + 4, 2, 0, false) << 16) | (uint64_t)xx_data_get_u16(entry + XX_IBMZPAK_NAME_SIZE + 6, 2, 0, false);
+            ((uint64_t)xx_data_get_u16(entry + name_size + 4U, 2, 0, false) << 16) | (uint64_t)xx_data_get_u16(entry + name_size + 6U, 2, 0, false);
         member.is_folder = false;
         if (!xx_ibmzpak_add(stream, &member)) {
             xx_str_free(name);
@@ -401,6 +401,20 @@ static xx_ibmzpak_stream *xx_ibmzpak_parse(Abstractformat *self, xx_pd_struct *p
 fail:
     xx_ibmzpak_stream_free(stream);
     return NULL;
+}
+
+static xx_ibmzpak_stream *xx_ibmzpak_parse(Abstractformat *self, xx_pd_struct *pd)
+{
+    xx_ibmzpak_stream *stream;
+    if (pd && xx_pd_is_stopped(pd)) return NULL;
+    stream = xx_ibmzpak_parse_width(self, pd, XX_IBMZPAK_NAME_SIZE);
+    if (!stream && !(pd && xx_pd_is_stopped(pd))) {
+        /* A short directory uses 79 name bytes rather than 80. Never move
+         * the table based on a plausible name alone: the normal parser also
+         * requires every complete DCL extent to land exactly on this table. */
+        stream = xx_ibmzpak_parse_width(self, pd, XX_IBMZPAK_NAME_SIZE - 1U);
+    }
+    return stream;
 }
 
 /* Members are PKWARE DCL ("implode") streams with the two-byte prelude still

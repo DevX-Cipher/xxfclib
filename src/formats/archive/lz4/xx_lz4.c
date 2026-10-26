@@ -91,10 +91,21 @@ static bool xx_lz4_take(const uint8_t **cursor, const uint8_t *end, size_t count
     return true;
 }
 
+/* A partial next frame must remain a truncation, not become an overlay. */
+static bool xx_lz4_magic_prefix(const uint8_t *bytes, size_t size)
+{
+    static const uint8_t standard[] = {4U, 0x22U, 0x4dU, 0x18U};
+    static const uint8_t legacy[] = {2U, 0x21U, 0x4cU, 0x18U};
+    uint8_t skippable[] = {0x50U, 0x2aU, 0x4dU, 0x18U};
+    if (size == 0U || size >= 4U) return false;
+    if (bytes[0] >= 0x50U && bytes[0] <= 0x5fU) skippable[0] = bytes[0];
+    return xx_rt_memcmp(bytes, standard, size) == 0 || xx_rt_memcmp(bytes, legacy, size) == 0 || xx_rt_memcmp(bytes, skippable, size) == 0;
+}
+
 /* Walk LZ4 frames without decompressing their blocks. A block-count ceiling
  * bounds decoding when a frame omits the optional content-size field. */
 static bool xx_lz4_scan_frames(const uint8_t *source, size_t size, uint64_t *uncompressed_size, uint64_t *frame_count, uint64_t *upper_bound,
-                               bool *all_content_sizes_present)
+                               bool *all_content_sizes_present, size_t *encoded_size)
 {
     const uint8_t *cursor = source;
     const uint8_t *end;
@@ -121,8 +132,17 @@ static bool xx_lz4_scan_frames(const uint8_t *source, size_t size, uint64_t *unc
         bool block_checksum;
         bool content_checksum;
 
-        if ((size_t)(end - cursor) < 4U) return false;
+        if ((size_t)(end - cursor) < 4U) {
+            if (frames == 0U || xx_lz4_magic_prefix(cursor, (size_t)(end - cursor))) return false;
+            break;
+        }
         magic = xx_data_get_u32(cursor, 4, 0, false);
+        if (magic != XX_LZ4_FRAME_MAGIC && (magic & UINT32_C(0xfffffff0)) != XX_LZ4_SKIP_MAGIC) {
+            /* An unrelated tail after complete frames is an overlay. A known
+             * legacy frame is unsupported input, not unrelated tail data. */
+            if (frames == 0U || magic == UINT32_C(0x184c2102)) return false;
+            break;
+        }
         cursor += 4U;
         if ((magic & UINT32_C(0xFFFFFFF0)) == XX_LZ4_SKIP_MAGIC) {
             uint32_t skipped_size;
@@ -196,6 +216,7 @@ static bool xx_lz4_scan_frames(const uint8_t *source, size_t size, uint64_t *unc
     *frame_count = frames;
     if (upper_bound) *upper_bound = ceiling;
     if (all_content_sizes_present) *all_content_sizes_present = all_sized;
+    if (encoded_size) *encoded_size = (size_t)(cursor - source);
     return true;
 }
 
@@ -205,6 +226,7 @@ static bool xx_lz4_scan_device(Abstractformat *self, uint64_t *uncompressed_size
     int64_t input_size;
     uint8_t *input = NULL;
     bool result = false;
+    size_t encoded_size = 0U;
 
     if (!self || !self->device || self->base_address < 0 || !uncompressed_size || !frame_count || !stream_size || (pd && xx_pd_is_stopped(pd))) {
         return false;
@@ -219,8 +241,8 @@ static bool xx_lz4_scan_device(Abstractformat *self, uint64_t *uncompressed_size
     if (!input || !xx_lz4_read_exact_at(self->device, self->base_address, input, (size_t)input_size)) {
         goto cleanup;
     }
-    result = xx_lz4_scan_frames(input, (size_t)input_size, uncompressed_size, frame_count, NULL, NULL);
-    if (result) *stream_size = input_size;
+    result = xx_lz4_scan_frames(input, (size_t)input_size, uncompressed_size, frame_count, NULL, NULL, &encoded_size);
+    if (result) *stream_size = (int64_t)encoded_size;
 
 cleanup:
     xx_mem_free(input);
@@ -252,6 +274,7 @@ static bool xx_lz4_decode_stream(Abstractformat *self, xx_io_device *destination
     uint64_t ceiling = 0U;
     uint64_t frames;
     size_t written = 0U;
+    size_t encoded_size = 0U;
     bool all_sized = false;
     bool result = false;
 
@@ -266,12 +289,12 @@ static bool xx_lz4_decode_stream(Abstractformat *self, xx_io_device *destination
     input_size = total_size - self->base_address;
     input = (uint8_t *)xx_mem_alloc((size_t)input_size);
     if (!input || !xx_lz4_read_exact_at(self->device, self->base_address, input, (size_t)input_size) ||
-        !xx_lz4_scan_frames(input, (size_t)input_size, &declared_size, &frames, &ceiling, &all_sized) || declared_size > (uint64_t)SIZE_MAX) {
+        !xx_lz4_scan_frames(input, (size_t)input_size, &declared_size, &frames, &ceiling, &all_sized, &encoded_size) || declared_size > (uint64_t)SIZE_MAX) {
         goto cleanup;
     }
     if (all_sized && declared_size != 0U) {
         output = (uint8_t *)xx_mem_alloc((size_t)declared_size);
-        if (!output || !xx_lz4_decompress_memory(input, (size_t)input_size, output, (size_t)declared_size, &written) || written != (size_t)declared_size) {
+        if (!output || !xx_lz4_decompress_memory(input, encoded_size, output, (size_t)declared_size, &written) || written != (size_t)declared_size) {
             goto cleanup;
         }
     } else {
@@ -283,7 +306,7 @@ static bool xx_lz4_decode_stream(Abstractformat *self, xx_io_device *destination
          * decoder report the zero length. */
         if (ceiling > (uint64_t)SIZE_MAX) goto cleanup;
         output = (uint8_t *)xx_mem_alloc(ceiling == 0U ? 1U : (size_t)ceiling);
-        if (!output || !xx_lz4_decompress_frames(input, (size_t)input_size, output, (size_t)ceiling, &written)) {
+        if (!output || !xx_lz4_decompress_frames(input, encoded_size, output, (size_t)ceiling, &written)) {
             goto cleanup;
         }
         declared_size = (uint64_t)written;
@@ -293,7 +316,7 @@ static bool xx_lz4_decode_stream(Abstractformat *self, xx_io_device *destination
     }
     *uncompressed_size = declared_size;
     *frame_count = frames;
-    *stream_size = input_size;
+    *stream_size = (int64_t)encoded_size;
     result = true;
 
 cleanup:
@@ -341,7 +364,8 @@ static bool xx_lz4_populate_record(Abstractformat *self, xx_archive_record *reco
     xx_archive_record_init(record);
     record->header_offset = self->base_address;
     record->header_size = 4;
-    record->data_offset = self->base_address + 4;
+    /* The decoder consumes the complete framed stream, including its magic. */
+    record->data_offset = self->base_address;
     record->compressed_size = self->format_size;
     return xx_archive_record_set_meta_str(record, XX_META_ID_ORIGINAL_NAME, XX_LZ4_PAYLOAD_NAME) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_UNCOMPRESSED_SIZE, archive->uncompressed_size) &&

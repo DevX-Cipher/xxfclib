@@ -15,10 +15,13 @@
  *     0x01  u8       escape byte for this block
  *     0x02..         token stream, decoded BACKWARDS from its last byte
  *
- * Between two blocks an encoder may emit zero, one or two 0x6b pad bytes
+ * Between two blocks an encoder may emit 0x6b pad bytes
  * (and may emit them after the final block as well). Every skipped byte must
  * be an authenticated 0x6b: there is deliberately no loose search for the
  * next magic, because that would turn a corrupt chain into a plausible one.
+ * A final zero suffix of at most 128 bytes is accepted only after every
+ * preceding block fully decodes and its stored byte-sum checksum matches.
+ * The same authentication is required for runs of 3..128 0x6b bytes.
  *
  * Block headers are always at an even offset. There is no member count and
  * no central directory, so the chain tiling the container exactly is the
@@ -140,6 +143,34 @@ static bool xx_mi10_add(xx_mi10_stream *stream, const xx_mi10_member *member)
 static xx_mi10_stream *xx_mi10_parse(Abstractformat *self, xx_pd_struct *pd);
 static bool xx_mi10_decode(Abstractformat *self, const xx_mi10_member *member, uint8_t **out, size_t *out_size, xx_pd_struct *pd);
 
+static bool xx_mi10_authenticate(Abstractformat *self, xx_mi10_stream *stream, xx_pd_struct *pd)
+{
+    uint8_t header[4];
+    uint64_t total = 0;
+    for (size_t i = 0; i < stream->count; ++i) {
+        uint8_t *plain = NULL;
+        size_t size = 0;
+        uint32_t sum = 0;
+        total += (uint64_t)stream->items[i].uncompressed_size;
+        if (total > XX_MI10_MAX_DECODED || (pd && xx_pd_is_stopped(pd)) ||
+            !xx_mi10_read_at(self, stream->items[i].header_offset + 4, header, sizeof(header)) ||
+            !xx_mi10_decode(self, &stream->items[i], &plain, &size, pd)) return false;
+        for (size_t j = 0; j < size; ++j) sum += plain[j];
+        xx_mem_free(plain);
+        if (sum != xx_data_get_u32(header, sizeof(header), 0, true)) return false;
+    }
+    return !(pd && xx_pd_is_stopped(pd));
+}
+
+static bool xx_mi10_zero_tail(Abstractformat *self, xx_mi10_stream *stream, int64_t at, int64_t span, xx_pd_struct *pd)
+{
+    uint8_t bytes[128];
+    size_t n = (size_t)(span - at);
+    if (!n || n > sizeof(bytes) || !xx_mi10_read_at(self, self->base_address + at, bytes, n)) return false;
+    for (size_t i = 0; i < n; ++i) if (bytes[i]) return false;
+    return xx_mi10_authenticate(self, stream, pd);
+}
+
 /* No block count is stored, so this is a runaway guard, not a format
  * limit. */
 
@@ -156,6 +187,7 @@ static xx_mi10_stream *xx_mi10_parse(Abstractformat *self, xx_pd_struct *pd)
     int64_t span;
     int64_t offset;
     int64_t count = 0;
+    bool extended_padding = false;
 
     if (!self || !self->device || self->base_address < 0) return NULL;
     total = xx_io_total_size(self->device);
@@ -251,12 +283,12 @@ static xx_mi10_stream *xx_mi10_parse(Abstractformat *self, xx_pd_struct *pd)
             break;
         }
 
-        /* Zero, one or two 0x6b pad bytes may separate blocks. Each skipped
+        /* Bounded 0x6b pad runs may separate blocks. Each skipped
          * byte must actually BE 0x6b: scanning forward for the next magic
          * instead would let a corrupt or unrelated stretch of bytes pass as
          * inter-block slack. */
         padding = 0;
-        while (next < span && padding < XX_MI10_MAX_PADDING) {
+        while (next < span && padding < 128) {
             if (!xx_mi10_read_at(self, self->base_address + next, &pad, 1U)) {
                 goto fail;
             }
@@ -264,8 +296,13 @@ static xx_mi10_stream *xx_mi10_parse(Abstractformat *self, xx_pd_struct *pd)
             ++next;
             ++padding;
         }
+        if (padding > XX_MI10_MAX_PADDING) extended_padding = true;
         if (next == span) {
             offset = next;
+            break;
+        }
+        if (span - next <= 128 && xx_mi10_zero_tail(self, stream, next, span, pd)) {
+            offset = span;
             break;
         }
         /* The next header must be aligned, whole, and carry the magic; the
@@ -274,12 +311,11 @@ static xx_mi10_stream *xx_mi10_parse(Abstractformat *self, xx_pd_struct *pd)
         offset = next;
     }
 
-    /* No count and no terminator: the chain has to consume the container
-     * exactly. This is the check a later reader will be tempted to loosen so
-     * that "an MI10 block with junk after it" still lists, and loosening it
-     * makes the format match any file with "MI10" at offset 0. */
+    /* The chain must consume the container, including only the authenticated
+     * terminal padding handled above. Never resynchronise after junk. */
     if (offset != span) goto fail;
     if (stream->count == 0U) goto fail;
+    if (extended_padding && !xx_mi10_authenticate(self, stream, pd)) goto fail;
     stream->archive_size = span;
     return stream;
 

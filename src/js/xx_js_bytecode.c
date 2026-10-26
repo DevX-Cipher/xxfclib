@@ -29,7 +29,7 @@
 #define JS_BC_MAGIC_1 'D'
 #define JS_BC_MAGIC_2 'I'
 #define JS_BC_MAGIC_3 'E'
-#define JS_BC_VERSION 2
+#define JS_BC_VERSION 3
 
 #define BC_FLAG_STR 0x0001
 #define BC_FLAG_STR2 0x0002
@@ -40,6 +40,7 @@
 #define BC_FLAG_LIST 0x0040
 #define BC_FLAG_VARNAMES 0x0080
 #define BC_FLAG_NUM 0x0100
+#define BC_FLAG_SOURCE 0x0200
 
 int js_is_bytecode(const void *pData, size_t nSize)
 {
@@ -95,6 +96,7 @@ static void serialize_node(xx_buf_t *pBuf, const JSNode *pNode)
     uint8_t type = 0;
     uint8_t op = 0;
     int32_t line = 0;
+    int32_t column = 0;
     uint16_t flags = 0;
     uint8_t *pPrefix;
 
@@ -105,7 +107,9 @@ static void serialize_node(xx_buf_t *pBuf, const JSNode *pNode)
     type = (uint8_t)pNode->type;
     op = (uint8_t)pNode->op;
     line = (int32_t)pNode->nLine;
+    column = (int32_t)pNode->nColumn;
 
+    if (pNode->type == N_PROGRAM && pNode->pSourceName) flags |= BC_FLAG_SOURCE;
     if (pNode->pStr) flags |= BC_FLAG_STR;
     if (pNode->pStr2) flags |= BC_FLAG_STR2;
     if (pNode->a) flags |= BC_FLAG_NODE_A;
@@ -116,7 +120,7 @@ static void serialize_node(xx_buf_t *pBuf, const JSNode *pNode)
     if (pNode->nVarNames > 0 && pNode->ppVarNames) flags |= BC_FLAG_VARNAMES;
     if (pNode->type == N_NUM || pNode->nNum != 0.0) flags |= BC_FLAG_NUM;
 
-    pPrefix = serialize_append_space(pBuf, 8U + ((flags & BC_FLAG_NUM) ? sizeof(double) : 0U));
+    pPrefix = serialize_append_space(pBuf, 12U + ((flags & BC_FLAG_NUM) ? sizeof(double) : 0U));
     if (!pPrefix) {
         return;
     }
@@ -124,10 +128,16 @@ static void serialize_node(xx_buf_t *pBuf, const JSNode *pNode)
     pPrefix[1] = op;
     serialize_scalar(pPrefix + 2, &line, sizeof(line));
     serialize_scalar(pPrefix + 6, &flags, sizeof(flags));
+    serialize_scalar(pPrefix + 8, &column, sizeof(column));
     if (flags & BC_FLAG_NUM) {
-        serialize_scalar(pPrefix + 8, &pNode->nNum, sizeof(double));
+        serialize_scalar(pPrefix + 12, &pNode->nNum, sizeof(double));
     }
 
+    if (flags & BC_FLAG_SOURCE) {
+        uint32_t len = (uint32_t)xx_rt_strlen(pNode->pSourceName);
+        xx_buf_append(pBuf, &len, sizeof(len));
+        xx_buf_append(pBuf, pNode->pSourceName, len);
+    }
     if (flags & BC_FLAG_STR) {
         uint32_t len = 0;
         if ((pNode->type == N_STR || pNode->type == N_PROP) && pNode->nNum > 0.0) {
@@ -232,6 +242,7 @@ typedef struct {
     size_t nSize;
     size_t nPos;
     int bError;
+    uint16_t nVersion;
 } BcReader;
 
 static bool bc_read(BcReader *r, void *dest, size_t len)
@@ -270,6 +281,7 @@ static JSNode *deserialize_node(BcReader *r)
     uint8_t type = 0;
     uint8_t op = 0;
     int32_t line = 0;
+    int32_t column = 0;
     uint16_t flags = 0;
     JSNode *pNode = NULL;
 
@@ -283,12 +295,19 @@ static JSNode *deserialize_node(BcReader *r)
 
     pNode = js_node_new((JSNodeType)type, (int)line);
     pNode->op = (JSOp)op;
+    if (type > N_DEBUGGER || (r->nVersion < 3 && type > N_EXPRSTMT) || op > OP_ASSIGN) {
+        js_free_node(pNode); r->bError = 1; return NULL;
+    }
 
     if (!bc_read(r, &flags, sizeof(flags))) {
         js_free_node(pNode);
         return NULL;
     }
 
+    if (r->nVersion >= 3) {
+        if (!bc_read(r, &column, sizeof(column))) { js_free_node(pNode); return NULL; }
+        pNode->nColumn = column > 0 ? (int)column : 0;
+    }
     if (flags & BC_FLAG_NUM) {
         if (!bc_read(r, &pNode->nNum, sizeof(double))) {
             js_free_node(pNode);
@@ -296,6 +315,7 @@ static JSNode *deserialize_node(BcReader *r)
         }
     }
 
+    if (r->nVersion >= 3 && (flags & BC_FLAG_SOURCE)) pNode->pSourceName = bc_read_str(r);
     if (flags & BC_FLAG_STR) pNode->pStr = bc_read_str(r);
     if (flags & BC_FLAG_STR2) pNode->pStr2 = bc_read_str(r);
     if (flags & BC_FLAG_NODE_A) pNode->a = deserialize_node(r);
@@ -309,6 +329,7 @@ static JSNode *deserialize_node(BcReader *r)
             uint32_t i = 0;
             pNode->ppList = (JSNode **)xx_js_calloc(count, sizeof(JSNode *));
             pNode->nList = count;
+            pNode->nListCapacity = count;
             for (i = 0; i < count; i++) {
                 uint8_t marker = 0;
                 if (!bc_read(r, &marker, 1)) {
@@ -344,41 +365,26 @@ static JSNode *deserialize_node(BcReader *r)
     return pNode;
 }
 
-int js_eval_nested_bytecode(JSCtx *pCtx, const void *pBytecode, size_t nSize, const char *pName)
+/* Decode without retaining any context state; the caller owns the AST. */
+JSNode *js_parse_bytecode(const void *pBytecode, size_t nSize)
 {
     BcReader r;
-    JSNode *pProgram = NULL;
-    JSVal value;
-
-    (void)pName;
-
-    if (!pCtx || !js_is_bytecode(pBytecode, nSize)) {
-        if (pCtx) {
-            js_throw(pCtx, "Invalid bytecode format");
-        }
-        return 0;
-    }
-
+    JSNode *pProgram;
+    if (!js_is_bytecode(pBytecode, nSize)) return NULL;
     r.pData = (const uint8_t *)pBytecode;
     r.nSize = nSize;
-    r.nPos = 8; /* skip 8-byte header */
+    r.nPos = 8;
     r.bError = 0;
-
+    xx_rt_memcpy(&r.nVersion, r.pData + 4, sizeof(r.nVersion));
+    if (r.nVersion < 1 || r.nVersion > JS_BC_VERSION) return NULL;
     pProgram = deserialize_node(&r);
     if (!pProgram || r.bError) {
-        if (pProgram) {
-            js_free_node(pProgram);
-        }
-        js_throw(pCtx, "Corrupt bytecode stream");
-        return 0;
+        js_free_node(pProgram);
+        return NULL;
     }
-
-    xx_list_append(&pCtx->vecPrograms, &pProgram);
-
-    value = js_run_program(pCtx, pProgram, pCtx->pGlobalScope, jsval_obj(jsobj_ref(pCtx->pGlobal)));
-    js_release(pCtx, value);
-
-    return pCtx->bException ? 0 : 1;
+    js_node_set_source(pProgram, NULL);
+    js_prepare_program(pProgram);
+    return pProgram;
 }
 
 /* ------------------------------------------------------------- decompiler  */
@@ -486,6 +492,7 @@ static void bc_decompile_node(xx_buf_t *buf, const JSNode *node)
             xx_buf_append_str(buf, "}\n");
             break;
         }
+        case N_DEBUGGER: xx_buf_append_str(buf, "debugger"); break;
         case N_EMPTY: {
             xx_buf_append_str(buf, ";");
             break;
@@ -829,6 +836,8 @@ char *js_decompile_bytecode(const void *pBytecode, size_t nSize)
     r.nSize = nSize;
     r.nPos = 8;
     r.bError = 0;
+    xx_rt_memcpy(&r.nVersion, r.pData + 4, sizeof(r.nVersion));
+    if (r.nVersion < 1 || r.nVersion > JS_BC_VERSION) return NULL;
 
     pProgram = deserialize_node(&r);
     if (!pProgram || r.bError) {

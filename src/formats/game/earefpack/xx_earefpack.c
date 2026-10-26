@@ -175,6 +175,8 @@ static xx_earefpack_stream *xx_earefpack_parse(Abstractformat *self, xx_pd_struc
     uint8_t *container = NULL;
     size_t consumed = 0U;
     size_t produced = 0U;
+    bool tagged_footer = false;
+    bool word_padding = false;
     int64_t total;
     int64_t span;
     int64_t header_size;
@@ -230,11 +232,23 @@ static xx_earefpack_stream *xx_earefpack_parse(Abstractformat *self, xx_pd_struc
     }
     xx_mem_free(container);
     container = NULL;
-    /* The stream must be the whole file: every corpus sample ends on its
-     * last byte. Allowing a short stream with a trailing remainder would
-     * turn the grammar probe from a decision into a guess, because a random
-     * file can satisfy a few commands and then stop. */
-    if ((int64_t)consumed != span) return NULL;
+    /* Some QFS writers round an odd stream length up to an even file size.
+     * The padding byte is not initialized. Only that one-byte alignment
+     * case and the bounded FCRC trailer below are allowed after a complete
+     * grammar and declared-size match. */
+    if (span - (int64_t)consumed == 8) {
+        uint8_t footer[8];
+        if (!xx_earefpack_read_at(self, self->base_address + (int64_t)consumed, footer, sizeof(footer))) return NULL;
+        tagged_footer = footer[0] == 'F' && footer[1] == 'C' && footer[2] == 'R' && footer[3] == 'C' && footer[6] == 0U && footer[7] == 0U;
+    }
+    if (span - (int64_t)consumed > 0 && span - (int64_t)consumed <= 3 && (span & 3) == 0) {
+        uint8_t prefix[3], padding[3];
+        size_t amount = (size_t)(span - (int64_t)consumed);
+        if (!xx_earefpack_read_at(self, self->base_address, prefix, amount) ||
+            !xx_earefpack_read_at(self, self->base_address + (int64_t)consumed, padding, amount)) return NULL;
+        word_padding = xx_rt_memcmp(prefix, padding, amount) == 0;
+    }
+    if ((int64_t)consumed != span && !tagged_footer && !word_padding && !((consumed & 1U) != 0U && (int64_t)consumed + 1 == span)) return NULL;
     if (produced == 0U) return NULL;
 
     stream = (xx_earefpack_stream *)xx_mem_alloc(sizeof(*stream));
@@ -254,7 +268,7 @@ static xx_earefpack_stream *xx_earefpack_parse(Abstractformat *self, xx_pd_struc
      * re-reads the size fields itself, so handing it a headerless slice
      * would fail. */
     member.data_offset = self->base_address;
-    member.compressed_size = span;
+    member.compressed_size = (int64_t)consumed;
     member.uncompressed_size = (int64_t)produced;
     /* The container's own flags byte, unchanged: there is no method field,
      * and the flags are the only thing that distinguishes one container form
@@ -267,7 +281,7 @@ static xx_earefpack_stream *xx_earefpack_parse(Abstractformat *self, xx_pd_struc
         goto fail;
     }
 
-    stream->archive_size = span;
+    stream->archive_size = (int64_t)consumed;
     return stream;
 
 fail:
@@ -435,6 +449,7 @@ bool xx_earefpack_handle_base_info(Abstractformat *self, xx_pd_struct *pd)
     }
     self->is_valid = true;
     self->format_size = stream->archive_size;
+    self->overlay_size = xx_io_total_size(self->device) - self->base_address - stream->archive_size;
     self->number_of_archive_records = stream->count;
     archive->number_of_records = stream->count;
     xx_earefpack_stream_free(stream);

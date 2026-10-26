@@ -294,7 +294,6 @@ static xx_gob_stream *xx_gob_parse(Abstractformat *self, xx_pd_struct *pd)
     } else {
         return NULL;
     }
-    (void)flavour;
 
     /* The table pointer is attacker-controlled: bound it, then bound the
      * count it leads to, BEFORE either is allowed to size an allocation. */
@@ -329,6 +328,14 @@ static xx_gob_stream *xx_gob_parse(Abstractformat *self, xx_pd_struct *pd)
         char *name;
 
         if (pd && xx_pd_is_stopped(pd)) goto fail;
+        /* Some Dark Forces builders count one terminal directory marker:
+         * no name, zero payload, and offset equal to the directory itself.
+         * Only the final, fully zero-padded marker has this interpretation. */
+        if (flavour == XX_GOB_FLAVOUR_DF && index + 1U == count && size == 0 && offset == table_offset) {
+            size_t i;
+            for (i = 0U; i < name_size && entry[8U + i] == 0U; ++i) {}
+            if (i == name_size) continue;
+        }
         /* A member may not start inside the fixed header and may not run off
          * the end of the file. */
         if (offset < header_size || !xx_gob_range_within(span, offset, size)) {

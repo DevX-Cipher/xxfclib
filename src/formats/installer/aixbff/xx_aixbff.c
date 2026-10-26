@@ -28,6 +28,7 @@
 #define XX_BFF_MODE_DIRECTORY UINT32_C(0x4000)
 #define XX_BFF_MODE_REGULAR UINT32_C(0x8000)
 #define XX_BFF_MODE_SYMLINK UINT32_C(0xa000)
+#define XX_BFF_MODE_FIFO UINT32_C(0x1000)
 #define XX_BFF_MAX_MEMBERS 200000U
 
 typedef struct xx_bff_member_s {
@@ -50,6 +51,7 @@ typedef struct xx_bff_stream_s {
     size_t count;
     size_t index;
     int64_t archive_end;
+    xx_io_device *volumes;
 } xx_bff_stream;
 
 static int64_t xx_bff_align(int64_t value, int64_t alignment)
@@ -82,6 +84,7 @@ static void xx_bff_stream_free(void *pointer)
     for (i = 0U; i < stream->count; ++i)
         if (stream->items[i].name) xx_str_free(stream->items[i].name);
     if (stream->items) xx_mem_free(stream->items);
+    if (stream->volumes) xx_io_close(stream->volumes);
     xx_mem_free(stream);
 }
 
@@ -96,14 +99,14 @@ static bool xx_bff_name_valid(const uint8_t *name, size_t size)
 
 static bool xx_bff_safe_name(const char *name);
 
-static bool xx_bff_parse(Abstractformat *format, xx_bff_stream **result)
+static bool xx_bff_parse_single(Abstractformat *format, xx_bff_stream **result, xx_pd_struct *pd)
 {
     uint8_t volume[XX_BFF_VOLUME_HEADER_SIZE];
     xx_bff_stream *stream;
     int64_t total;
     int64_t relative_size;
     int64_t offset;
-    if (!format || !format->device || !result || format->base_address < 0) return false;
+    if (!format || !format->device || !result || format->base_address < 0 || (pd && xx_pd_is_stopped(pd))) return false;
     total = xx_io_total_size(format->device);
     if (total < format->base_address) return false;
     relative_size = total - format->base_address;
@@ -127,6 +130,7 @@ static bool xx_bff_parse(Abstractformat *format, xx_bff_stream **result)
         uint32_t kind;
         xx_bff_member *grown;
         xx_bff_member *member;
+        if (pd && xx_pd_is_stopped(pd)) goto fail;
         if (offset < 0 || offset > relative_size || relative_size - offset < 4 || !xx_bff_read(format->device, format->base_address + offset, lead, sizeof(lead)))
             goto fail;
         words = lead[0];
@@ -175,6 +179,7 @@ static bool xx_bff_parse(Abstractformat *format, xx_bff_stream **result)
             xx_mem_free(header);
             goto fail;
         }
+        ++stream->count; /* All following error paths own this member name. */
         xx_mem_copy(member->name, header + fixed_header_size, name_size);
         member->name[name_size] = '\0';
         /* By-name backups can retain an absolute Unix path. Publish it
@@ -183,12 +188,6 @@ static bool xx_bff_parse(Abstractformat *format, xx_bff_stream **result)
         if (member->name[0] == '/') {
             size_t character;
             for (character = 0U; character < name_size; ++character) member->name[character] = member->name[character + 1U];
-        }
-        if (!xx_bff_safe_name(member->name)) {
-            xx_str_free(member->name);
-            member->name = NULL;
-            xx_mem_free(header);
-            goto fail;
         }
         member->header_offset = format->base_address + offset;
         member->magic = magic;
@@ -211,6 +210,17 @@ static bool xx_bff_parse(Abstractformat *format, xx_bff_stream **result)
         }
         kind = member->mode & XX_BFF_MODE_MASK;
         member->folder = kind == XX_BFF_MODE_DIRECTORY;
+        /* Historical backups spell the root directory .//. Normalize only
+         * a directory's dot followed entirely by separators. */
+        if (member->folder && member->name[0] == '.' && (member->name[1] == '/' || member->name[1] == '\\')) {
+            size_t character = 1U;
+            while (member->name[character] == '/' || member->name[character] == '\\') ++character;
+            if (!member->name[character]) member->name[1] = '\0';
+        }
+        if (!xx_bff_safe_name(member->name)) {
+            xx_mem_free(header);
+            goto fail;
+        }
         /* A by-name symlink stores its target as ordinary payload. Legacy
          * type 0x0b symlinks omit the trailer used by regular files. */
         if (kind == XX_BFF_MODE_SYMLINK && type == XX_BFF_RECORD_MEMBER) header_size = name_area;
@@ -225,7 +235,8 @@ static bool xx_bff_parse(Abstractformat *format, xx_bff_stream **result)
         }
         /* Exposing the target as a file matches restore tools that cannot
          * create a Unix symlink on the extraction host. */
-        if (kind != XX_BFF_MODE_DIRECTORY && kind != XX_BFF_MODE_REGULAR && kind != XX_BFF_MODE_SYMLINK) {
+        if ((kind != XX_BFF_MODE_DIRECTORY && kind != XX_BFF_MODE_REGULAR && kind != XX_BFF_MODE_SYMLINK && kind != XX_BFF_MODE_FIFO) ||
+            (kind == XX_BFF_MODE_FIFO && (member->packed_size != 0U || member->original_size != 0U))) {
             xx_mem_free(header);
             goto fail;
         }
@@ -240,7 +251,6 @@ static bool xx_bff_parse(Abstractformat *format, xx_bff_stream **result)
             xx_mem_free(header);
             goto fail;
         }
-        ++stream->count;
         xx_mem_free(header);
         next = xx_bff_align(offset + header_size + member->packed_size, 8);
         if (next <= offset) goto fail;
@@ -250,6 +260,8 @@ fail:
     xx_bff_stream_free(stream);
     return false;
 }
+
+#include "xx_bff_volumes.h"
 
 static bool xx_bff_copy_options(xx_list_s *destination, const xx_list_s *source)
 {
@@ -359,14 +371,17 @@ static bool xx_bff_set_record(xx_archive_record *record, const xx_bff_member *me
     record->header_size = member->header_size;
     record->data_offset = member->data_offset;
     record->compressed_size = member->packed_size;
-    return xx_archive_record_set_original_name(record, member->name) && xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSED_SIZE, member->packed_size) &&
+    return xx_archive_record_set_original_name(record, member->name) &&
+           ((member->mode & XX_BFF_MODE_MASK) != XX_BFF_MODE_FIFO ||
+            xx_archive_record_set_meta_str(record, XX_META_ID_COMMENT, "AIX FIFO; extracted as an empty regular-file placeholder")) &&
+           xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSED_SIZE, member->packed_size) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_UNCOMPRESSED_SIZE, member->original_size) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSION_METHOD, member->magic) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_ATTRIBUTES, member->mode) && xx_archive_record_set_meta_u64(record, XX_META_ID_TIMESTAMP, member->mtime) &&
            xx_archive_record_set_meta_bool(record, XX_META_ID_IS_FOLDER, member->folder) && xx_archive_record_set_meta_bool(record, XX_META_ID_IS_ENCRYPTED, false);
 }
 
-static bool xx_bff_decode(Abstractformat *format, const xx_bff_member *member, uint8_t **data, size_t *size, xx_pd_struct *pd)
+static bool xx_bff_decode(xx_io_device *device, const xx_bff_member *member, uint8_t **data, size_t *size, xx_pd_struct *pd)
 {
     uint8_t *packed = NULL;
     uint8_t *plain = NULL;
@@ -380,7 +395,7 @@ static bool xx_bff_decode(Abstractformat *format, const xx_bff_member *member, u
     if (pd && xx_pd_is_stopped(pd)) return false;
     packed = (uint8_t *)xx_mem_alloc(member->packed_size ? member->packed_size : 1U);
     plain = (uint8_t *)xx_mem_alloc(member->original_size ? member->original_size : 1U);
-    if (!packed || !plain || (member->packed_size && !xx_bff_read(format->device, member->data_offset, packed, member->packed_size))) goto done;
+    if (!packed || !plain || (member->packed_size && !xx_bff_read(device, member->data_offset, packed, member->packed_size))) goto done;
     if (member->magic == XX_BFF_MAGIC_STORED) {
         if (member->packed_size != member->original_size) goto done;
         if (member->original_size) xx_mem_copy(plain, packed, member->original_size);
@@ -443,7 +458,7 @@ bool xx_aixbff_check_is_valid(Abstractformat *format, xx_pd_struct *pd)
 {
     xx_bff_stream *stream;
     (void)pd;
-    if (!xx_bff_parse(format, &stream)) return false;
+    if (!xx_bff_parse(format, &stream, pd)) return false;
     xx_bff_stream_free(stream);
     return true;
 }
@@ -453,7 +468,7 @@ bool xx_aixbff_handle_base_info(Abstractformat *format, xx_pd_struct *pd)
     xx_bff_stream *stream;
     xx_aixbff *archive;
     (void)pd;
-    if (!format || !xx_bff_parse(format, &stream)) return false;
+    if (!format || !xx_bff_parse(format, &stream, pd)) return false;
     archive = (xx_aixbff *)format;
     archive->number_of_records = stream->count;
     archive->archive_end = stream->archive_end;
@@ -480,7 +495,7 @@ xx_archive_record_state *xx_aixbff_create_archive_records_reading(Abstractformat
     xx_archive_record_state *state;
     xx_bff_stream *stream;
     (void)pd;
-    if (!xx_bff_parse(format, &stream)) return NULL;
+    if (!xx_bff_parse(format, &stream, pd)) return NULL;
     state = (xx_archive_record_state *)xx_mem_alloc(sizeof(*state));
     if (!state) {
         xx_bff_stream_free(stream);
@@ -534,7 +549,7 @@ bool xx_aixbff_unpack_current_archive_record(Abstractformat *format, xx_archive_
     if (!xx_bff_safe_name(member->name)) return false;
     option = xx_bff_option(&state->options, XX_META_ID_OPT_UNPACK_PATH);
     if (!option) {
-        ok = xx_bff_decode(format, member, &plain, &plain_size, pd);
+        ok = xx_bff_decode(stream->volumes ? stream->volumes : format->device, member, &plain, &plain_size, pd);
         if (plain) xx_mem_free(plain);
         return ok;
     }
@@ -551,7 +566,7 @@ bool xx_aixbff_unpack_current_archive_record(Abstractformat *format, xx_archive_
         ok = xx_store_create_dirs_a(path, true);
         goto done;
     }
-    if (!xx_bff_decode(format, member, &plain, &plain_size, pd) || !xx_store_create_dirs_a(path, false)) goto done;
+    if (!xx_bff_decode(stream->volumes ? stream->volumes : format->device, member, &plain, &plain_size, pd) || !xx_store_create_dirs_a(path, false)) goto done;
     if (xx_io_file_exists_a(path) && xx_bff_earlier_member_collides(stream)) {
         char *unique = xx_bff_unique_output_path(path);
         if (!unique) goto done;

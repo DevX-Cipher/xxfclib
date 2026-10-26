@@ -1,4 +1,13 @@
 /* Copyright (c) 2026 hors<horsicq@gmail.com>. SPDX-License-Identifier: MIT */
+/* Expose mkstemp/fdopen in strict C11 builds before any system header. */
+#if !defined(_WIN32)
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE 1
+#endif
+#endif
 #include <xxfclib/io/xx_io_snapshot.h>
 #include <stdio.h>
 #include <stdlib.h>

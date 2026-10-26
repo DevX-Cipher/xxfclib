@@ -5,6 +5,7 @@
  */
 #include "xxfclib/formats/archive/sfx_7zip/xx_sfx_7zip.h"
 #include "../../common/xx_executable_carrier.h"
+#include "../../common/xx_pe_resource_locator.h"
 
 #include "xxfclib/formats/archive/7zip/xx_7zip.h"
 static bool executable_carrier_at_parse(Abstractformat *f, pm_stream *s, int64_t at, xx_pd_struct *pd)
@@ -30,10 +31,35 @@ static bool executable_carrier_at_parse(Abstractformat *f, pm_stream *s, int64_t
     xx_7zip_free(r);
     return ok && executable_carrier_component(f, s, at, size, "payload.7z");
 }
+/* The inner archive must begin at a registered PE resource-data entry, and
+ * its complete physical extent must fit that resource. A signature elsewhere
+ * in a section is insufficient. The existing 7z reader checks both headers. */
+static bool sfx7_resource_at_parse(Abstractformat *f, pm_stream *s, int64_t at, xx_pd_struct *pd)
+{
+    uint8_t h[32];
+    uint64_t offset, bytes, extent;
+    int64_t image_end, cabinet, cabinet_end;
+    if (carrier_stop(pd) || !pm_read(f, at, h, sizeof(h))) return false;
+    offset = xx_data_get_u64(h + 12, 8, 0, false);
+    bytes = xx_data_get_u64(h + 20, 8, 0, false);
+    if (offset > UINT32_MAX - 32U || bytes > UINT32_MAX - 32U - offset) return false;
+    extent = 32U + offset + bytes;
+    if (!xx_sfx_pe_resource_contains(f, at, (uint32_t)extent) || carrier_stop(pd) ||
+        !carrier_pe(f, &image_end, &cabinet, &cabinet_end, pd) ||
+        !executable_carrier_at_parse(f, s, at, pd)) return false;
+    if (s->size < image_end) s->size = image_end;
+    return true;
+}
+#include "xx_sfx_7zip_resources.h"
+#include "xx_sfx_7zip_packed_pe.h"
 static bool sfx_carrier_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
 {
     static const uint8_t sig[] = {55, 122, 188, 175, 39, 28};
-    return executable_carrier_scan(f, s, sig, sizeof(sig), 0, false, false, executable_carrier_at_parse, pd);
+    if (executable_carrier_scan(f, s, sig, sizeof(sig), 0, false, false, executable_carrier_at_parse, pd)) return true;
+    if (s->count || carrier_stop(pd)) return false;
+    if (sfx7_packed_overlay_parse(f, s, pd)) return true;
+    if (s->count || carrier_stop(pd)) return false;
+    return sfx7_resources(f, s, pd);
 }
 
 static bool pm_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
@@ -41,49 +67,7 @@ static bool pm_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
     return sfx_carrier_parse(f, s, pd) && carrier_members(s, pd);
 }
 
-/* Keep the SFX carrier reader as the outer format, but delegate its archive
- * records to the authenticated 7z payload.  That avoids returning an opaque
- * payload.7z when the caller asked to list or extract files from the SFX. */
-static xx_7zip *sfx7_nested(Abstractformat *f, xx_pd_struct *pd)
-{
-    xx_sfx_7zip *outer = (xx_sfx_7zip *)f;
-    if (!outer) return NULL;
-    if (!outer->nested_7zip && !xx_sfx_7zip_handle_base_info(f, pd)) return NULL;
-    return (xx_7zip *)outer->nested_7zip;
-}
-static int64_t sfx7_size(Abstractformat *f, xx_pd_struct *pd)
-{
-    return sfx7_nested(f, pd) ? f->format_size : -1;
-}
-static uint64_t sfx7_count(Abstractformat *f, xx_pd_struct *pd)
-{
-    return sfx7_nested(f, pd) ? f->number_of_archive_records : 0;
-}
-static xx_archive_record_state *sfx7_records(Abstractformat *f, const xx_list_s *opts, xx_pd_struct *pd)
-{
-    xx_7zip *r = sfx7_nested(f, pd);
-    return r ? xx_7zip_create_archive_records_reading(&r->format, opts, pd) : NULL;
-}
-static const xx_archive_record *sfx7_current(Abstractformat *f, xx_archive_record_state *state)
-{
-    xx_7zip *r = f ? (xx_7zip *)((xx_sfx_7zip *)f)->nested_7zip : NULL;
-    return r ? xx_7zip_get_current_archive_record(&r->format, state) : NULL;
-}
-static bool sfx7_next(Abstractformat *f, xx_archive_record_state *state, xx_pd_struct *pd)
-{
-    xx_7zip *r = f ? (xx_7zip *)((xx_sfx_7zip *)f)->nested_7zip : NULL;
-    return r && xx_7zip_archive_record_move_to_next(&r->format, state, pd);
-}
-static bool sfx7_unpack(Abstractformat *f, xx_archive_record_state *state, xx_pd_struct *pd)
-{
-    xx_7zip *r = f ? (xx_7zip *)((xx_sfx_7zip *)f)->nested_7zip : NULL;
-    return r && xx_7zip_unpack_current_archive_record(&r->format, state, pd);
-}
-static void sfx7_free_records(Abstractformat *f, xx_archive_record_state *state)
-{
-    xx_7zip *r = f ? (xx_7zip *)((xx_sfx_7zip *)f)->nested_7zip : NULL;
-    if (r) xx_7zip_free_archive_records_reading(&r->format, state);
-}
+#include "xx_sfx_7zip_bundle.h"
 void xx_sfx_7zip_init(xx_sfx_7zip *r, xx_io_device *d, int64_t b)
 {
     if (!r) return;
@@ -109,7 +93,7 @@ void xx_sfx_7zip_destroy(xx_sfx_7zip *r)
 {
     if (!r) return;
     if (r->nested_7zip) {
-        xx_7zip_free((xx_7zip *)r->nested_7zip);
+        sfx7_bundle_free((sfx7_bundle *)r->nested_7zip);
         r->nested_7zip = NULL;
     }
     xx_format_cleanup_extra_parameters(&r->format);
@@ -129,30 +113,34 @@ bool xx_sfx_7zip_handle_base_info(Abstractformat *f, xx_pd_struct *pd)
 {
     xx_sfx_7zip *outer = (xx_sfx_7zip *)f;
     pm_stream *s;
-    xx_7zip *nested;
+    sfx7_bundle *bundle;
     int64_t end;
-    if (!outer) return false;
+    uint64_t records = 0;
+    if (!outer || carrier_stop(pd)) return false;
     if (outer->nested_7zip) return true;
     s = pm_open(f, pd);
     if (!s) return false;
-    if (s->count != 1U || s->items[0].offset < f->base_address) {
-        pm_free_stream(s);
-        return false;
-    }
-    nested = xx_7zip_create(f->device, s->items[0].offset);
-    if (!nested || !xx_7zip_handle_base_info(&nested->format, pd) || nested->format.format_size != s->items[0].size) {
-        if (nested) xx_7zip_free(nested);
-        pm_free_stream(s);
-        return false;
+    if (!s->count || s->count > 128U) { pm_free_stream(s); return false; }
+    bundle = (sfx7_bundle *)xx_mem_calloc(1, sizeof(*bundle));
+    if (!bundle) { pm_free_stream(s); return false; }
+    for (size_t i = 0; i < s->count; ++i) {
+        xx_7zip *nested = s->items[i].offset >= f->base_address ? xx_7zip_create(f->device, s->items[i].offset) : NULL;
+        if (!nested || carrier_stop(pd) || !xx_7zip_handle_base_info(&nested->format, pd) ||
+            nested->format.format_size != s->items[i].size || nested->format.number_of_archive_records > 65536U - records) {
+            if (nested) xx_7zip_free(nested);
+            sfx7_bundle_free(bundle); pm_free_stream(s); return false;
+        }
+        bundle->readers[bundle->count++] = nested;
+        records += nested->format.number_of_archive_records;
     }
     f->format_size = s->size;
-    f->number_of_archive_records = nested->format.number_of_archive_records;
+    f->number_of_archive_records = records;
     end = f->base_address + s->size;
     f->overlay_size = xx_io_size(f->device) - end;
     f->overlay_offset = f->overlay_size > 0 ? end : -1;
     f->is_valid = true;
     f->base_info_handled = true;
-    outer->nested_7zip = nested;
+    outer->nested_7zip = bundle;
     pm_free_stream(s);
     return true;
 }

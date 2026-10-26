@@ -233,8 +233,8 @@ static xx_jgpak_stream *xx_jgpak_parse(Abstractformat *self, xx_pd_struct *pd)
         if (!xx_jgpak_range_within(span, offset, length)) return NULL;
         /* The banners are plain 8-bit text. A control byte here means the
          * file only happens to start with the signature, so this is part of
-         * the detection and not cosmetic validation. Tab is the one control
-         * byte the writer emits. */
+         * the detection and not cosmetic validation. Product descriptions
+         * can contain tabs and CR/LF line endings (HelpScribble 4.0.5). */
         while (length > 0) {
             size_t chunk = (size_t)((length > (int64_t)sizeof(scratch)) ? (int64_t)sizeof(scratch) : length);
 
@@ -243,7 +243,7 @@ static xx_jgpak_stream *xx_jgpak_parse(Abstractformat *self, xx_pd_struct *pd)
                 return NULL;
             }
             for (position = 0U; position < chunk; ++position) {
-                if (scratch[position] < 0x20U && scratch[position] != '\t') {
+                if (scratch[position] < 0x20U && scratch[position] != '\t' && scratch[position] != '\r' && scratch[position] != '\n') {
                     return NULL;
                 }
             }

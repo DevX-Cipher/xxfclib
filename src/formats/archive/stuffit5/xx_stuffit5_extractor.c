@@ -13,9 +13,13 @@
 #include "xxfclib/formats/archive/stuffit5/xx_stuffit5.h"
 
 static const uint8_t k_anchor0[] = {0x53, 0x74, 0x75, 0x66, 0x66, 0x49, 0x74, 0x20, 0x28, 0x63, 0x29, 0x31, 0x39, 0x39, 0x37, 0x2D};
+static const uint8_t k_anchor1[] = {'M','Z'};
+static const uint8_t k_anchor2[] = {0xbd,0x05,0xfe,0xef};
 
 static const xx_format_search_anchor k_anchors[] = {
     {k_anchor0, sizeof(k_anchor0), 0U},
+    {k_anchor1, sizeof(k_anchor1), 0U},
+    {k_anchor2, sizeof(k_anchor2), 0U},
 };
 
 static const xx_file_type_t k_types[] = {XX_FILE_TYPE_STUFFIT5};
@@ -32,7 +36,7 @@ static void xx_stuffit5_search_close(Abstractformat *format)
 }
 
 static const xx_format_search_desc k_desc = {
-    k_types, sizeof(k_types) / sizeof(k_types[0]), k_anchors, sizeof(k_anchors) / sizeof(k_anchors[0]), xx_stuffit5_search_open, xx_stuffit5_search_close, false};
+    k_types, sizeof(k_types) / sizeof(k_types[0]), k_anchors, sizeof(k_anchors) / sizeof(k_anchors[0]), xx_stuffit5_search_open, xx_stuffit5_search_close, true};
 
 static xx_format_search_state *xx_stuffit5_create_format_search(xx_format_extractor *self, xx_io_device *device, const xx_list_s *options, xx_pd_struct *pd)
 {

@@ -1,13 +1,19 @@
+# The East Asian double-byte tables are about 490 KiB together, so a
+# size-sensitive consumer can leave each language out (cdie does). Without
+# them xx_codepage_by_number() and xx_codepage_find() return NULL for those
+# pages, which the readers that ask for them (CAB and Smart Install Maker
+# names) treat as undecodable. The shared DBCS decoder and the Shift-JIS byte
+# classifiers stay in every build.
+option(XXFC_CODEPAGE_JAPANESE "Include the Japanese Shift-JIS codepage (CP932)" ON)
+option(XXFC_CODEPAGE_CHINESE "Include the Chinese GBK (CP936) and Big5 (CP950) codepages" ON)
+option(XXFC_CODEPAGE_KOREAN "Include the Korean Unified Hangul codepage (CP949)" ON)
+
 set(XXFC_CODEPAGE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_petscii_upper.c"
     "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_petscii_lower.c"
     "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_riscos.c"
     "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_cp037.c"
     "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_dbcs.c"
-    "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_cp932.c"
-    "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_cp936.c"
-    "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_cp949.c"
-    "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_cp950.c"
     "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage.c"
     "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_unicode.c"
     "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_ascii.c"
@@ -56,3 +62,27 @@ set(XXFC_CODEPAGE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_koi8_r.c"
     "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_koi8_u.c"
 )
+
+set(_xxfc_codepage_definitions "")
+if(XXFC_CODEPAGE_JAPANESE)
+    list(APPEND XXFC_CODEPAGE_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_cp932.c")
+    list(APPEND _xxfc_codepage_definitions XXFC_CODEPAGE_JAPANESE)
+endif()
+if(XXFC_CODEPAGE_CHINESE)
+    list(APPEND XXFC_CODEPAGE_SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_cp936.c"
+        "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_cp950.c")
+    list(APPEND _xxfc_codepage_definitions XXFC_CODEPAGE_CHINESE)
+endif()
+if(XXFC_CODEPAGE_KOREAN)
+    list(APPEND XXFC_CODEPAGE_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage_cp949.c")
+    list(APPEND _xxfc_codepage_definitions XXFC_CODEPAGE_KOREAN)
+endif()
+
+# Only the registry names the optional pages. A source property applies to the
+# targets of the directory that included this file, which is where every
+# consumer of XXFC_CODEPAGE_SOURCES (xxfclib, die_engine, the emulator
+# profiles, xxanalyze) creates its library, so none needs its own definitions.
+set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/../src/codepages/xx_codepage.c"
+    PROPERTIES COMPILE_DEFINITIONS "${_xxfc_codepage_definitions}")
+unset(_xxfc_codepage_definitions)

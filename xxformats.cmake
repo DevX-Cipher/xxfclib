@@ -66,6 +66,7 @@ list(APPEND XXFORMATS_SOURCES
 )
 if(WIN32)
     list(APPEND XXFORMATS_SOURCES
+        ${CMAKE_CURRENT_LIST_DIR}/src/fs/platforms/xx_fs_windows.c
         ${CMAKE_CURRENT_LIST_DIR}/src/io/platforms/xx_io_windows.c
         ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_windows.c
         ${CMAKE_CURRENT_LIST_DIR}/src/strings/platforms/xx_string_windows.c
@@ -76,6 +77,7 @@ if(WIN32)
     set(XXFORMATS_LIBRARIES kernel32)
 else()
     list(APPEND XXFORMATS_SOURCES
+        ${CMAKE_CURRENT_LIST_DIR}/src/fs/platforms/xx_fs_posix.c
         ${CMAKE_CURRENT_LIST_DIR}/src/io/platforms/xx_io_posix.c
         ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_posix.c
         ${CMAKE_CURRENT_LIST_DIR}/src/strings/platforms/xx_string_posix.c

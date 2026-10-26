@@ -29,6 +29,43 @@
 #include "xxfclib/strings/xx_string.h"
 #include "../global/xx_tls.h"
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#elif !defined(__GNUC__) && !defined(__clang__)
+#include <stdatomic.h>
+static atomic_flag pd_stop_lock = ATOMIC_FLAG_INIT;
+#endif
+
+/* Keep the public struct's layout while synchronizing its one shared field.
+ * Progress records and errors remain owned by the operation's worker. */
+static bool pd_stop_load(const xx_pd_struct *pd)
+{
+#if defined(_MSC_VER)
+    return _InterlockedCompareExchange8((volatile char *)&pd->is_stop, 0, 0) != 0;
+#elif defined(__GNUC__) || defined(__clang__)
+    return __atomic_load_n(&pd->is_stop, __ATOMIC_ACQUIRE);
+#else
+    bool stopped;
+    while (atomic_flag_test_and_set_explicit(&pd_stop_lock, memory_order_acquire)) {}
+    stopped = pd->is_stop;
+    atomic_flag_clear_explicit(&pd_stop_lock, memory_order_release);
+    return stopped;
+#endif
+}
+
+static void pd_stop_store(xx_pd_struct *pd)
+{
+#if defined(_MSC_VER)
+    _InterlockedExchange8((volatile char *)&pd->is_stop, 1);
+#elif defined(__GNUC__) || defined(__clang__)
+    __atomic_store_n(&pd->is_stop, true, __ATOMIC_RELEASE);
+#else
+    while (atomic_flag_test_and_set_explicit(&pd_stop_lock, memory_order_acquire)) {}
+    pd->is_stop = true;
+    atomic_flag_clear_explicit(&pd_stop_lock, memory_order_release);
+#endif
+}
+
 /* The observer is per thread. It lives in a small block reached through a
  * thread slot rather than in thread-local variables (see xx_tls.h); the
  * block exists only while an observer is set. */
@@ -89,7 +126,7 @@ static bool poll_observer(const xx_pd_struct *pd)
 
 static void notify_observer(xx_pd_struct *pd)
 {
-    if (poll_observer(pd)) pd->is_stop = true;
+    if (poll_observer(pd)) pd_stop_store(pd);
 }
 
 xx_pd_struct xx_pd_init(void)
@@ -164,14 +201,14 @@ void xx_pd_leave_level(xx_pd_struct *pd, int level)
 void xx_pd_stop(xx_pd_struct *pd)
 {
     if (pd) {
-        pd->is_stop = true;
+        pd_stop_store(pd);
         notify_observer(pd);
     }
 }
 
 bool xx_pd_is_stopped(const xx_pd_struct *pd)
 {
-    return pd ? pd->is_stop || poll_observer(pd) : false;
+    return pd ? pd_stop_load(pd) || poll_observer(pd) : false;
 }
 
 void xx_pd_set_error(xx_pd_struct *pd, int error_code, const char *error_str)

@@ -27,7 +27,7 @@ function(xxfclib_select_stream_sources source_list)
         endif()
         if(_source MATCHES "(^|/)xx_format_schema\\.c$")
             string(REPLACE "xx_format_schema.c" "xx_format_datastructs.c" _source "${_source}")
-        elseif(_source MATCHES "(^|/)(xx_(pe|elf|macho|dotnet))_data\\.c$")
+        elseif(_source MATCHES "(^|/)(xx_(pe|elf|macho|dotnet|tar_common))_data\\.c$")
             string(REGEX REPLACE "_data\\.c$" "_datastructs.c" _source "${_source}")
         endif()
         if(IS_ABSOLUTE "${_source}")
@@ -37,6 +37,20 @@ function(xxfclib_select_stream_sources source_list)
                 BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
         endif()
         get_filename_component(_name "${_source}" NAME)
+        # Broad format globs also see former schema-family files and their
+        # per-format data sidecars. They belong to the optional data stream,
+        # unlike core readers whose actual format name happens to end in data.
+        if(NOT XXFC_ENABLE_STREAM_DATASTRUCTS AND _absolute MATCHES "/src/formats/")
+            if(_name MATCHES "^xx_format_schema_.+\\.c$")
+                continue()
+            elseif(_name MATCHES "_data\\.c$")
+                file(STRINGS "${_absolute}" _data_provider_markers
+                    REGEX "xx_format_schema|setup_data_struct_callbacks")
+                if(_data_provider_markers)
+                    continue()
+                endif()
+            endif()
+        endif()
         # Resource scanning consumes StreamResources, but is a scan component
         # rather than a native format sidecar. Keep this dependency explicit.
         if(_absolute MATCHES "/src/scan/xx_scan_resources\\.c$" AND

@@ -1207,7 +1207,8 @@ static ssize_t xx_7zip_progress_write(xx_io_device *device, const void *buffer, 
     xx_7zip_folder_decode *context = sink->context;
     ssize_t count = xx_io_write(sink->target, buffer, size);
     if (count > 0) {
-        if (sink->target == context->destination && context->folder->crc_defined && context->destination->write != xx_7zip_verify_write) {
+        /* File-only CRCs also need this result: a staging file is write-only. */
+        if (sink->target == context->destination && context->destination->write != xx_7zip_verify_write) {
             context->final_crc = xx_crc32_calc(context->final_crc, buffer, (size_t)count);
             context->has_final_crc = true;
         }
@@ -2789,4 +2790,3 @@ void xx_7zip_free_archive_records_reading(Abstractformat *self, xx_archive_recor
     (void)self;
     xx_archive_record_state_free(state);
 }
-

@@ -36,9 +36,10 @@
 
 #include "xx_io_platform.h"
 #include "../xx_io_policy.h"
+#include "../../strings/platforms/xx_string_platform.h"
 
+#include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/rt/xx_rt.h"
-#include "xxfclib/strings/xx_string.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -113,10 +114,10 @@ void *xx_io_platform_file_open_w(const wchar_t *path, const char *mode)
     char *utf8;
     void *res;
     if (!path) return NULL;
-    utf8 = xx_str_unicode_to_utf8(path);
+    utf8 = xx_string_platform_wide_to_mb(path, XX_CODEPAGE_UTF8);
     if (!utf8) return NULL;
     res = xx_io_platform_file_open(utf8, mode);
-    xx_str_free(utf8);
+    xx_mem_free(utf8);
     return res;
 }
 

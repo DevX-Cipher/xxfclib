@@ -7,6 +7,8 @@
 #include "xxfclib/formats/executable/upx_engine/xx_upx_engine.h"
 #include "xxfclib/formats/executable/molebox/xx_molebox.h"
 #include "xxfclib/formats/archive/zip/xx_zip.h"
+#include "xxfclib/rt/xx_rt.h"
+#include "xxfclib/data/xx_data.h"
 
 typedef struct xx_unpack_handle_row {
     xx_handle_type_t handle;
@@ -183,7 +185,36 @@ static int xx_handle_signature(xx_file_type_t type, xx_io_device *dev)
     Abstractextractor *extractor = xx_abstract_extractor_get(type);
     uint8_t magic[4];
     if (!extractor) return 0;
+    if (type == XX_FILE_TYPE_SOD_INSTALLER) {
+        uint8_t h[12];unsigned year;
+        if(!xx_io_read_at(dev,0,h,sizeof(h)))return 0;
+        year=h[0]|((unsigned)h[1]<<8);
+        /* Date prefilter only; the reader must validate every named record. */
+        return year>=1980U && year<=2100U && h[2]>=1 && h[2]<=12 && !h[3] ? 1 : 0;
+    }
     if (type == XX_FILE_TYPE_UPX) return xx_upx_has_marker_device(dev, NULL) ? 1 : 0;
+    if (type == XX_FILE_TYPE_SFX_HCI_INSTALIT) {
+        uint8_t tail[12], tag[6];
+        int64_t size = xx_io_total_size(dev);
+        uint32_t end, start;
+        if (xx_io_read_at(dev, 0, magic, sizeof(magic)) && magic[0] == 'M' && magic[1] == 'Z') return 1;
+        if (size < 35 || !xx_io_read_at(dev, size - 12, tail, sizeof(tail))) return 0;
+        end = xx_data_get_u32(tail, 4, 0, false);
+        start = xx_data_get_u32(tail + 8, 4, 0, false);
+        /* Standalone volumes have no prefix signature. This bounded footer
+         * hint asks the native reader to validate the complete catalog. */
+        return start > 0U && (int64_t)start + 6 < end && end <= size - 12 &&
+               xx_data_get_u32(tail + 4, 4, 0, false) == 0U &&
+               xx_io_read_at(dev, start, tag, sizeof(tag)) && !xx_rt_memcmp(tag, "\x05[PVM]", sizeof(tag)) ? 1 : 0;
+    }
+    if (type == XX_FILE_TYPE_STARFORCE_OVL) {
+        int64_t size = xx_io_total_size(dev);
+        /* Prefilters only: the reader subsequently authenticates the full
+         * directory, payload extents and directory zlib checksum. */
+        if (xx_io_read_at(dev, 0, magic, sizeof(magic)) &&
+            ((!xx_rt_memcmp(magic, "OVL ", 4U)) || (magic[0] == 'M' && magic[1] == 'Z'))) return 1;
+        return size >= 20 && xx_io_read_at(dev, size - 4, magic, sizeof(magic)) && !xx_rt_memcmp(magic, "SOVL", 4U) ? 1 : 0;
+    }
     if (type == XX_FILE_TYPE_MOLEBOX) return xx_molebox_has_candidate_device(dev, 0) ? 1 : 0;
     if (type == XX_FILE_TYPE_ENIGMA_VIRTUAL_BOX && xx_io_read_at(dev, 0, magic, sizeof(magic)) &&
         magic[0] == 'E' && magic[1] == 'V' && magic[2] == 'B' && !magic[3]) return 1;
@@ -202,6 +233,7 @@ static unsigned xx_handle_priority(xx_handle_type_t handle)
         case XX_FILE_TYPE_TAR_GZ: case XX_FILE_TYPE_TAR_BZ2: case XX_FILE_TYPE_TAR_XZ:
         case XX_FILE_TYPE_TAR_LZ4: case XX_FILE_TYPE_TAR_ZSTD: case XX_FILE_TYPE_TAR_COMPRESS:
         case XX_FILE_TYPE_TAR_LZIP: case XX_FILE_TYPE_TAR_LZMA: case XX_FILE_TYPE_TAR_LZOP: return 2U;
+        case XX_FILE_TYPE_STARFORCE_OVL: case XX_FILE_TYPE_STUFFIT5: case XX_FILE_TYPE_TARMA_INSTALLER: case XX_FILE_TYPE_SOD_INSTALLER: return 2U;
           /* A validated PFX chain exposes decoded members inside the Atari
            * executable, while GEMDOS_LHA exposes its compressed LHA payload. */
           case XX_FILE_TYPE_LARC_PFX: return 2U;

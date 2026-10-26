@@ -595,6 +595,13 @@ static int is_signature_name(const char *pName)
     return (cd_stricmp_ascii(pDot + 1, "sg") == 0) ? 1 : 0;
 }
 
+/* Loaded databases own one bounded parsed-program cache. Hand-built
+ * database views retain their existing ownership contract and need no cache. */
+static void db_prepare_program_cache(DBase *pDb)
+{
+    if (!pDb->pJsProgramCache) pDb->pJsProgramCache = js_program_cache_new(64U * 1024U * 1024U);
+}
+
 static void db_add(DBase *pDb, const char *pName, const char *pPath, char *pText, size_t nSize, XFileType fileType, DBKind kind)
 {
     DBSignature *pRecord = NULL;
@@ -1172,6 +1179,7 @@ static int db_load_builtin_audio_subset(DBase *pDb, DBKind kind, int bMusicOnly)
     }
     db_apply_stored_metadata(pDb, nBefore);
     xx_scan_sort_database_records(pDb);
+    if (pDb->nCount > nBefore) db_prepare_program_cache(pDb);
     return 1;
 }
 
@@ -1332,6 +1340,7 @@ int db_load_tar(DBase *pDb, const char *pTarPath, DBKind kind)
 
     if (pDb->nCount > nBefore) db_sort_loaded_records(pDb, nBefore, kind);
 
+    if (pDb->nCount > nBefore) db_prepare_program_cache(pDb);
     return (pDb->nCount > nBefore) ? 1 : 0;
 }
 
@@ -1379,6 +1388,7 @@ int db_load(DBase *pDb, const char *pPath, DBKind kind)
 
     db_sort_loaded_records(pDb, nBefore, kind);
 
+    if (pDb->nCount > nBefore) db_prepare_program_cache(pDb);
     return (pDb->nCount > nBefore) ? 1 : 0;
 }
 
@@ -1398,6 +1408,7 @@ void db_free(DBase *pDb)
         cd_free(pDb->pMetadata[i].pTags);
     }
 
+    js_program_cache_free((JSProgramCache *)pDb->pJsProgramCache);
     cd_free(pDb->pRecords);
     cd_free(pDb->pMetadata);
     x_memset(pDb, 0, sizeof(*pDb));

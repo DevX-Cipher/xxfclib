@@ -75,6 +75,8 @@ typedef struct xx_mva_stream_s {
     size_t count;
     size_t index;
     int64_t archive_size;
+    xx_io_device *volumes;
+    bool incomplete;
 } xx_mva_stream;
 
 static void xx_mva_vtable_destroy(Abstractformat *self);
@@ -130,6 +132,7 @@ static void xx_mva_stream_free(void *pointer)
         xx_str_free(stream->items[index].name);
     }
     xx_mem_free(stream->items);
+    if (stream->volumes) xx_io_close(stream->volumes);
     xx_mem_free(stream);
 }
 
@@ -234,7 +237,7 @@ static char *xx_mva_base_name(const uint8_t *field, size_t length)
     return result;
 }
 
-static xx_mva_stream *xx_mva_parse(Abstractformat *self, xx_pd_struct *pd)
+static xx_mva_stream *xx_mva_parse_single(Abstractformat *self, xx_pd_struct *pd)
 {
     xx_mva_stream *stream = NULL;
     uint8_t header[XX_MVA_MEMBER_HEADER_SIZE];
@@ -335,6 +338,7 @@ static xx_mva_stream *xx_mva_parse(Abstractformat *self, xx_pd_struct *pd)
              * must not be reported as stored. */
             member.compressed_size = span - data_offset;
             member.method = XX_MVA_METHOD_ZLIB;
+            stream->incomplete = true;
             if (!xx_mva_add(stream, &member)) {
                 xx_str_free(name);
                 goto fail;
@@ -448,6 +452,15 @@ static bool xx_mva_decode(Abstractformat *self, const xx_mva_member *member, uin
     *out = plain;
     *out_size = plain_size;
     return true;
+}
+
+#include "xx_mva_volumes.h"
+
+static bool xx_mva_decode_member(Abstractformat *self, xx_mva_stream *stream, const xx_mva_member *member, uint8_t **out, size_t *size, xx_pd_struct *pd)
+{
+    Abstractformat logical = *self;
+    if (stream->volumes) { logical.device = stream->volumes; logical.base_address = 0; }
+    return xx_mva_decode(&logical, member, out, size, pd);
 }
 
 /* ---------------------------------------------------------- lifecycle --- */
@@ -682,7 +695,7 @@ bool xx_mva_unpack_current_archive_record(Abstractformat *self, xx_archive_recor
         /* No destination: decode and discard, which verifies the member
          * without writing anything. */
         if (member->is_folder) return true;
-        result = xx_mva_decode(self, member, &plain, &plain_size, pd);
+        result = xx_mva_decode_member(self, stream, member, &plain, &plain_size, pd);
         xx_mem_free(plain);
         return result;
     }
@@ -709,7 +722,7 @@ bool xx_mva_unpack_current_archive_record(Abstractformat *self, xx_archive_recor
         xx_str_free(target_path);
         return result;
     }
-    if (!xx_store_create_dirs_a(target_path, false) || !xx_mva_decode(self, member, &plain, &plain_size, pd)) {
+    if (!xx_store_create_dirs_a(target_path, false) || !xx_mva_decode_member(self, stream, member, &plain, &plain_size, pd)) {
         xx_str_free(target_path);
         return false;
     }

@@ -70,10 +70,18 @@ extern const xx_codepage xx_codepage_utf16be;
 extern const xx_codepage xx_codepage_utf32le;
 extern const xx_codepage xx_codepage_utf32be;
 extern const xx_codepage xx_codepage_cp037;
+/* The East Asian pages are optional: cmake/xxfclib_codepages.cmake defines
+ * XXFC_CODEPAGE_JAPANESE, _CHINESE and _KOREAN for the ones it compiles. */
+#ifdef XXFC_CODEPAGE_JAPANESE
 extern const xx_codepage xx_codepage_cp932;
+#endif
+#ifdef XXFC_CODEPAGE_CHINESE
 extern const xx_codepage xx_codepage_cp936;
-extern const xx_codepage xx_codepage_cp949;
 extern const xx_codepage xx_codepage_cp950;
+#endif
+#ifdef XXFC_CODEPAGE_KOREAN
+extern const xx_codepage xx_codepage_cp949;
+#endif
 extern const xx_codepage xx_codepage_petscii_upper;
 extern const xx_codepage xx_codepage_petscii_lower;
 extern const xx_codepage xx_codepage_riscos;
@@ -88,8 +96,19 @@ static const xx_codepage *const pages[] = {
     &xx_codepage_cp864,         &xx_codepage_cp865,         &xx_codepage_cp866,      &xx_codepage_cp869,      &xx_codepage_tis_620,
     &xx_codepage_cp874,         &xx_codepage_mac_roman,     &xx_codepage_hp_roman8,  &xx_codepage_koi8_r,     &xx_codepage_koi8_u,
     &xx_codepage_utf8,          &xx_codepage_utf16le,       &xx_codepage_utf16be,    &xx_codepage_utf32le,    &xx_codepage_utf32be,
-    &xx_codepage_petscii_upper, &xx_codepage_petscii_lower, &xx_codepage_riscos,     &xx_codepage_cp037,      &xx_codepage_cp932,
-    &xx_codepage_cp936,         &xx_codepage_cp949,         &xx_codepage_cp950,
+    &xx_codepage_petscii_upper, &xx_codepage_petscii_lower, &xx_codepage_riscos,     &xx_codepage_cp037,
+#ifdef XXFC_CODEPAGE_JAPANESE
+    &xx_codepage_cp932,
+#endif
+#ifdef XXFC_CODEPAGE_CHINESE
+    &xx_codepage_cp936,
+#endif
+#ifdef XXFC_CODEPAGE_KOREAN
+    &xx_codepage_cp949,
+#endif
+#ifdef XXFC_CODEPAGE_CHINESE
+    &xx_codepage_cp950,
+#endif
 };
 
 size_t xx_codepage_count(void) { return sizeof(pages) / sizeof(pages[0]); }
@@ -199,14 +218,20 @@ const xx_codepage *xx_codepage_by_number(unsigned int number)
         return &xx_codepage_cp869;
     case 874:
         return &xx_codepage_cp874;
+#ifdef XXFC_CODEPAGE_JAPANESE
     case 932:
         return &xx_codepage_cp932;
+#endif
+#ifdef XXFC_CODEPAGE_CHINESE
     case 936:
         return &xx_codepage_cp936;
-    case 949:
-        return &xx_codepage_cp949;
     case 950:
         return &xx_codepage_cp950;
+#endif
+#ifdef XXFC_CODEPAGE_KOREAN
+    case 949:
+        return &xx_codepage_cp949;
+#endif
     case 1200:
         return &xx_codepage_utf16le;
     case 1201:

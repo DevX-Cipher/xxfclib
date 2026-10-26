@@ -11,7 +11,8 @@
  * There is no signature, so the probe is the record chain itself: every
  * record needs a printable, NUL-terminated name, a NUL-terminated run of
  * 1..19 decimal digits and a size that fits, and the last record must end
- * exactly at the end of the device.  Each record costs one read of at most
+ * exactly at EOF or at a bounded binary overlay after multiple complete
+ * records. Each record costs one read of at most
  * 281 bytes, the walk stops after 4096 records, and nothing is allocated
  * until records are actually enumerated.
  */
@@ -45,6 +46,7 @@
 /* Smallest record: one name byte, NUL, one digit, NUL, no data. */
 #define ISS_MIN_RECORD 4
 #define ISS_COPY_BUFFER 0x10000U
+#define ISS_OVERLAY_MAX 4096U
 /* A renamed duplicate gets "_<record number>" and, if that is taken too,
  * "_<record number>_<try>"; this is how many names are tried. */
 #define ISS_RENAME_TRIES 8U
@@ -176,6 +178,24 @@ static bool iss_read_header(xx_io_device *device, int64_t base, int64_t position
     return true;
 }
 
+/* A short binary tail is distinct from a plausible next record. In
+ * particular, printable partial names, malformed decimal sizes and truncated
+ * payloads must remain errors. Since there is no magic, two complete records
+ * are required before accepting a tail that fails the name alphabet. */
+static bool iss_binary_tail(Abstractformat *format, int64_t position, int64_t size, size_t count)
+{
+    uint8_t bytes[ISS_NAME_MAX + 1U];
+    size_t n, i;
+    if (count < 2U || position >= size || size - position > ISS_OVERLAY_MAX) return false;
+    n = (uint64_t)(size - position) < sizeof(bytes) ? (size_t)(size - position) : sizeof(bytes);
+    if (!iss_read_at(format->device, format->base_address + position, bytes, n)) return false;
+    xx_installshield_skin_transform(bytes, n, (uint64_t)position, false);
+    for (i = 0U; i < n && bytes[i] != 0U; ++i) {
+        if (bytes[i] < 0x20U || bytes[i] > 0x7fU) return true;
+    }
+    return false;
+}
+
 /* Walk the whole chain.  With @p members, fills up to @p capacity of them.
  * Returns the number of records, 0 when the device is not a skin. */
 static size_t iss_walk(Abstractformat *format, iss_member *members, size_t capacity, int64_t *extent, uint64_t *unpacked)
@@ -190,7 +210,11 @@ static size_t iss_walk(Abstractformat *format, iss_member *members, size_t capac
     size = total - format->base_address;
     if (size < ISS_MIN_RECORD) return 0U;
     while (position < size) {
-        if (count >= ISS_MAX_RECORDS || !iss_read_header(format->device, format->base_address, position, size, &header)) return 0U;
+        if (count >= ISS_MAX_RECORDS) return 0U;
+        if (!iss_read_header(format->device, format->base_address, position, size, &header)) {
+            if (iss_binary_tail(format, position, size, count)) break;
+            return 0U;
+        }
         if (members) {
             iss_member *member;
             size_t index;
@@ -208,8 +232,7 @@ static size_t iss_walk(Abstractformat *format, iss_member *members, size_t capac
         /* iss_read_header guaranteed the record fits in the skin. */
         position += (int64_t)header.header_size + header.data_size;
     }
-    if (position != size) return 0U;
-    if (extent) *extent = size;
+    if (extent) *extent = position;
     if (unpacked) *unpacked = sum;
     return count;
 }
@@ -521,6 +544,8 @@ bool xx_installshield_skin_handle_base_info(Abstractformat *format, xx_pd_struct
     archive->unpacked_size = unpacked;
     format->number_of_archive_records = (uint64_t)count;
     format->format_size = extent;
+    format->overlay_size = xx_io_total_size(format->device) - format->base_address - extent;
+    format->overlay_offset = format->overlay_size ? format->base_address + extent : -1;
     format->is_valid = true;
     format->base_info_handled = true;
     return true;

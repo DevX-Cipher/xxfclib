@@ -13,6 +13,7 @@
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/strings/xx_string.h"
 #include "xx_cramfs_direct_native.h"
+#include "../../xx_archive_output_name.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -34,10 +35,10 @@
 #define XX_CRAMFS_SIGNATURE "Compressed ROMFS"
 #define XX_CRAMFS_SIGNATURE_SIZE 16U
 
-/* The block size is not stored anywhere in the image: the kernel decompresses
- * into one page at a time, so a cramfs block is PAGE_SIZE bytes and every
- * image in the wild is built for a 4 KiB page. */
+/* The page size is not stored in the superblock. Most images use 4 KiB;
+ * vendor kernels also produce images with larger pages. */
 #define XX_CRAMFS_BLOCK_SIZE 4096U
+#define XX_CRAMFS_MAX_BLOCK_SIZE 65536U
 
 /* A block pointer's two flag bits, meaningful only when the superblock sets
  * CRAMFS_FLAG_EXT_BLOCK_POINTERS. */
@@ -110,8 +111,11 @@ typedef struct xx_cramfs_private_s {
     uint32_t edition;
     uint32_t block_count;
     uint32_t file_count;
+    uint32_t block_size;
     bool big_endian;
 } xx_cramfs_private;
+
+static void xx_cramfs_detect_block_size(Abstractformat *self, xx_cramfs_private *parsed, xx_pd_struct *pd);
 
 typedef struct xx_cramfs_archive_stream_s {
     xx_cramfs_private parsed;
@@ -550,6 +554,7 @@ static bool xx_cramfs_parse(Abstractformat *self, xx_cramfs_private *parsed, boo
         goto fail;
     }
     parsed->big_endian = big_endian;
+    parsed->block_size = XX_CRAMFS_BLOCK_SIZE;
     parsed->base = self->base_address;
     parsed->input_size = total_size;
     parsed->flags = xx_data_get_u32(superblock, sizeof(superblock), 8U, big_endian);
@@ -588,6 +593,7 @@ static bool xx_cramfs_parse(Abstractformat *self, xx_cramfs_private *parsed, boo
     if (root_present && !xx_cramfs_walk(self, parsed, root_offset, root.size, "", 0U, pd)) {
         goto fail;
     }
+    xx_cramfs_detect_block_size(self, parsed, pd);
     return true;
 
 fail:
@@ -604,8 +610,9 @@ static bool xx_cramfs_decode_block(const uint8_t *input, size_t input_size, uint
 {
     size_t produced = 0U;
     if (!input || input_size == 0U || !output || expected == 0U) return false;
-    if (xx_zlib_stream_decode_memory(input, input_size, output, expected, &produced) && produced == expected) {
-        return true;
+    if (xx_zlib_stream_header_is_valid(input, input_size)) {
+        return xx_zlib_stream_decode_memory(input, input_size, output, expected, &produced) && produced == expected &&
+               xx_zlib_stream_trailer_matches(input, input_size, output, produced);
     }
     /* A widely deployed vendor patch stores cramfs blocks as LZMA instead of
      * zlib, in the .lzma "alone" layout: five property bytes, an eight-byte
@@ -618,6 +625,45 @@ static bool xx_cramfs_decode_block(const uint8_t *input, size_t input_size, uint
         }
     }
     return false;
+}
+
+/* A complete, checksum-verified first page is a witness for the geometry.
+ * Use the largest regular file so every candidate has a full first page;
+ * never infer a page size from a short final page or a hole. Extended direct
+ * pointers retain their defined 4 KiB geometry. All later pages still pass
+ * the normal strict decoder when the member is tested or extracted. */
+static void xx_cramfs_detect_block_size(Abstractformat *self, xx_cramfs_private *parsed, xx_pd_struct *pd)
+{
+    const xx_cramfs_entry *entry = NULL;
+    uint8_t pointer[4], *input, *output;
+    uint32_t page;
+    size_t i;
+    if (parsed->flags & XX_CRAMFS_FLAG_EXT_BLOCK_POINTERS) return;
+    for (i = 0U; i < parsed->count; ++i) {
+        const xx_cramfs_entry *candidate = &parsed->entries[i];
+        if ((candidate->mode & XX_CRAMFS_S_IFMT) == XX_CRAMFS_S_IFREG && candidate->data_offset >= 0 &&
+            (!entry || candidate->size > entry->size)) entry = candidate;
+    }
+    if (!entry || entry->size <= XX_CRAMFS_BLOCK_SIZE ||
+        !xx_cramfs_read_at(self->device, entry->data_offset, pointer, sizeof(pointer))) return;
+    input = (uint8_t *)xx_mem_alloc(XX_CRAMFS_MAX_BLOCK_SIZE * 2U);
+    output = (uint8_t *)xx_mem_alloc(XX_CRAMFS_MAX_BLOCK_SIZE);
+    if (!input || !output) goto done;
+    for (page = XX_CRAMFS_BLOCK_SIZE; page <= XX_CRAMFS_MAX_BLOCK_SIZE && page < entry->size; page *= 2U) {
+        uint64_t count = ((uint64_t)entry->size + page - 1U) / page;
+        int64_t start = entry->data_offset + (int64_t)(count * 4U), end;
+        if (pd && xx_pd_is_stopped(pd)) break;
+        if (!xx_cramfs_add(parsed->base, xx_data_get_u32(pointer, sizeof(pointer), 0U, parsed->big_endian), &end) ||
+            start >= end || end > parsed->image_end || end - start > (int64_t)page * 2) continue;
+        if (xx_cramfs_read_at(self->device, start, input, (size_t)(end - start)) &&
+            xx_cramfs_decode_block(input, (size_t)(end - start), output, page)) {
+            parsed->block_size = page;
+            break;
+        }
+    }
+done:
+    xx_mem_free(input);
+    xx_mem_free(output);
 }
 
 /* Write one regular file's decoded contents to destination. */
@@ -640,14 +686,14 @@ static bool xx_cramfs_extract_entry(Abstractformat *self, const xx_cramfs_privat
     if (entry->size == 0U) return true;
     if (entry->data_offset < 0) return false;
 
-    block_count = ((size_t)entry->size + (size_t)XX_CRAMFS_BLOCK_SIZE - 1U) / (size_t)XX_CRAMFS_BLOCK_SIZE;
+    block_count = ((size_t)entry->size + (size_t)parsed->block_size - 1U) / (size_t)parsed->block_size;
     pointer_bytes = block_count * 4U;
     if (!xx_cramfs_range_within(parsed->image_end, entry->data_offset, (int64_t)pointer_bytes)) {
         return false;
     }
     pointers = (uint8_t *)xx_mem_alloc(pointer_bytes);
-    input = (uint8_t *)xx_mem_alloc((size_t)XX_CRAMFS_BLOCK_SIZE * 2U);
-    output = (uint8_t *)xx_mem_alloc((size_t)XX_CRAMFS_BLOCK_SIZE);
+    input = (uint8_t *)xx_mem_alloc((size_t)parsed->block_size * 2U);
+    output = (uint8_t *)xx_mem_alloc((size_t)parsed->block_size);
     if (!pointers || !input || !output) goto done;
     if (!xx_cramfs_read_at(self->device, entry->data_offset, pointers, pointer_bytes)) {
         goto done;
@@ -664,7 +710,7 @@ static bool xx_cramfs_extract_entry(Abstractformat *self, const xx_cramfs_privat
         uint32_t raw = xx_data_get_u32(pointers, pointer_bytes, index * 4U, parsed->big_endian);
         uint32_t flags = masks_flags ? (raw & XX_CRAMFS_BLK_FLAGS) : 0U;
         uint32_t stored = masks_flags ? (raw & ~XX_CRAMFS_BLK_FLAGS) : raw;
-        size_t expected = remaining < XX_CRAMFS_BLOCK_SIZE ? (size_t)remaining : (size_t)XX_CRAMFS_BLOCK_SIZE;
+        size_t expected = remaining < parsed->block_size ? (size_t)remaining : (size_t)parsed->block_size;
         int64_t block_end;
         int64_t block_length;
 
@@ -682,7 +728,7 @@ static bool xx_cramfs_extract_entry(Abstractformat *self, const xx_cramfs_privat
             block_length = block_end - previous_end;
             /* The kernel's own cap: a block can grow slightly under
              * compression but never past two pages. */
-            if (block_length > (int64_t)XX_CRAMFS_BLOCK_SIZE * 2) goto done;
+            if (block_length > (int64_t)parsed->block_size * 2) goto done;
 
             if (block_length == 0) {
                 /* A hole. The image stores nothing and reads as zeros. */
@@ -744,6 +790,15 @@ static const xx_var *xx_cramfs_find_option(const xx_list_s *options, uint32_t me
         if (item && item->meta_id == meta_id) return &item->var;
     }
     return NULL;
+}
+
+static char *xx_cramfs_output_name(const xx_cramfs_private *parsed, size_t index)
+{
+    char *name = xx_archive_output_name(parsed->entries[index].name, 0U, 0U);
+    if (!parsed->entries[index].is_folder) {
+        XX_ARCHIVE_OUTPUT_RESOLVE(name, parsed->entries, parsed->count, index, name, 0U, 0U);
+    }
+    return name;
 }
 
 static bool xx_cramfs_populate_record(xx_archive_record *record, const xx_cramfs_entry *entry)
@@ -997,6 +1052,16 @@ bool xx_cramfs_unpack_current_archive_record(Abstractformat *self, xx_archive_re
         destination_path = xx_str_concat(base, entry->name);
     }
     if (!destination_path) goto cleanup;
+    /* Resolve names before touching the filesystem: Linux files such as
+     * libipt_MARK.so and libipt_mark.so must both survive Windows extraction.
+     * The shared boundary escapes literal suffix markers before aliasing. */
+    {
+        char *safe = xx_cramfs_output_name(&stream->parsed, stream->index);
+        xx_str_free(destination_path);
+        destination_path = safe ? xx_cramfs_join_name(base, safe) : NULL;
+        xx_str_free(safe);
+        if (!destination_path) goto cleanup;
+    }
     if (entry->is_folder) {
         result = xx_store_create_dirs_a(destination_path, true);
         goto cleanup;

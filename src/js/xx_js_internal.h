@@ -25,6 +25,8 @@
 #define JS_INTERNAL_H
 
 #include "xxfclib/js/xx_js.h"
+#include "xxfclib/js/xx_js_debug.h"
+typedef struct JSDebugFrameState JSDebugFrameState;
 #include "xx_js_deps.h"
 
 /* --------------------------------------------------------------- strings  */
@@ -36,12 +38,15 @@
 struct JSStr {
     int32_t nRef;
     size_t nSize;
+    size_t nCapacity;
     JSStr *pNextAll;
     JSStr *pPrevAll;
     char *pData;
 };
 
 JSStr *jsstr_new(JSCtx *pCtx, const char *pData, size_t nSize);
+/* Takes a malloc-compatible buffer with room for a trailing zero. */
+JSVal js_str_take(JSCtx *pCtx, char *pData, size_t nSize, size_t nCapacity);
 JSStr *jsstr_ref(JSStr *pStr);
 void jsstr_unref(JSCtx *pCtx, JSStr *pStr);
 
@@ -54,6 +59,7 @@ typedef struct {
     JSVal value;
     uint8_t bDeleted;
     uint8_t bDontEnum;
+    uint8_t bBorrowedKey;
 } JSProp;
 
 typedef struct {
@@ -105,10 +111,20 @@ struct JSObj {
     JSPropMap props;
     uint8_t bExtensible;
     uint8_t bSweeping;
+    uint8_t bArraySparse;
+    uint8_t bBorrowedFnName;
+    uint8_t bArrayMapOrder; /* named/sparse metadata established map ordering */
+    uint8_t bGCState; /* temporary cycle-collector candidate/mark bits */
+    int32_t nGCRef;
 
     /* array */
     int64_t nArrayLen;
     uint32_t *pUint32Data;
+    JSVal *pArrayData;
+    size_t nArrayCapacity;
+    size_t nArrayUsed;
+    size_t nArrayStart; /* logical slot zero in pArrayData */
+    size_t nArrayHoles;
 
     /* function (script) */
     JSNode *pFnNode;
@@ -135,6 +151,9 @@ struct JSObj {
 
 struct JSScope {
     int32_t nRef;
+    int32_t nGCRef;
+    uint8_t bGCState;
+    uint8_t bSweeping;
     JSObj *pVars;
     JSScope *pParent;
     JSScope *pNextAll;
@@ -167,7 +186,10 @@ struct JSCtx {
     JSStr *pAllStrings;
     JSObj *pAllObjects;
     JSScope *pAllScopes;
-    xx_list_t vecPrograms; /* parsed programs (JSNode roots) */
+    xx_list_t vecPrograms; /* owned references to private parsed JSPrograms */
+    void **ppProgramPins; /* pointer hash set; vecPrograms owns the references */
+    size_t nProgramPinsCapacity;
+    JSProgramCache *pProgramCache;
 
     int bException;
     JSVal exception;
@@ -182,8 +204,14 @@ struct JSCtx {
 
     /* Nesting of the eager free path; see jsobj_unref. */
     int nFreeDepth;
+    int bCollectingCycles;
 
     void *pUser;
+    JSDebugHook pDebugHook;
+    void *pDebugUser;
+    JSDebugFrameState *pDebugFrame;
+    int bDebugInHook;
+    int bDebugAborted;
 
     /* Cached empty string. */
     JSStr *pEmptyStr;
@@ -198,6 +226,8 @@ void jsobj_unref(JSCtx *pCtx, JSObj *pObj);
 JSScope *jsscope_new(JSCtx *pCtx, JSScope *pParent);
 JSScope *jsscope_ref(JSScope *pScope);
 void jsscope_unref(JSCtx *pCtx, JSScope *pScope);
+/* Completed interpreted frame release; may collect unreachable local cycles. */
+void jsscope_close(JSCtx *pCtx, JSScope *pScope);
 
 JSVal jsval_obj(JSObj *pObj); /* takes ownership of one reference */
 JSVal jsval_str(JSStr *pStr); /* takes ownership of one reference */
@@ -208,15 +238,26 @@ JSVal jsobj_get_own(JSCtx *pCtx, JSObj *pObj, const char *pKey, size_t nKeySize,
 JSVal jsobj_get(JSCtx *pCtx, JSObj *pObj, const char *pKey, size_t nKeySize);
 void jsobj_put(JSCtx *pCtx, JSObj *pObj, const char *pKey, size_t nKeySize, JSVal value);
 void jsobj_put_hidden(JSCtx *pCtx, JSObj *pObj, const char *pKey, JSVal value);
+/* The key must remain valid for the lifetime of the context. */
+void jsobj_put_hidden_static(JSCtx *pCtx, JSObj *pObj, const char *pKey, JSVal value);
+int jsobj_del(JSCtx *pCtx, JSObj *pObj, const char *pKey);
+JSVal jsobj_keys(JSCtx *pCtx, JSObj *pObj);
+int jsobj_property_is_enumerable(JSObj *pObj, const char *pKey, size_t nKeySize);
+void jsobj_set_enumerable(JSCtx *pCtx, JSObj *pObj, const char *pKey, size_t nKeySize, int bEnumerable);
 int jsobj_has(JSCtx *pCtx, JSObj *pObj, const char *pKey, size_t nKeySize);
 
 /* Number/string helpers shared by the builtins. */
 JSVal js_number_to_string(JSCtx *pCtx, double nValue, int nRadix);
-/* Number::toString fast path for exact 32-bit integers; 0 = not applicable. */
+/* Exact decimal safe integers; pBuf needs 32 bytes. 0 = not applicable. */
 int js_int_to_buf(char *pBuf, double nValue);
+/* Complete, descriptor-free dense ranges can shift without copying slots.
+ * shift transfers one reference to pResult; unshift duplicates its arguments. */
+int js_array_shift_dense(JSCtx *pCtx, JSObj *pObj, JSVal *pResult);
+int js_array_unshift_dense(JSCtx *pCtx, JSObj *pObj, int nArgc, JSVal *pArgv);
 double js_string_to_number(const char *pData, size_t nSize);
 int js_is_array_index(const char *pKey, size_t nKeySize, int64_t *pnIndex);
 JSVal js_concat_str(JSCtx *pCtx, JSVal left, JSVal right);
+JSVal js_concat_str_assign(JSCtx *pCtx, JSVal left, JSVal right);
 
 /* Equality / comparison used by the interpreter and by Array.sort. */
 int js_strict_equals(JSCtx *pCtx, JSVal left, JSVal right);
@@ -228,6 +269,7 @@ JSVal js_construct(JSCtx *pCtx, JSVal fn, int nArgc, JSVal *pArgv);
 
 /* Builtin installation (js_builtins.c). */
 void js_install_builtins(JSCtx *pCtx);
+int js_is_string_concat(JSObj *pObj);
 void js_install_regexp(JSCtx *pCtx);
 
 /* Regular expressions (js_regexp.c). */
@@ -254,7 +296,15 @@ void js_free_node(JSNode *pNode);
 JSVal js_run_program(JSCtx *pCtx, JSNode *pProgram, JSScope *pScope, JSVal thisVal);
 JSVal js_call_function(JSCtx *pCtx, JSObj *pFn, JSVal thisVal, int nArgc, JSVal *pArgv, int bConstruct);
 
+void js_debug_exception(JSCtx *pCtx);
+
 /* Sets the pending exception from a printf-style message. */
 JSVal js_throw_value(JSCtx *pCtx, JSVal value);
+
+void js_prepare_program(JSNode *pProgram);
+JSNode *js_parse_bytecode(const void *pData, size_t nSize);
+JSRegExp *jsregexp_ref(JSRegExp *pRegExp);
+JSVal js_new_regexp_shared_val(JSCtx *pCtx, JSRegExp *pRegExp);
+size_t jsregexp_memory_size(JSRegExp *pRegExp);
 
 #endif /* JS_INTERNAL_H */

@@ -125,3 +125,18 @@ See `SECURA.md` for directory/block framing and PE launcher trailers.
 
 Aladdin DOS Self-UnStuffer stored archives are supported by `self_unstuffer`.
 See `SELF_UNSTUFFER.md` for the DOS extent, index and bounded trailing padding.
+
+StarForce OVL version-2 localized resources are supported by `starforce_ovl`.
+See `STARFORCE_OVL.md` for the zlib directory, language variants and PE certificate framing.
+
+StuffIt 5 BD05FEEF self-extractor envelopes are handled by `stuffit5`.
+See `STUFFIT5_SFX.md` for wrapper bounds, source offsets and delegated CRC validation.
+
+Tarma QuickInstall tiz1/tiz2 solid zlib archives are handled by `tarma_installer`.
+See `TARMA_LEGACY.md` for named tzff records, framing checks and resource bounds.
+
+Spear of Destiny dated stored-block installer volumes are handled by `sod_installer`.
+See `SOD_INSTALLER.md` for framing, detection requirements and limitations.
+
+KiriKiri XP3 stored/zlib indexes and segmented members are handled by `kirikiri_xp3`.
+See `XP3_COMPRESSED.md` for checksum validation, protected-empty storage and limits.

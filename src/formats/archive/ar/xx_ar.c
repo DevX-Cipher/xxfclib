@@ -135,6 +135,16 @@ static void xx_ar_copy_raw_name(const xx_ar_member_header *header, char output[1
     output[length] = '\0';
 }
 
+static bool xx_ar_parse_member_size(const char field[10], uint64_t *value)
+{
+    if (xx_ar_parse_uint(field, 10U, 10U, false, value)) return true;
+    /* Early COFF librarians left a NUL and an extra grave accent in the
+     * final two size-field bytes. The real header trailer is still `\n.
+     * Accept this exact suffix only; the eight preceding bytes must remain
+     * a complete decimal field, and the resulting extent is checked below. */
+    return field[8] == '\0' && field[9] == '`' && xx_ar_parse_uint(field, 8U, 10U, false, value);
+}
+
 static bool xx_ar_read_header(xx_io_device *device, int64_t total_size, int64_t offset, xx_ar_member_header *header, uint64_t *member_size, int64_t *next_offset)
 {
     uint64_t size_value;
@@ -143,7 +153,7 @@ static bool xx_ar_read_header(xx_io_device *device, int64_t total_size, int64_t 
 
     if (!device || !header || !member_size || !next_offset || offset < 0 || total_size < offset || total_size - offset < XX_AR_MEMBER_HEADER_SIZE ||
         !xx_ar_read_exact_at(device, offset, header, sizeof(*header)) || header->trailer[0] != '`' || header->trailer[1] != '\n' ||
-        !xx_ar_parse_uint(header->size, sizeof(header->size), 10U, false, &size_value) || size_value > (uint64_t)INT64_MAX) {
+        !xx_ar_parse_member_size(header->size, &size_value) || size_value > (uint64_t)INT64_MAX) {
         return false;
     }
     data_offset = offset + XX_AR_MEMBER_HEADER_SIZE;
@@ -878,6 +888,15 @@ static bool xx_ar_prepare_extract_names(xx_ar_members *members)
         xx_ar_member *member = &members->items[i];
         if (!member->special && member->name) {
             member->extract_name = xx_ar_make_extract_name(member->name);
+            if (!member->extract_name) {
+                /* Import libraries can repeat a build path such as
+                 * ..\WIDGE32.DEF for every object. Preserve each bounded
+                 * object under an ordinal leaf, never follow that path. */
+                char alias[48];
+                xx_rt_snprintf(alias, sizeof(alias), "member-%06u.bin", (unsigned int)i);
+                member->extract_name = xx_str_dup(alias);
+                if (!member->extract_name) return false;
+            }
         }
     }
     return xx_ar_make_names_unique(members);
@@ -1176,7 +1195,12 @@ static bool xx_ar_populate_archive_record(xx_archive_record *record, const xx_ar
     record->header_size = XX_AR_MEMBER_HEADER_SIZE;
     record->data_offset = member->data_offset;
     record->compressed_size = member->data_size;
-    return xx_archive_record_set_meta_str(record, XX_META_ID_ORIGINAL_NAME, member->name) &&
+    /* Expose the same bounded relative name used by extraction, so callers
+     * can apply their path checks even to COFF build-machine absolute names.
+     * Keep the exact archive spelling in the comment when it differs. */
+    return xx_archive_record_set_meta_str(record, XX_META_ID_ORIGINAL_NAME, member->extract_name ? member->extract_name : member->name) &&
+           (!member->extract_name || xx_str_cmp(member->extract_name, member->name) == 0 ||
+            xx_archive_record_set_meta_str(record, XX_META_ID_COMMENT, member->name)) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_UNCOMPRESSED_SIZE, (uint64_t)member->data_size) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSED_SIZE, (uint64_t)member->data_size) &&
            xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSION_METHOD, 0U) && xx_archive_record_set_meta_u64(record, XX_META_ID_TIMESTAMP, member->timestamp) &&

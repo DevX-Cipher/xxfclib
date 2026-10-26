@@ -149,7 +149,7 @@ static bool xx_lofi_add(xx_lofi_stream *stream, const xx_lofi_member *member)
 #define XX_LOFI_METHOD_LZMA 1U
 #define XX_LOFI_METHOD_ZLIB 2U
 #define XX_LOFI_MEMBER_NAME "lofi_image.img"
-#define XX_LOFI_MAX_DECODED (256 * 1024 * 1024)
+#define XX_LOFI_MAX_DECODED (INT64_C(2) * 1024 * 1024 * 1024)
 
 /* Forward declarations: the parse and the decode
  * call into each other's helpers. */
@@ -323,6 +323,7 @@ static bool xx_lofi_decode(Abstractformat *self, const xx_lofi_member *member, u
     uint8_t *packed = NULL;
     uint8_t *plain = NULL;
     size_t written = 0U;
+    const xx_var *memory_limit;
 
     *out = NULL;
     *out_size = 0U;
@@ -334,6 +335,8 @@ static bool xx_lofi_decode(Abstractformat *self, const xx_lofi_member *member, u
     if (member->uncompressed_size <= 0 || member->uncompressed_size > (int64_t)XX_LOFI_MAX_DECODED) {
         return false;
     }
+    memory_limit = xx_format_resolve_extra_parameter(self, NULL, XX_META_ID_OPT_MEMORY_LIMIT);
+    if (memory_limit && (uint64_t)member->compressed_size + (uint64_t)member->uncompressed_size > xx_var_get_u64(memory_limit)) return false;
 
     packed = (uint8_t *)xx_mem_alloc((size_t)member->compressed_size);
     if (!packed) return false;
