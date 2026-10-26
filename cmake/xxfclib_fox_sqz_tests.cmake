@@ -1,0 +1,7 @@
+option(XXFC_BUILD_FOX_SQZ_TESTS "Build native FoxSqz layout tests" OFF)
+if(XXFC_BUILD_FOX_SQZ_TESTS)
+    enable_testing()
+    add_executable(test_fox_sqz_native "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fox_sqz_native.c")
+    target_link_libraries(test_fox_sqz_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_fox_sqz_native COMMAND test_fox_sqz_native)
+endif()

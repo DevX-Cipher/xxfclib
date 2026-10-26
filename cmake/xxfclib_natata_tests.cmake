@@ -1,0 +1,7 @@
+option(XXFC_BUILD_NATATA_TESTS "Build native Natata reader and UPX carrier tests" OFF)
+if(XXFC_BUILD_NATATA_TESTS)
+    enable_testing()
+    add_executable(test_natata_native "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_natata_native.c")
+    target_link_libraries(test_natata_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_natata_native COMMAND test_natata_native)
+endif()

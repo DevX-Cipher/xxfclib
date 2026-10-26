@@ -1,0 +1,7 @@
+option(XXFC_BUILD_STOR_RESOURCE_TESTS "Build native STOR resource reader tests" OFF)
+if(XXFC_BUILD_STOR_RESOURCE_TESTS)
+    enable_testing()
+    add_executable(test_stor_resource_native "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_stor_resource_native.c")
+    target_link_libraries(test_stor_resource_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_stor_resource_native COMMAND test_stor_resource_native)
+endif()

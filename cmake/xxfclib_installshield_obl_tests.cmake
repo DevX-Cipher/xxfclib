@@ -1,0 +1,7 @@
+option(XXFC_BUILD_INSTALLSHIELD_OBL_TESTS "Build native InstallShield OBL reader tests" OFF)
+if(XXFC_BUILD_INSTALLSHIELD_OBL_TESTS)
+    enable_testing()
+    add_executable(test_installshield_obl_native "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_installshield_obl_native.c")
+    target_link_libraries(test_installshield_obl_native PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_installshield_obl_native COMMAND test_installshield_obl_native)
+endif()
