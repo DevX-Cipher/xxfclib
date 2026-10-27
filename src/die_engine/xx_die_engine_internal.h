@@ -119,6 +119,7 @@ struct DieEngine {
 
     int bStop;
     char *pCurrentScript;
+    const char *pCurrentScriptPath; /* borrowed database path of pCurrentScript */
     char *pCurrentFormatId;   /* bundled audio.1.sg //fmt[...] tag, if any */
     char *pCurrentFormatName; /* name assigned by that exact marked branch */
     /* Latest progress error. The reference overwrites this during a pass,

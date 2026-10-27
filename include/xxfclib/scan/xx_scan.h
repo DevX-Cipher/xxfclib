@@ -290,6 +290,10 @@ typedef struct xx_scan_record {
     int64_t archive_offset; /**< Physical packed member/stream start in the containing input. */
     int64_t archive_size; /**< Physical packed member/stream size. */
     bool archive_compressed; /**< offset/size describe decoded bytes when true. */
+    /** Owned database path of the script whose result this is (its file, a TAR
+     * member path or "Binary/audio.1.sg"). NULL for synthesized records such
+     * as Unknown. Frontends use it to show the signature. */
+    const char *signature;
 } xx_scan_record;
 typedef struct xx_scan_record xx_scan_record_t;
 

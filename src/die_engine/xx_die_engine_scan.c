@@ -327,6 +327,7 @@ static void run_script(DieEngine *pEngine, DBSignature *pRecord, int bCallDetect
         ? pRecord->pFilePath : pRecord->pName;
 
     pEngine->pCurrentScript = pRecord->pName;
+    pEngine->pCurrentScriptPath = pRecord->pFilePath && pRecord->pFilePath[0] ? pRecord->pFilePath : pRecord->pName;
     cd_free(pEngine->pCurrentFormatId);
     cd_free(pEngine->pCurrentFormatName);
     pEngine->pCurrentFormatId = NULL;
@@ -729,6 +730,7 @@ static int scan_run_pass(xx_io_device *device, XFileType fileType, int bIsCliAss
         if (!pEngine->bStop && !cd_alloc_oom() && !xx_io_buffer_failed(pEngine->device) && !xx_pd_is_stopped(pd))
             run_script(pEngine, &edited, 1);
         pEngine->pCurrentScript = NULL;
+        pEngine->pCurrentScriptPath = NULL;
         i = pDb->nCount;
     } else {
         for (i = 0; (i < pDb->nCount) && (!pEngine->bStop) && (!cd_alloc_oom()) && !xx_io_buffer_failed(pEngine->device) && !xx_pd_is_stopped(pd); i++) {
@@ -744,6 +746,8 @@ static int scan_run_pass(xx_io_device *device, XFileType fileType, int bIsCliAss
             }
         }
     }
+    /* Results added from here on (Unknown) have no script. */
+    pEngine->pCurrentScriptPath = NULL;
 
     if (bAddUnknown && (pResult->nCount == 0) && !xx_io_buffer_failed(pEngine->device) && !xx_pd_is_stopped(pd)) {
         xx_scan_record *pRecord = NULL;

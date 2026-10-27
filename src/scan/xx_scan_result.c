@@ -42,6 +42,7 @@ void xx_scan_result_free(xx_scan_result *pResult)
         xx_rt_free((void *)pResult->pRecords[i].info);
         xx_rt_free((void *)pResult->pRecords[i].format_id);
         xx_rt_free((void *)pResult->pRecords[i].archive_member);
+        xx_rt_free((void *)pResult->pRecords[i].signature);
     }
 
     xx_rt_free(pResult->pRecords);
@@ -133,12 +134,13 @@ bool xx_scan_append_result(xx_scan_engine *engine, xx_scan_result *destination, 
         }
         *output = *input;
         output->offset += source_offset;
-        output->type = output->name = output->version = output->info = output->format_id = output->archive_member = NULL;
+        output->type = output->name = output->version = output->info = output->format_id = output->archive_member = output->signature = NULL;
         copy.nCount++;
         if (!xx_scan_copy_string(input->type, &output->type) || !xx_scan_copy_string(input->name, &output->name) ||
             !xx_scan_copy_string(input->version, &output->version) || !xx_scan_copy_string(input->info, &output->info) ||
             !xx_scan_copy_string(input->format_id, &output->format_id) ||
-            !xx_scan_copy_string(input->archive_member, &output->archive_member)) goto out_of_memory;
+            !xx_scan_copy_string(input->archive_member, &output->archive_member) ||
+            !xx_scan_copy_string(input->signature, &output->signature)) goto out_of_memory;
     }
     if (source->nErrorCount) {
         copy.ppErrors = (char **)xx_rt_calloc((size_t)source->nErrorCount, sizeof(char *));

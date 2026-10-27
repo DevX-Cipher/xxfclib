@@ -3530,6 +3530,7 @@ static JSVal fn_remove_result(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArg
             cd_free((void *)pRecord->info);
             cd_free((void *)pRecord->format_id);
             cd_free((void *)pRecord->archive_member);
+            cd_free((void *)pRecord->signature);
             x_memmove(pEngine->pResult->pRecords + i, pEngine->pResult->pRecords + i + 1, (size_t)(pEngine->pResult->nCount - i - 1) * sizeof(xx_scan_record));
             pEngine->pResult->nCount--;
             break;
@@ -3702,6 +3703,7 @@ static void engine_add_result(DieEngine *pEngine, const char *pType, const char 
     pRecord->version = cd_strdup(pVersion);
     pRecord->info = cd_strdup(pInfo);
     pRecord->format_id = pFormatId ? cd_strdup(pFormatId) : NULL;
+    pRecord->signature = pEngine->pCurrentScriptPath ? cd_strdup(pEngine->pCurrentScriptPath) : NULL;
     pRecord->priority = xx_scan_type_to_prio(pType);
     pRecord->is_heuristic = ((x_strlen(pType) > 1) && (pType[0] == '~')) ? 1 : 0;
     pRecord->is_aggressive_heuristic = ((x_strlen(pType) > 1) && (pType[0] == '!')) ? 1 : 0;
