@@ -1,0 +1,7 @@
+option(XXFC_BUILD_INSTALLUS_PE_TESTS "Build PE InstallUs bounded SPIS delegation tests" OFF)
+if(XXFC_BUILD_INSTALLUS_PE_TESTS)
+    enable_testing()
+    add_executable(test_installus_pe "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_installus_pe.c")
+    target_link_libraries(test_installus_pe PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_installus_pe COMMAND test_installus_pe "${CMAKE_CURRENT_BINARY_DIR}/installus-pe-output")
+endif()

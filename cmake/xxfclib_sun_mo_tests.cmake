@@ -1,0 +1,7 @@
+option(XXFC_BUILD_SUN_MO_TESTS "Build Sun message catalog tests" OFF)
+if(XXFC_BUILD_SUN_MO_TESTS)
+    enable_testing()
+    add_executable(test_sun_mo "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_sun_mo.c")
+    target_link_libraries(test_sun_mo PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_sun_mo COMMAND test_sun_mo "${CMAKE_CURRENT_BINARY_DIR}/sun-mo-output")
+endif()

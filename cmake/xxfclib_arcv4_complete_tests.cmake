@@ -1,0 +1,7 @@
+option(XXFC_BUILD_ARCV4_COMPLETE_TESTS "Build ARCV4 exact-prefix member recovery tests" OFF)
+if(XXFC_BUILD_ARCV4_COMPLETE_TESTS AND NOT TARGET test_arcv4_complete_member)
+    enable_testing()
+    add_executable(test_arcv4_complete_member "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_arcv4_complete_member.c")
+    target_link_libraries(test_arcv4_complete_member PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_arcv4_complete_member COMMAND test_arcv4_complete_member "${CMAKE_CURRENT_BINARY_DIR}/arcv4-complete-member")
+endif()

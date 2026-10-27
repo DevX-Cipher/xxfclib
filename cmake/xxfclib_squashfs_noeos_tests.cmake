@@ -1,0 +1,7 @@
+option(XXFC_BUILD_SQUASHFS_NOEOS_TESTS "Build legacy SquashFS LZMA range-flush tests" OFF)
+if(XXFC_BUILD_SQUASHFS_NOEOS_TESTS AND NOT TARGET test_squashfs_noeos_lzma)
+    enable_testing()
+    add_executable(test_squashfs_noeos_lzma "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_squashfs_noeos_lzma.c")
+    target_link_libraries(test_squashfs_noeos_lzma PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_squashfs_noeos_lzma COMMAND test_squashfs_noeos_lzma)
+endif()

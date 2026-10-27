@@ -1,0 +1,7 @@
+option(XXFC_BUILD_LHA_EXEC_TESTS "Build EXEC LHA wrapper tests" OFF)
+if(XXFC_BUILD_LHA_EXEC_TESTS AND NOT TARGET test_lha_exec)
+    enable_testing()
+    add_executable(test_lha_exec "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lha_exec.c")
+    target_link_libraries(test_lha_exec PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_lha_exec COMMAND test_lha_exec "${CMAKE_CURRENT_BINARY_DIR}/lha-exec-output")
+endif()

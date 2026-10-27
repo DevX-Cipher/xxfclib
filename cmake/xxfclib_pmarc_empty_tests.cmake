@@ -1,0 +1,7 @@
+option(XXFC_BUILD_PMARC_EMPTY_TESTS "Build PMexe/PMarc empty SFX tests" OFF)
+if(XXFC_BUILD_PMARC_EMPTY_TESTS AND NOT TARGET test_pmarc_empty)
+    enable_testing()
+    add_executable(test_pmarc_empty "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pmarc_empty.c")
+    target_link_libraries(test_pmarc_empty PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_pmarc_empty COMMAND test_pmarc_empty)
+endif()

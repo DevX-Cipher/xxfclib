@@ -1,0 +1,7 @@
+option(XXFC_BUILD_PP20_SLOT_TESTS "Build PP20 slot-image tests" OFF)
+if(XXFC_BUILD_PP20_SLOT_TESTS AND NOT TARGET test_pp20_slot_image)
+    enable_testing()
+    add_executable(test_pp20_slot_image "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pp20_slot_image.c")
+    target_link_libraries(test_pp20_slot_image PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_pp20_slot_image COMMAND test_pp20_slot_image "${CMAKE_CURRENT_BINARY_DIR}/pp20-slot-output")
+endif()

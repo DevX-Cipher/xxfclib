@@ -1,0 +1,7 @@
+option(XXFC_BUILD_FURY_DAT_TESTS "Build Fury of the Furries DAT tests" OFF)
+if(XXFC_BUILD_FURY_DAT_TESTS AND NOT TARGET test_fury_dat)
+    enable_testing()
+    add_executable(test_fury_dat "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fury_dat.c")
+    target_link_libraries(test_fury_dat PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_fury_dat COMMAND test_fury_dat "${CMAKE_CURRENT_BINARY_DIR}/fury-dat-output")
+endif()

@@ -1,0 +1,7 @@
+option(XXFC_BUILD_ARCV2_VOLUME_TESTS "Build ARCV2 continuation-volume tests" OFF)
+if(XXFC_BUILD_ARCV2_VOLUME_TESTS AND NOT TARGET test_arcv2_volumes)
+    enable_testing()
+    add_executable(test_arcv2_volumes "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_arcv2_volumes.c")
+    target_link_libraries(test_arcv2_volumes PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_arcv2_volumes COMMAND test_arcv2_volumes "${CMAKE_CURRENT_BINARY_DIR}/arcv2-volume-fixtures")
+endif()

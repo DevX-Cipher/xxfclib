@@ -1,0 +1,7 @@
+option(XXFC_BUILD_LINGVOARC_VOLUME_TESTS "Build LingvoArc fragment-pair tests" OFF)
+if(XXFC_BUILD_LINGVOARC_VOLUME_TESTS AND NOT TARGET test_lingvoarc_volumes)
+    enable_testing()
+    add_executable(test_lingvoarc_volumes "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lingvoarc_volumes.c")
+    target_link_libraries(test_lingvoarc_volumes PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_lingvoarc_volumes COMMAND test_lingvoarc_volumes "${CMAKE_CURRENT_BINARY_DIR}/lingvoarc-volumes")
+endif()

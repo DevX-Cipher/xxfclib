@@ -1,0 +1,7 @@
+option(XXFC_BUILD_SHOW_FOOTER_TESTS "Build SHOW footer presentation archive tests" OFF)
+if(XXFC_BUILD_SHOW_FOOTER_TESTS)
+    enable_testing()
+    add_executable(test_show_footer "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_show_footer.c")
+    target_link_libraries(test_show_footer PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_show_footer COMMAND test_show_footer "${CMAKE_CURRENT_BINARY_DIR}/show-footer-output")
+endif()

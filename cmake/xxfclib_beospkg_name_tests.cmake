@@ -1,0 +1,7 @@
+option(XXFC_BUILD_BEOSPKG_NAME_TESTS "Build BeOS package output-name tests" OFF)
+if(XXFC_BUILD_BEOSPKG_NAME_TESTS AND NOT TARGET test_beospkg_names)
+    enable_testing()
+    add_executable(test_beospkg_names "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_beospkg_names.c")
+    target_link_libraries(test_beospkg_names PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_beospkg_names COMMAND test_beospkg_names "${CMAKE_CURRENT_BINARY_DIR}/beospkg-name-fixtures")
+endif()

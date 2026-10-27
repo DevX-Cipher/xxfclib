@@ -1,0 +1,7 @@
+option(XXFC_BUILD_RESOURCEFORK_NAME_TESTS "Build resource fork long-name tests" OFF)
+if(XXFC_BUILD_RESOURCEFORK_NAME_TESTS AND NOT TARGET test_resourcefork_long_names)
+    enable_testing()
+    add_executable(test_resourcefork_long_names "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_resourcefork_long_names.c")
+    target_link_libraries(test_resourcefork_long_names PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_resourcefork_long_names COMMAND test_resourcefork_long_names "${CMAKE_CURRENT_BINARY_DIR}/resourcefork-long-names")
+endif()

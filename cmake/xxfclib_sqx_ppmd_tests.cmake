@@ -1,0 +1,7 @@
+option(XXFC_BUILD_SQX_PPMD_TESTS "Build SQX PPMd method 6 tests" OFF)
+if(XXFC_BUILD_SQX_PPMD_TESTS)
+    enable_testing()
+    add_executable(test_sqx_ppmd "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_sqx_ppmd.c")
+    target_link_libraries(test_sqx_ppmd PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_sqx_ppmd COMMAND test_sqx_ppmd)
+endif()

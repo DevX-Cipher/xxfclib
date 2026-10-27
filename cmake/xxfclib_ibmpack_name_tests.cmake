@@ -1,0 +1,7 @@
+option(XXFC_BUILD_IBMPACK_NAME_TESTS "Build IBM PACK duplicate-name tests" OFF)
+if(XXFC_BUILD_IBMPACK_NAME_TESTS AND NOT TARGET test_ibmpack_names)
+    enable_testing()
+    add_executable(test_ibmpack_names "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ibmpack_names.c")
+    target_link_libraries(test_ibmpack_names PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_ibmpack_names COMMAND test_ibmpack_names "${CMAKE_CURRENT_BINARY_DIR}/ibmpack-names-output")
+endif()

@@ -1,0 +1,7 @@
+option(XXFC_BUILD_IS_POSITIONAL_TESTS "Build checksum-verified positional PE wrapper tests" OFF)
+if(XXFC_BUILD_IS_POSITIONAL_TESTS AND NOT TARGET test_is_stored_positional)
+    enable_testing()
+    add_executable(test_is_stored_positional "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_is_stored_positional.c")
+    target_link_libraries(test_is_stored_positional PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_is_stored_positional COMMAND test_is_stored_positional)
+endif()

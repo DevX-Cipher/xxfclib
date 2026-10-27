@@ -1,0 +1,7 @@
+option(XXFC_BUILD_IS3_VOLUME_TESTS "Build complete InstallShield 3 volume-set tests" OFF)
+if(XXFC_BUILD_IS3_VOLUME_TESTS AND NOT TARGET test_is3_volumes)
+    enable_testing()
+    add_executable(test_is3_volumes "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_is3_volumes.c")
+    target_link_libraries(test_is3_volumes PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_is3_volumes COMMAND test_is3_volumes "${CMAKE_CURRENT_BINARY_DIR}/is3-volumes")
+endif()

@@ -1,0 +1,8 @@
+option(XXFC_BUILD_INNO126_TESTS "Build Inno Setup 1.2.6 data record tests" OFF)
+if(XXFC_BUILD_INNO126_TESTS)
+    enable_testing()
+    add_executable(test_inno126 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_inno126.c")
+    target_link_libraries(test_inno126 PRIVATE xxfclib::xxfclib)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/inno126-output")
+    add_test(NAME xxfc_inno126 COMMAND test_inno126 "${CMAKE_CURRENT_BINARY_DIR}/inno126-output")
+endif()

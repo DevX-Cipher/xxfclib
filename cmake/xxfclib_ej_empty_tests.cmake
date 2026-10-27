@@ -1,0 +1,7 @@
+option(XXFC_BUILD_EJ_EMPTY_TESTS "Build exe4j empty launcher and payload regression tests" OFF)
+if(XXFC_BUILD_EJ_EMPTY_TESTS)
+    enable_testing()
+    add_executable(test_ej_empty "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ej_empty.c")
+    target_link_libraries(test_ej_empty PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_ej_empty COMMAND test_ej_empty "${CMAKE_CURRENT_BINARY_DIR}/ej-empty-output")
+endif()

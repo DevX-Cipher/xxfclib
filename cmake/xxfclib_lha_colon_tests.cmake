@@ -1,0 +1,7 @@
+option(XXFC_BUILD_LHA_COLON_TESTS "Build LHA literal-colon filename tests" OFF)
+if(XXFC_BUILD_LHA_COLON_TESTS AND NOT TARGET test_lha_colon_names)
+    enable_testing()
+    add_executable(test_lha_colon_names "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lha_colon_names.c")
+    target_link_libraries(test_lha_colon_names PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_lha_colon_names COMMAND test_lha_colon_names "${CMAKE_CURRENT_BINARY_DIR}/lha-colon-output")
+endif()

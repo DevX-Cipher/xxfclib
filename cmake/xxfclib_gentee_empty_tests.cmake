@@ -1,0 +1,8 @@
+option(XXFC_BUILD_GENTEE_EMPTY_TESTS "Build complete empty Gentee tests" OFF)
+if(XXFC_BUILD_GENTEE_EMPTY_TESTS)
+    enable_testing()
+    add_executable(test_gentee_empty "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gentee_empty.c")
+    target_link_libraries(test_gentee_empty PRIVATE xxfclib::xxfclib)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/gentee-empty-output")
+    add_test(NAME xxfc_gentee_empty COMMAND test_gentee_empty "${CMAKE_CURRENT_BINARY_DIR}/gentee-empty-output")
+endif()

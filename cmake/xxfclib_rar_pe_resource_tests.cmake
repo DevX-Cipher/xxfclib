@@ -1,0 +1,7 @@
+option(XXFC_BUILD_RAR_PE_RESOURCE_TESTS "Build bounded named PE RAR resource tests" OFF)
+if(XXFC_BUILD_RAR_PE_RESOURCE_TESTS)
+    enable_testing()
+    add_executable(test_rar_pe_resource "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rar_pe_resource.c")
+    target_link_libraries(test_rar_pe_resource PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_rar_pe_resource COMMAND test_rar_pe_resource "${CMAKE_CURRENT_BINARY_DIR}/rar-pe-output")
+endif()

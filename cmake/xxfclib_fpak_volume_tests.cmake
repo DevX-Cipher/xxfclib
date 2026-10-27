@@ -1,0 +1,7 @@
+option(XXFC_BUILD_FPAK_VOLUME_TESTS "Build FPAK volume-pair tests" OFF)
+if(XXFC_BUILD_FPAK_VOLUME_TESTS AND NOT TARGET test_fpak_volumes)
+    enable_testing()
+    add_executable(test_fpak_volumes "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fpak_volumes.c")
+    target_link_libraries(test_fpak_volumes PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_fpak_volumes COMMAND test_fpak_volumes "${CMAKE_CURRENT_BINARY_DIR}/fpak-volume-fixtures")
+endif()

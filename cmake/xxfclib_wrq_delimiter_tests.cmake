@@ -1,0 +1,7 @@
+option(XXFC_BUILD_WRQ_DELIMITER_TESTS "Build WRQ labelled binary delimiter tests" OFF)
+if(XXFC_BUILD_WRQ_DELIMITER_TESTS AND NOT TARGET test_wrq_delimiter)
+    enable_testing()
+    add_executable(test_wrq_delimiter "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_wrq_delimiter.c")
+    target_link_libraries(test_wrq_delimiter PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_wrq_delimiter COMMAND test_wrq_delimiter "${CMAKE_CURRENT_BINARY_DIR}/wrq-delimiter-output")
+endif()
