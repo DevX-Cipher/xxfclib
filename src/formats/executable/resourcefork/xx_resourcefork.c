@@ -49,6 +49,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include "xxfclib/data/xx_data.h"
+#include "xx_resourcefork_output_name.h"
 
 #ifdef RESOURCEFORK
 #define XX_RESOURCEFORK_FILE_TYPE XX_FILE_TYPE_RESOURCEFORK
@@ -575,8 +576,13 @@ bool xx_resourcefork_unpack_current_archive_record(Abstractformat *format, xx_ar
         base = owned_base;
     }
     if (!base) goto done;
-    path = (base[0] && base[xx_str_len(base) - 1U] != '/' && base[xx_str_len(base) - 1U] != '\\') ? xx_str_concat3(base, "/", member->name)
-                                                                                                  : xx_str_concat(base, member->name);
+    {
+        char *output_name=rsrc_output_name(member->name,stream->index);
+        if (!output_name) goto done;
+        path = (base[0] && base[xx_str_len(base) - 1U] != '/' && base[xx_str_len(base) - 1U] != '\\') ? xx_str_concat3(base, "/", output_name)
+                                                                                                      : xx_str_concat(base, output_name);
+        xx_str_free(output_name);
+    }
     if (!path) goto done;
     if (!xx_store_create_dirs_a(path, false)) goto done;
     {

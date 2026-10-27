@@ -20,6 +20,12 @@ set(CMAKE_NINJA_FORCE_RESPONSE_FILE ON)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_streams.cmake")
 
+option(XXFC_BUILD_TRANSLATION_TESTS "Build standalone PO translation regression tests" OFF)
+if(XXFC_BUILD_TRANSLATION_TESTS)
+    enable_testing()
+    add_subdirectory(tests/translation)
+endif()
+
 set(XXFC_BUILD_PROFILE "full" CACHE STRING "xxfclib source profile: full, formats, apk_emul, dotnet_emul or bytecode")
 set_property(CACHE XXFC_BUILD_PROFILE PROPERTY STRINGS full formats apk_emul dotnet_emul bytecode)
 if(XXFC_BUILD_PROFILE STREQUAL "formats")
@@ -155,6 +161,7 @@ if(XXFC_BUILD_CODEPAGE_TESTS)
     add_test(NAME xxfc_codepages COMMAND xxfc_codepage_tests)
 endif()
 set(XXFCLIB_PUBLIC_HEADERS
+    include/xxfclib/translation/xx_translation.h
     include/xxfclib/history/xx_history.h
     include/xxfclib/process/xx_process_structs.h
     include/xxfclib/codepages/xx_codepage.h
@@ -1973,6 +1980,8 @@ set(XXFCLIB_SOURCES
     src/settings/xx_settings_value.c
     src/settings/xx_shortcuts.c
     src/io/xx_io.c
+    src/translation/xx_translation.c
+    src/translation/xx_translation_io.c
     src/history/xx_history.c
     src/io/xx_io_buffer.c
     src/io/xx_io_snapshot.c
@@ -7765,3 +7774,48 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_arq_advisory_tests.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_createinstall_resources_tests.cmake")
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_jugglor_legacy_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_gentee_empty_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_inno126_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_ej_empty_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_installus_pe_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_lha_ne_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_show_footer_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_rar_pe_resource_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_rar_copy50_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_zip_pe_resource_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_silmarils_terminal_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_sun_mo_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_sqx_ppmd_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_zoom_terminal_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_arcv2_volume_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_asymetrix_volume_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_beospkg_name_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_lha_exec_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_fpak_volume_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_fury_dat_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_lha_colon_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_wrq_delimiter_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_ibmpack_name_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_is_positional_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_is3_volume_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_lingvoarc_volume_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_pmarc_empty_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_pp20_slot_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_quantum_name_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_red_volume_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_resourcefork_name_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_squashfs_noeos_tests.cmake")

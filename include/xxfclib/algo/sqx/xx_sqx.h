@@ -4,7 +4,7 @@
 
 /**
  * @file xx_sqx.h
- * @brief SQX (SQX-Software / Michael Bierhoff) member codec, methods 1..4.
+ * @brief SQX member codec: legacy methods 1..4 and PPMd method 6.
  *
  * Facts that are easy to get wrong:
  *
@@ -15,8 +15,8 @@
  *     one in force is chosen by the dictionary size, not by the stream;
  *   - a block header opens with one bit: 0 selects the Huffman coder
  *     implemented here, 1 selects a second "direct" coder that is not
- *     implemented.  Methods 5 and up, and the "b0" preprocessor filter, are
- *     not implemented either; all of those fail instead of emitting
+ *     implemented. Method 5, unknown future methods and the "b0" filter
+ *     are not implemented; all of those fail instead of emitting
  *     plausible garbage.
  *
  * SOLIDITY.  Flag 0x04 means a member continues the previous member's LZ
@@ -36,6 +36,14 @@
  *
  * The containers that use this codec DO store the plaintext length (it is in
  * the SQX member header), so no measuring entry point is provided.
+ *
+ * Method 6 uses the existing PPMd8 model with SQX startup probabilities,
+ * a 16-bit range-coder bottom and little-endian word input. Each member
+ * starts a fresh coder; its first coded bit selects a fresh/continued model.
+ * Fresh models accept order 2..16 and 1..64 MiB. Continued models require a
+ * preceding successfully decoded PPM member. Solid LZ after PPM is refused
+ * because its dictionary transition has not been verified. The container
+ * must verify the decoded member's CRC; the low-level codec has no CRC input.
  */
 
 #ifndef XX_SQX_H
@@ -57,7 +65,7 @@ typedef struct xx_sqx_member {
     uint64_t unpacked_size; /**< decoded byte count (from the member header) */
     uint16_t flags;         /**< member flags; bit 2 = solid, bits 8..11 = dict */
     uint8_t filter;         /**< "b0" preprocessor selector; only 0 is supported */
-    uint8_t method;         /**< method byte; only 1..4 are supported */
+    uint8_t method;         /**< method byte; 1..4 and 6 are supported */
 } xx_sqx_member;
 
 /**

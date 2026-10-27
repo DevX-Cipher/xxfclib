@@ -8,7 +8,8 @@
 static const xx_file_type_t types[] = {XX_FILE_TYPE_SFX_LHA};
 static const uint8_t a0[] = {0x4d, 0x5a};
 static const uint8_t a1[] = {0xeb};
-static const xx_format_search_anchor anchors[] = {{a0, sizeof(a0), 0}, {a1, sizeof(a1), 0}};
+static const uint8_t a2[] = {'E', 'X', 'E', 'C'};
+static const xx_format_search_anchor anchors[] = {{a0, sizeof(a0), 0}, {a1, sizeof(a1), 0}, {a2, sizeof(a2), 0}};
 static Abstractformat *open_reader(xx_io_device *d)
 {
     xx_sfx_lha *r = xx_sfx_lha_create(d, 0);

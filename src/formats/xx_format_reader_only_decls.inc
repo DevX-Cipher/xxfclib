@@ -670,6 +670,8 @@ XXFC_API Abstractdetector *xx_smile_game_pack_get_abstract_detector(void);
 XXFC_API Abstractextractor *xx_snatchit_cp2_get_abstract_extractor(void);
 XXFC_API Abstractdetector *xx_snatchit_cp2_get_abstract_detector(void);
 XXFC_API Abstractextractor *xx_sod_installer_get_abstract_extractor(void);
+XXFC_API Abstractextractor *xx_fury_dat_get_abstract_extractor(void);
+XXFC_API Abstractdetector *xx_fury_dat_get_abstract_detector(void);
 XXFC_API Abstractdetector *xx_sod_installer_get_abstract_detector(void);
 XXFC_API Abstractextractor *xx_solarispkg_zip_get_abstract_extractor(void);
 XXFC_API Abstractdetector *xx_solarispkg_zip_get_abstract_detector(void);

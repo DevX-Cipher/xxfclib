@@ -33,6 +33,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include "xxfclib/data/xx_data.h"
 
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
@@ -594,7 +595,7 @@ static inline xx_rarx_status_t xx_rarx50_copy_match(const xx_rarx50_state *state
                 rem -= 16;
             }
             if (rem >= 8) {
-                xx_mem_copy64(dst, src);
+                memcpy(dst, src, 8);
                 dst += 8;
                 src += 8;
                 rem -= 8;
@@ -607,14 +608,14 @@ static inline xx_rarx_status_t xx_rarx50_copy_match(const xx_rarx50_state *state
         } else if (distance >= 8) {
             size_t rem = length;
             while (rem >= 16) {
-                xx_mem_copy64(dst, src);
-                xx_mem_copy64(dst + 8, src + 8);
+                memcpy(dst, src, 8);
+                memcpy(dst + 8, src + 8, 8);
                 dst += 16;
                 src += 16;
                 rem -= 16;
             }
             if (rem >= 8) {
-                xx_mem_copy64(dst, src);
+                memcpy(dst, src, 8);
                 dst += 8;
                 src += 8;
                 rem -= 8;
@@ -669,7 +670,7 @@ static inline xx_rarx_status_t xx_rarx50_copy_match(const xx_rarx50_state *state
             if (distance >= 8) {
                 const uint8_t *src = dst - distance;
                 while (from_dest >= 8) {
-                    xx_mem_copy64(dst, src);
+                    memcpy(dst, src, 8);
                     dst += 8;
                     src += 8;
                     from_dest -= 8;
@@ -691,6 +692,9 @@ static inline xx_rarx_status_t xx_rarx50_copy_match(const xx_rarx50_state *state
     return XX_RARX_STATUS_OK;
 }
 
+/* Individual word copies must retain byte-range alias dependencies when
+ * distance is between one and two word widths. Standard memcpy preserves
+ * the ordering of these nonoverlapping individual steps under optimization. */
 XX_FORCE_INLINE void xx_rarx50_copy_match_fast_ptr(uint8_t *dst, size_t distance, size_t length, const uint8_t *dst_end)
 {
     const uint8_t *src = dst - distance;
@@ -709,16 +713,16 @@ XX_FORCE_INLINE void xx_rarx50_copy_match_fast_ptr(uint8_t *dst, size_t distance
         }
 #endif
         if (distance >= 8) {
-            xx_mem_copy64(dst, src);
+            memcpy(dst, src, 8);
             if (length <= 8) return;
-            xx_mem_copy64(dst + 8, src + 8);
+            memcpy(dst + 8, src + 8, 8);
             if (length <= 16) return;
             uint8_t *lim = dst + length;
             dst += 16;
             src += 16;
             while (dst < lim) {
-                xx_mem_copy64(dst, src);
-                xx_mem_copy64(dst + 8, src + 8);
+                memcpy(dst, src, 8);
+                memcpy(dst + 8, src + 8, 8);
                 dst += 16;
                 src += 16;
             }
@@ -727,7 +731,7 @@ XX_FORCE_INLINE void xx_rarx50_copy_match_fast_ptr(uint8_t *dst, size_t distance
         uint8_t *lim = dst + length;
         if (distance >= 4) {
             do {
-                xx_mem_store32(dst, xx_mem_load32(src));
+                memcpy(dst, src, 4);
                 dst += 4;
                 src += 4;
             } while (dst < lim);

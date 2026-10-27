@@ -481,6 +481,11 @@ bool xx_rar_handle_split_format(Abstractformat *self, xx_pd_struct *pd) {
          * under an earlier password after such a change. */
         xx_rar_split_cleanup(rar);
     }
+    {
+        xx_rar_version_t version;int64_t signature;
+        if (xx_rar_find_signature(self,&version,&signature) && version==XX_RAR_VERSION_14)
+            return xx_io_multivolume_count(self->device)==0;
+    }
     if (!xx_rar_decrypt_headers(self, pd, &decrypted)) return false;
     if (!decrypted) return xx_rar_prepare_split_source(self, pd, false);
     staged = *rar;

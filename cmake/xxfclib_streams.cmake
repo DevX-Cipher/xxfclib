@@ -112,10 +112,14 @@ function(xxfclib_select_stream_sources source_list)
         endif()
     endforeach()
     set(_root "${_XXFC_STREAM_SOURCE_ROOT}")
-    # CreateInstall FILE_RESOURCE extraction uses the private bounded PE walker
+    # CreateInstall, HCI Shadow, SFX LHA and RAR extraction use the private bounded PE walker
     # even when the public StreamResources capability is disabled.
     foreach(_source IN LISTS _selected)
-        if(_source MATCHES "/createinstall_instcrin_extractor/xx_createinstall_instcrin_extractor\\.c$")
+        if(_source MATCHES "/createinstall_instcrin_extractor/xx_createinstall_instcrin_extractor\\.c$" OR
+           _source MATCHES "/sfx_hci_instalit/xx_sfx_hci_instalit\\.c$" OR
+           _source MATCHES "/sfx_lha/xx_sfx_lha\\.c$" OR
+           _source MATCHES "/rar/xx_rar\\.c$" OR
+           _source MATCHES "/sfx_zipcentral/xx_sfx_zipcentral\\.c$")
             list(APPEND _selected "${_root}/src/formats/executable/pe/xx_pe_stream_common.c")
             break()
         endif()

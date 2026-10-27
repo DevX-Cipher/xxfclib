@@ -24,8 +24,7 @@ extern "C" {
  *   0x1C   4  length N of a trailing note block, 0 = none; when it is set the
  *             header is followed by N + 4 bytes (note plus its checksum)
  *   0x24   1  non zero = password protected, which is refused outright
- *   0x48   4  checksum over bytes 0..0x47 (parsed, NOT verified - as in the
- *             reference)
+ *   0x48   4  checksum over bytes 0..0x47 (verified for terminal-clipped RLE)
  *
  * Then chunk records back to back; a record is a 42-byte header plus payload:
  *    0    5  five cylinder numbers, one per slot; 0xFF = slot unused
@@ -36,8 +35,14 @@ extern "C" {
  *   0x1C  2  u16 length after the LZHUF stage, 0 = no RLE stage
  *   0x1E  2  u16 final decoded length
  *   0x20  2  u16 flag, != 0 = the payload is LZHUF compressed
- *   0x22  4  u32 payload checksum      (parsed, NOT verified)
- *   0x26  4  u32 record header checksum (parsed, NOT verified)
+ *   0x22  4  u32 payload checksum      (verified for terminal-clipped RLE)
+ *   0x26  4  u32 record header checksum (verified for terminal-clipped RLE)
+ * A complete final RLE repeat may extend past the declared output length;
+ * it is clipped only when its value is physically present and the token ends
+ * at the intermediate stream's EOF or leaves one byte at an even stream
+ * length. That one authenticated unused byte is ignored. Such a record also
+ * requires valid file-header, record-header and packed-payload CRCs. Missing
+ * operands and any other unused intermediate bytes remain errors.
  *
  * TRAP 1 - TWO STAGES, IN THE OPPOSITE ORDER FROM THE PACKER'S.  The packer
  * does RLE and THEN LZHUF, so the unpacker runs LZHUF first, driven by the

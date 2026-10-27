@@ -179,6 +179,69 @@ static bool xx_spis_decode(Abstractformat *self, const xx_spis_member *member, u
 
 /* Maps the 3-byte header tag to the same method numbers the record headers
  * use, so a listing shows one vocabulary. */
+/* Keep all records when DOS/Windows filenames collide, including names
+ * that differ only in case. Reserve original names before choosing suffixes;
+ * a later real "(0)file" must not be overwritten by an earlier duplicate. */
+static unsigned char xx_spis_fold(unsigned char c)
+{
+    return c >= 'A' && c <= 'Z' ? (unsigned char)(c + ('a' - 'A')) : c;
+}
+static size_t xx_spis_name_slot(char **slots, size_t capacity, const char *name)
+{
+    const unsigned char *p = (const unsigned char *)name;
+    uint32_t hash = UINT32_C(2166136261);
+    size_t slot;
+    while (*p) { hash ^= xx_spis_fold(*p++); hash *= UINT32_C(16777619); }
+    slot = (size_t)hash & (capacity - 1U);
+    while (slots[slot]) {
+        const unsigned char *a = (const unsigned char *)slots[slot], *b = (const unsigned char *)name;
+        while (*a && *b && xx_spis_fold(*a) == xx_spis_fold(*b)) { ++a; ++b; }
+        if (!*a && !*b) break;
+        slot = (slot + 1U) & (capacity - 1U);
+    }
+    return slot;
+}
+static bool xx_spis_unique_names(xx_spis_stream *stream, xx_pd_struct *pd)
+{
+    size_t capacity = 8U, i;
+    char **reserved, **used;
+    bool ok = false;
+    while (capacity < stream->count * 2U) capacity *= 2U;
+    reserved = (char **)xx_mem_calloc(capacity * 2U, sizeof(*reserved));
+    if (!reserved) return false;
+    used = reserved + capacity;
+    for (i = 0U; i < stream->count; ++i) {
+        size_t slot = xx_spis_name_slot(reserved, capacity, stream->items[i].name);
+        if (!reserved[slot]) reserved[slot] = stream->items[i].name;
+    }
+    for (i = 0U; i < stream->count; ++i) {
+        char *name = stream->items[i].name;
+        size_t slot = xx_spis_name_slot(used, capacity, name);
+        if (pd && xx_pd_is_stopped(pd)) goto done;
+        if (used[slot]) {
+            size_t length = xx_rt_strlen(name), prefix = 0U, j;
+            unsigned serial;
+            char *candidate = (char *)xx_mem_alloc(length + 32U);
+            if (!candidate) goto done;
+            for (j = 0U; j < length; ++j) if (name[j] == '/') prefix = j + 1U;
+            for (serial = 0U; serial <= stream->count; ++serial) {
+                xx_rt_snprintf(candidate, length + 32U, "%.*s(%u)%s", (int)prefix, name, serial, name + prefix);
+                slot = xx_spis_name_slot(used, capacity, candidate);
+                if (!used[slot] && !reserved[xx_spis_name_slot(reserved, capacity, candidate)]) break;
+            }
+            if (serial > stream->count) { xx_mem_free(candidate); goto done; }
+            stream->items[i].name = candidate;
+            xx_str_free(name);
+            name = candidate;
+        }
+        used[slot] = name;
+    }
+    ok = true;
+done:
+    xx_mem_free(reserved);
+    return ok;
+}
+
 static uint32_t xx_spis_tag_method(const uint8_t *tag)
 {
     if (xx_rt_memcmp(tag, "NON", 3) == 0) return XX_SPIS_METHOD_NON;
@@ -520,6 +583,7 @@ static xx_spis_stream *xx_spis_parse(Abstractformat *self, xx_pd_struct *pd)
         goto fail;
     }
     stream->archive_size = span;
+    if (!xx_spis_unique_names(stream, pd)) goto fail;
     return stream;
 
 partial:
@@ -528,6 +592,7 @@ partial:
     if (stream->count != 0U && !(pd && xx_pd_is_stopped(pd))) {
         stream->truncated_tail = true;
         stream->archive_size = offset;
+        if (!xx_spis_unique_names(stream, pd)) goto fail;
         return stream;
     }
 fail:

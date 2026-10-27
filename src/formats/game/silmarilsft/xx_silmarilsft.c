@@ -37,6 +37,8 @@
 
 #define SIL_SHORT_HEADER_SIZE 6
 #define SIL_LONG_HEADER_SIZE 14
+#define SIL_MAIN_HEADER_SIZE 22
+#define SIL_MAIN_LONG_HEADER_SIZE 30
 #define SIL_TABLE_OFFSET 6
 #define SIL_TABLE_SIZE 8
 #define SIL_METHOD_BYTERUN 0x81U
@@ -51,8 +53,11 @@
  * the end regardless; this reader supplies zero words for at most this many
  * bytes past the end (sibling copies of the same asset then decode to the
  * same bytes), and it tolerates at most this many unread trailing bytes.
- * Anything further out is treated as a corrupt stream. */
+ * A guarded reference decode of SKYCAN.CO additionally requires a third zero
+ * word. Read padding is bounded to six bytes; unread trailing bytes remain
+ * bounded to four. Anything further out is treated as corrupt. */
 #define SIL_BITSTREAM_SLACK 4U
+#define SIL_BITSTREAM_READ_SLACK 6U
 
 /* The 0xa1 parameter block never varies.  It is the only thing that makes
  * that method's header strong enough to detect on.  Entry v of the table is
@@ -143,11 +148,15 @@ static int sil_source_byte(sil_source *source, uint8_t *value)
  * and PDF /RunLengthDecode use.  The grammar has to produce exactly
  * `unpacked_size` bytes and claim exactly `stream_size` input bytes (the tail
  * of an over-long final literal run counts as claimed).  With `output` NULL
- * nothing is materialised, which is what the detection probe wants. */
+ * nothing is materialised, which is what the detection probe wants. A final
+ * token 0x81 at physical EOF may supply the last raw byte as zero, matching
+ * silm-depack old_read_byte; all other missing token operands are rejected.
+ * A complete exact stream may also carry a six-byte unclaimed tail. */
 static bool sil_byterun(sil_source *source, int64_t stream_size, int64_t unpacked_size, uint8_t *output)
 {
     int64_t out = 0;
     uint64_t claimed = 0U;
+    bool overshot = false;
     if (unpacked_size < 0 || stream_size < 0) return false;
     while (claimed < (uint64_t)stream_size && out < unpacked_size) {
         uint8_t token;
@@ -156,6 +165,7 @@ static bool sil_byterun(sil_source *source, int64_t stream_size, int64_t unpacke
         if (token < 0x80U) {
             int64_t count = (int64_t)token, index;
             if ((uint64_t)stream_size - claimed < (uint64_t)count) return false;
+            if (count > unpacked_size - out) overshot = true;
             for (index = 0; index < count; ++index) {
                 uint8_t value;
                 if (sil_source_byte(source, &value) != 1) return false;
@@ -168,14 +178,29 @@ static bool sil_byterun(sil_source *source, int64_t stream_size, int64_t unpacke
         } else {
             uint8_t value;
             int64_t take = (int64_t)(token & 0x7fU);
-            if (claimed >= (uint64_t)stream_size || sil_source_byte(source, &value) != 1) return false;
-            ++claimed;
-            if (take > unpacked_size - out) take = unpacked_size - out;
+            if (claimed == (uint64_t)stream_size) {
+                /* The independent old Silmarils depacker returns zero at EOF.
+                 * Claim only the observed terminal single-byte repeat: no
+                 * truncated literal, longer repeat or earlier EOF is filled. */
+                if (token != 0x81U || unpacked_size - out != 1) return false;
+                value = 0U;
+            } else {
+                if (sil_source_byte(source, &value) != 1) return false;
+                ++claimed;
+            }
+            if (take > unpacked_size - out) {
+                overshot = true;
+                take = unpacked_size - out;
+            }
             if (output && take > 0) xx_rt_memset(output + out, (int)value, (size_t)take);
             out += take;
         }
     }
-    return out == unpacked_size && claimed == (uint64_t)stream_size;
+    /* A complete, exact token stream may retain one six-byte header-sized
+     * tail, as observed in CIEL1.CO. Do not extend this to arbitrary tails
+     * or a final token whose declared output overshoots the raw size. */
+    return out == unpacked_size && (claimed == (uint64_t)stream_size ||
+           (!overshot && claimed < (uint64_t)stream_size && (uint64_t)stream_size - claimed == SIL_SHORT_HEADER_SIZE));
 }
 
 /* MSB-first bit reader over big-endian 16-bit words (both builds store the
@@ -193,7 +218,7 @@ static bool sil_bits_refill(sil_bits *bits)
 {
     uint32_t word = 0U;
     unsigned index;
-    if (bits->position + 2U > bits->stream_size + SIL_BITSTREAM_SLACK) return false;
+    if (bits->position + 2U > bits->stream_size + SIL_BITSTREAM_READ_SLACK) return false;
     for (index = 0U; index < 2U; ++index) {
         uint8_t value = 0U;
         if (bits->position < bits->stream_size && sil_source_byte(bits->source, &value) != 1) return false;
@@ -292,7 +317,7 @@ static bool sil_bitstream(sil_source *source, int64_t stream_size, int64_t unpac
         /* Byte by byte: the source may overlap what is being written. */
         for (copy = 0U; copy < take; ++copy, ++out) output[out] = output[out - distance];
     }
-    if (bits.position >= bits.stream_size) return bits.position - bits.stream_size <= SIL_BITSTREAM_SLACK;
+    if (bits.position >= bits.stream_size) return bits.position - bits.stream_size <= SIL_BITSTREAM_READ_SLACK;
     return bits.stream_size - bits.position <= SIL_BITSTREAM_SLACK;
 }
 
@@ -303,9 +328,10 @@ static void sil_stream_free(void *opaque)
 
 static bool sil_parse(Abstractformat *format, sil_context *out)
 {
-    uint8_t header[SIL_LONG_HEADER_SIZE];
+    uint8_t header[SIL_MAIN_LONG_HEADER_SIZE];
     sil_context context;
     uint32_t packed;
+    bool main_script = false;
     int64_t total, size, raw_size;
     if (!format || !format->device || !out || format->base_address < 0) return false;
     total = xx_io_total_size(format->device);
@@ -314,40 +340,46 @@ static bool sil_parse(Abstractformat *format, sil_context *out)
     xx_mem_zero(&context, sizeof(context));
     context.input_size = size;
     if (size <= (int64_t)SIL_LONG_HEADER_SIZE || size > SIL_MAX_FILE_SIZE) return false;
-    if (!sil_read_at(format->device, format->base_address, header, sizeof(header))) return false;
-    /* Offset 4 is the "not the main script" word, always 1 in a resource
-     * file.  It is the byte-order oracle: nothing else in the header is
-     * constant across both builds.  A main script (word 0, followed by 16
-     * bytes of VM specs) cannot be told apart by byte order and is not
-     * claimed. */
+    if (!sil_read_at(format->device, format->base_address, header, SIL_LONG_HEADER_SIZE)) return false;
+    /* Resource flag 1 pins byte order. Main scripts have flag 0, sixteen
+     * opaque VM-spec bytes and a unique supported method-byte position.
+     * Their normal byte-run or bitstream validation still applies. */
     if (header[4] == 0x01U && header[5] == 0x00U) context.big_endian = false;
     else if (header[4] == 0x00U && header[5] == 0x01U) context.big_endian = true;
-    else return false;
+    else if (!header[4] && !header[5]) {
+        bool be = header[0] == SIL_METHOD_BYTERUN || header[0] == SIL_METHOD_BITSTREAM;
+        bool le = header[3] == SIL_METHOD_BYTERUN || header[3] == SIL_METHOD_BITSTREAM;
+        if (be == le) return false;
+        context.big_endian = be;
+        main_script = true;
+    } else return false;
     packed = xx_data_get_u32(header, 4, 0, context.big_endian);
     context.method = packed >> 24U;
     raw_size = (int64_t)(packed & 0x00ffffffU);
     if (context.method != SIL_METHOD_BYTERUN && context.method != SIL_METHOD_BITSTREAM) return false;
-    /* The raw size counts the six-byte header, so anything at or below it
-     * describes an empty member and is not a container this reader claims. */
-    if (raw_size <= (int64_t)SIL_SHORT_HEADER_SIZE || raw_size > SIL_MAX_RAW_SIZE) return false;
-    context.unpacked_size = raw_size - SIL_SHORT_HEADER_SIZE;
+    /* Raw size includes the base header and, for a main script, VM specs.
+     * Nothing at or below that overhead describes a claimed member. */
+    if (raw_size <= (main_script ? SIL_MAIN_HEADER_SIZE : SIL_SHORT_HEADER_SIZE) || raw_size > SIL_MAX_RAW_SIZE) return false;
+    context.unpacked_size = raw_size - (main_script ? SIL_MAIN_HEADER_SIZE : SIL_SHORT_HEADER_SIZE);
     /* Every member of the reference corpus - both methods, both byte orders -
      * decodes to a whole number of eight-byte resource units.  It is a cheap,
      * very discriminating extra constraint on a header this thin. */
     if ((context.unpacked_size % 8) != 0) return false;
-    context.header_size = context.method == SIL_METHOD_BITSTREAM ? SIL_LONG_HEADER_SIZE : SIL_SHORT_HEADER_SIZE;
+    context.header_size = (context.method == SIL_METHOD_BITSTREAM ? SIL_LONG_HEADER_SIZE : SIL_SHORT_HEADER_SIZE) +
+                          (main_script ? SIL_MAIN_HEADER_SIZE - SIL_SHORT_HEADER_SIZE : 0);
+    if (main_script && (size <= context.header_size || !sil_read_at(format->device, format->base_address, header, (size_t)context.header_size))) return false;
     context.stream_offset = context.header_size;
     context.stream_size = size - context.header_size;
     if (context.stream_size <= 0) return false;
     context.supported = true;
     if (context.method == SIL_METHOD_BITSTREAM) {
-        if (xx_rt_memcmp(header + SIL_TABLE_OFFSET, sil_code_table, SIL_TABLE_SIZE) != 0) return false;
+        if (xx_rt_memcmp(header + (main_script ? SIL_MAIN_HEADER_SIZE : SIL_TABLE_OFFSET), sil_code_table, SIL_TABLE_SIZE) != 0) return false;
         /* Structural limits of the codec: at best a 3-bit length group buys
          * seven bytes (under 19 output bytes per input byte, with the zero
          * slack counted), and at worst a literal costs 8 2/3 bits.  The
          * lower bound is left loose; the parameter block does the real
          * detection work for this method. */
-        if (context.unpacked_size > 19 * (context.stream_size + (int64_t)SIL_BITSTREAM_SLACK) || context.stream_size > 2 * context.unpacked_size + 64) return false;
+        if (context.unpacked_size > 19 * (context.stream_size + (int64_t)SIL_BITSTREAM_READ_SLACK) || context.stream_size > 2 * context.unpacked_size + 64) return false;
     } else {
         sil_source source;
         /* Structural ceiling on the byte-run codec: a run token spends two

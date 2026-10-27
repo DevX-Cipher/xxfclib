@@ -60,6 +60,7 @@
 #include "xxfclib/io/xx_io.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/strings/xx_string.h"
+#include "../../xx_archive_output_name.h"
 
 #include <stdio.h>
 #include "xxfclib/data/xx_data.h"
@@ -817,6 +818,7 @@ bool xx_ibmpack_unpack_current_archive_record(Abstractformat *self, xx_archive_r
     const xx_var *path_option;
     const char *base_path = NULL;
     char *converted = NULL;
+    char *relative = NULL;
     char *target = NULL;
     uint8_t *plain = NULL;
     size_t plain_size = 0U;
@@ -845,9 +847,13 @@ bool xx_ibmpack_unpack_current_archive_record(Abstractformat *self, xx_archive_r
         xx_str_free(converted);
         return false;
     }
-    target = (base_path[0] != '\0' && base_path[xx_str_len(base_path) - 1U] != '/' && base_path[xx_str_len(base_path) - 1U] != '\\')
-                 ? xx_str_concat3(base_path, "/", member->name)
-                 : xx_str_concat(base_path, member->name);
+    relative = xx_archive_output_name(member->name, 0, 0);
+    if (relative)
+        XX_ARCHIVE_OUTPUT_RESOLVE(relative, stream->items, stream->count, stream->index, name, 0, 0);
+    target = relative ? ((base_path[0] != '\0' && base_path[xx_str_len(base_path) - 1U] != '/' && base_path[xx_str_len(base_path) - 1U] != '\\')
+                 ? xx_str_concat3(base_path, "/", relative)
+                 : xx_str_concat(base_path, relative)) : NULL;
+    xx_mem_free(relative);
     xx_str_free(converted);
     if (!target) return false;
     if (!xx_store_create_dirs_a(target, false) || !xx_ibmpack_decode(self, member, &plain, &plain_size, pd)) {

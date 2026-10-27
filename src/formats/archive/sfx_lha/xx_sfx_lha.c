@@ -6,6 +6,7 @@
  */
 #include "xxfclib/formats/archive/sfx_lha/xx_sfx_lha.h"
 #include "xxfclib/global/xx_global.h"
+#include "xxfclib/formats/executable/ne/xx_ne.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/rt/xx_rt.h"
 #include <stdio.h>
@@ -37,6 +38,9 @@ static bool sfx_lha_read(Abstractformat *f, int64_t at, void *out, size_t size)
     }
     return true;
 }
+
+#include "xx_sfx_lha_ne.h"
+#include "../lha/xx_lha_atari_inline_internal.h"
 
 /* A split DOS SFX can end inside a later member. Admit a prefix only when
  * every preceding level-0 header is bounded and checksummed and the next
@@ -171,6 +175,53 @@ static bool sfx_lha_try_atari_tail(xx_sfx_lha *r, int64_t at, int64_t limit, xx_
     return true;
 }
 
+/* This GEMDOS producer puts a 32-byte SFX descriptor/dispatcher before
+ * the archive inside TEXT, then its loader after the declared LHA span.
+ * The 68k dispatcher rounds that span to an even address. A recognized but
+ * inconsistent descriptor must not fall back to a different embedded chain. */
+static int sfx_lha_try_atari_inline(xx_sfx_lha *r, const uint8_t *gemdos,
+                                   int64_t limit, xx_pd_struct *pd)
+{
+    static const uint8_t code[18] = {
+        0x41,0xfa,0x00,0x10,0x20,0x3a,0xff,0xee,0x72,
+        0x01,0xc2,0x40,0xd0,0x81,0xd1,0xc0,0x4e,0xd0
+    };
+    uint8_t stub[32], last;
+    uint64_t text, data, symbols, span, loader;
+    xx_io_device *device;
+    if (!sfx_lha_read(&r->format, 28, stub, sizeof(stub)) ||
+        stub[0] != 0x60 || stub[1] != 0x0c ||
+        xx_rt_memcmp(stub + 10, "SFX\0", 4)) return 0;
+    if (sfx_lha_stop(pd) || xx_rt_memcmp(stub + 14, code, sizeof(code)) ||
+        xx_data_get_u32(stub + 6, 4, 0, true) != 32U) return -1;
+    text = xx_data_get_u32(gemdos + 2, 4, 0, true);
+    data = xx_data_get_u32(gemdos + 6, 4, 0, true);
+    symbols = xx_data_get_u32(gemdos + 14, 4, 0, true);
+    span = xx_data_get_u32(stub + 2, 4, 0, true);
+    loader = 60U + span + (span & 1U);
+    if (text < 32U || 28U + text + data + symbols > (uint64_t)limit ||
+        span < 25U || span > text - 32U || loader + 2U > 28U + text ||
+        !sfx_lha_read(&r->format, (int64_t)(60U + span - 1U), &last, 1U) || last)
+        return -1;
+    device = xx_io_sub_open_ro(r->format.device, r->format.base_address + 60,
+                               (int64_t)span);
+    if (!device) return -1;
+    xx_lha_init(&r->inner, device, 0);
+    r->inner.sanitize_sfx_drive = true;
+    xx_lha_set_atari_inline_context(&r->inner);
+    if (!xx_lha_handle_base_info(&r->inner.format, pd) ||
+        !r->inner.format.number_of_archive_records ||
+        r->inner.format.format_size != (int64_t)span || sfx_lha_stop(pd)) {
+        xx_lha_destroy(&r->inner);
+        xx_io_close(device);
+        return -1;
+    }
+    r->bounded_device = device;
+    r->payload_offset = 60;
+    r->inner_ready = true;
+    return 1;
+}
+
 static bool sfx_lha_scan_range(xx_sfx_lha *r, int64_t start, int64_t limit, xx_pd_struct *pd)
 {
     uint8_t *scan;
@@ -203,6 +254,22 @@ static bool sfx_lha_ensure(xx_sfx_lha *r, xx_pd_struct *pd)
     r->checked = true;
     limit = sfx_lha_available(f);
     if (limit < 64 || !sfx_lha_read(f, 0, h, sizeof(h))) return false;
+    if (!xx_rt_memcmp(h, "EXEC", 4U)) {
+        /* EXEC stores the 68k stub length as a big-endian dword. The LHA
+         * chain begins immediately after that stub, not at a scanned magic
+         * match. Require its complete extent to reach physical EOF. */
+        uint32_t stub = xx_data_get_u32(h + 4U, 4, 0, true);
+        if (stub < 2U || (stub & 1U) || stub > 1024U * 1024U ||
+            (uint64_t)stub + 8U > (uint64_t)limit - 24U) return false;
+        start = 8 + (int64_t)stub;
+        if (!sfx_lha_try_at(r, start, limit, pd)) return false;
+        if (r->inner.format.format_size != limit - start) {
+            xx_lha_destroy(&r->inner);
+            r->inner_ready = false;
+            return false;
+        }
+        return true;
+    }
     if (!xx_rt_memcmp(h, "MZ", 2)) {
         uint64_t paragraphs = (uint64_t)xx_data_get_u16(h + 8, 2, 0, false) * 16U;
         uint64_t pages = xx_data_get_u16(h + 4, 2, 0, false);
@@ -213,6 +280,31 @@ static bool sfx_lha_ensure(xx_sfx_lha *r, xx_pd_struct *pd)
         if (image < paragraphs || image > (uint64_t)limit) return false;
         mz_carrier = true;
         start = image == (uint64_t)limit ? 0 : (int64_t)image;
+        {
+            int resources = sl_pe_open(r, pd);
+            if (resources > 0) return true;
+            if (resources < 0) return false;
+        }
+        /* A Win16 stub can exceed the DOS search window. Its NE segment,
+         * relocation and resource extents bound the actual overlay; do not
+         * enlarge the blind scan across the entire executable. */
+        {
+            uint32_t ne_at = xx_data_get_u32(h + 60, 4, 0, false);
+            uint8_t signature[2];
+            if (ne_at >= 64U && ne_at <= (uint64_t)limit - 2U && sfx_lha_read(f, ne_at, signature, sizeof(signature)) &&
+                signature[0] == 'N' && signature[1] == 'E') {
+                xx_ne ne;
+                int64_t overlay = -1;
+                int resources = sl_ne_open(r, pd);
+                if (resources > 0) return true;
+                if (resources < 0) return false;
+                xx_ne_init(&ne, f->device, f->base_address);
+                if (xx_ne_handle_base_info(&ne.format, pd) && ne.format.overlay_size > 0 && ne.format.overlay_offset >= f->base_address)
+                    overlay = ne.format.overlay_offset - f->base_address;
+                xx_ne_destroy(&ne);
+                if (overlay >= 64 && overlay < limit && sfx_lha_try_at(r, overlay, limit, pd)) return true;
+            }
+        }
         /* Most DOS LHA stubs put the first header exactly after their image. */
         if (start && sfx_lha_try_at(r, start, limit, pd)) return true;
     } else if (h[0] == 0xeb) {
@@ -224,6 +316,10 @@ static bool sfx_lha_ensure(xx_sfx_lha *r, xx_pd_struct *pd)
          * before it.  A complete LHA parse still validates the candidate. */
         uint64_t text_size = xx_data_get_u32(h + 2, 4, 0, true);
         if (text_size > (uint64_t)limit - 28U) return false;
+        {
+            int inline_result = sfx_lha_try_atari_inline(r, h, limit, pd);
+            if (inline_result) return inline_result > 0;
+        }
         start = 28 + (int64_t)text_size;
         if (sfx_lha_try_at(r, start, limit, pd) || sfx_lha_try_atari_tail(r, start, limit, pd)) return true;
     } else {
@@ -259,18 +355,22 @@ static xx_archive_record_state *sfx_lha_records(Abstractformat *f, const xx_list
     xx_sfx_lha *r = (xx_sfx_lha *)f;
     xx_archive_record_state *state;
     if (!sfx_lha_ensure(r, pd)) return NULL;
+    if (f->priv) return sl_ne_create(f, opts, pd);
     state = xx_lha_create_archive_records_reading(&r->inner.format, opts, pd);
     sfx_lha_public_offsets(r, state);
     return state;
 }
 static const xx_archive_record *sfx_lha_current(Abstractformat *f, xx_archive_record_state *state)
 {
+    if (f->priv) return state && state->format == f && state->has_record ? &state->current_record : NULL;
     return xx_lha_get_current_archive_record(&((xx_sfx_lha *)f)->inner.format, state);
 }
 static bool sfx_lha_next(Abstractformat *f, xx_archive_record_state *state, xx_pd_struct *pd)
 {
     xx_sfx_lha *r = (xx_sfx_lha *)f;
-    bool next = xx_lha_archive_record_move_to_next(&r->inner.format, state, pd);
+    bool next;
+    if (f->priv) return sl_ne_next(f, state, pd);
+    next = xx_lha_archive_record_move_to_next(&r->inner.format, state, pd);
     if (next) sfx_lha_public_offsets(r, state);
     if (!next && r->incomplete_tail && !sfx_lha_stop(pd))
         xx_pd_set_error(pd, 1, "SFX LHA volume ends inside the next member; complete prefix recovered");
@@ -278,10 +378,12 @@ static bool sfx_lha_next(Abstractformat *f, xx_archive_record_state *state, xx_p
 }
 static bool sfx_lha_unpack(Abstractformat *f, xx_archive_record_state *state, xx_pd_struct *pd)
 {
+    if (f->priv) return sl_ne_unpack(f, state, pd);
     return xx_lha_unpack_current_archive_record(&((xx_sfx_lha *)f)->inner.format, state, pd);
 }
 static void sfx_lha_free_records(Abstractformat *f, xx_archive_record_state *state)
 {
+    if (f->priv) { sl_ne_free_records(f, state); return; }
     xx_lha_free_archive_records_reading(&((xx_sfx_lha *)f)->inner.format, state);
 }
 
@@ -315,6 +417,8 @@ xx_sfx_lha *xx_sfx_lha_create(xx_io_device *d, int64_t b)
 void xx_sfx_lha_destroy(xx_sfx_lha *r)
 {
     if (!r) return;
+    sl_ne_free((sl_ne_context *)r->format.priv);
+    r->format.priv = NULL;
     if (r->inner_ready) xx_lha_destroy(&r->inner);
     if (r->bounded_device) xx_io_close(r->bounded_device);
     xx_mem_free(r->bounded_bytes);
@@ -337,8 +441,8 @@ bool xx_sfx_lha_handle_base_info(Abstractformat *f, xx_pd_struct *pd)
     int64_t limit;
     if (!f || !sfx_lha_ensure(r, pd)) return false;
     limit = sfx_lha_available(f);
-    f->format_size = r->payload_offset + r->inner.format.format_size;
-    f->number_of_archive_records = r->inner.format.number_of_archive_records;
+    f->format_size = f->priv ? ((sl_ne_context *)f->priv)->size : r->payload_offset + r->inner.format.format_size;
+    f->number_of_archive_records = f->priv ? ((sl_ne_context *)f->priv)->records : r->inner.format.number_of_archive_records;
     f->overlay_size = limit - f->format_size;
     f->overlay_offset = f->overlay_size > 0 ? f->base_address + f->format_size : -1;
     f->is_valid = true;

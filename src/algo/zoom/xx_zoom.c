@@ -9,6 +9,7 @@
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/algo/zoom/xx_zoom.h"
 #include "xxfclib/data/xx_data.h"
+#include "xxfclib/algo/crc/xx_crc.h"
 
 #define ZOOM_HEADER_SIZE 0x4c
 #define ZOOM_CHUNK_HEADER_SIZE 42
@@ -264,7 +265,7 @@ static bool zoom_lzhuf_decode(zoom_ctx *ctx, const uint8_t *input, size_t input_
 
 /* ------------------------------------------------------------ RLE core --- */
 
-static bool zoom_rle_core(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, size_t *produced_out)
+static bool zoom_rle_core(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, size_t *produced_out, bool *terminal_clipped)
 {
     size_t declared;
     size_t produced = 0;
@@ -272,6 +273,7 @@ static bool zoom_rle_core(const uint8_t *input, size_t input_size, uint8_t *outp
     uint8_t escape;
 
     *produced_out = 0;
+    if (terminal_clipped) *terminal_clipped = false;
     if (input_size < 4) return false;
 
     /* The packer's own BE24 length.  It has to agree with the record's final
@@ -304,12 +306,23 @@ static bool zoom_rle_core(const uint8_t *input, size_t input_size, uint8_t *outp
         } else {
             uint8_t value;
             uint32_t i;
+            uint32_t repeat = count + 1U;
+            size_t padding = 0U;
             if ((pos + 2) >= input_size) return false;
             value = input[pos + 2];
             /* DELIBERATE off-by-one: a run byte of n emits n + 1 bytes. */
-            if (((size_t)count + 1) > (output_size - produced)) return false;
-            for (i = 0; i <= count; ++i) output[produced++] = value;
-            pos += 3;
+            if ((size_t)repeat > output_size - produced) {
+                /* The original Zoom RunDecode clips a final complete run.
+                 * A single unused byte can follow it to an even stream
+                 * length. An absent value is still an error. Containers
+                 * authenticate the complete packed stream with all CRCs. */
+                padding = input_size - pos - 3U;
+                if ((padding != 0U && (padding != 1U || (input_size & 1U) != 0U)) || produced == output_size) return false;
+                repeat = (uint32_t)(output_size - produced);
+                if (terminal_clipped) *terminal_clipped = true;
+            }
+            for (i = 0; i < repeat; ++i) output[produced++] = value;
+            pos += 3U + padding;
         }
     }
 
@@ -327,7 +340,7 @@ bool xx_zoom_rle_decode_memory(const uint8_t *input, size_t input_size, uint8_t 
     if (!input || (!output && (output_size != 0))) return false;
     if (output_size > ZOOM_MAX_OUTPUT) return false;
 
-    ok = zoom_rle_core(input, input_size, output, output_size, &produced);
+    ok = zoom_rle_core(input, input_size, output, output_size, &produced, NULL);
     if (!ok) return false;
     if (written) *written = produced;
 
@@ -447,6 +460,7 @@ static bool zoom_image_core(zoom_ctx *ctx, const uint8_t *input, size_t input_si
         size_t total = 0;
         size_t available;
         size_t source_pos = 0;
+        bool terminal_clipped = false;
         int32_t i;
 
         for (i = 0; i < ZOOM_SLOTS; ++i) {
@@ -486,8 +500,16 @@ static bool zoom_image_core(zoom_ctx *ctx, const uint8_t *input, size_t input_si
         if (middle_size != 0) {
             size_t got = 0;
             if (final_size > ZOOM_SCRATCH) goto corrupt;
-            if (!zoom_rle_core(buffer, buffer_size, ctx->stage_b, final_size, &got)) {
+            if (!zoom_rle_core(buffer, buffer_size, ctx->stage_b, final_size, &got, &terminal_clipped)) {
                 goto corrupt;
+            }
+            if (terminal_clipped) {
+                /* ZOM5 uses reflected CRC32 with initial accumulator zero
+                 * and no final inversion. Authenticate the layout, record
+                 * and exact packed bytes before accepting a clipped run. */
+                if ((xx_crc32_calc(UINT32_MAX, input, 72U) ^ UINT32_MAX) != xx_data_get_u32(input + 72U, 4U, 0, true) ||
+                    (xx_crc32_calc(UINT32_MAX, record, 38U) ^ UINT32_MAX) != xx_data_get_u32(record + 38U, 4U, 0, true) ||
+                    (xx_crc32_calc(UINT32_MAX, blob, packed_size) ^ UINT32_MAX) != xx_data_get_u32(record + 34U, 4U, 0, true)) goto corrupt;
             }
             buffer = ctx->stage_b;
             buffer_size = final_size;

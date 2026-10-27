@@ -720,3 +720,10 @@ records use the structure cap, while the loader module cap is inapplicable.
 The full library registers these sources. Standalone hosted C11 consumers can
 include `xxprocessstructs.cmake` with `xxio.cmake`. CXNTSV uses this subset for
 its GUI, TUI and console tools without building the full format library.
+
+## PO translations
+
+The reusable C11 module in `src/translation` loads UTF-8 GNU PO catalogs with
+contexts, plurals and English fallback. Include
+`<xxfclib/translation/xx_translation.h>`; see
+[translation documentation](src/translation/README.md) for API and standalone builds.

@@ -124,6 +124,7 @@ xx_data_struct_state *xx_rar_create_data_structs_reading(Abstractformat *self, x
         return NULL;
     }
     rar = (xx_rar *)self;
+    if (rar->version==XX_RAR_VERSION_14) return NULL; /* No RAR4/5 field schema for the old headers. */
     device_size = xx_io_total_size(self->device);
     scan_end = self->base_address + self->format_size;
     state = (xx_data_struct_state *)xx_mem_alloc(sizeof(*state));

@@ -28,10 +28,14 @@ extern "C" {
  * is what pins the byte order: the PC build writes every scalar little
  * endian, the Amiga/ST build big endian, so `01 00` at 0x04 means little and
  * `00 01` means big.  The packed stream itself is identical in both builds.
- * (A main script has 0 there plus 16 bytes of VM specs; it is not claimed.)
+ * A main script has 0 there plus 16 opaque bytes of VM specs. Its byte order
+ * is pinned by a unique supported method-byte position. A main bit-stream
+ * script's parameter table follows the VM specs at offset 22.
  *
  * The 24-bit raw size counts the six-byte header, so the plaintext is
- * `raw size - 6`.
+ * raw size - 6 for a resource. A main script counts the 16 VM bytes too,
+ * so its plaintext is raw size - 22. Packed data starts at 22 for a byte-run
+ * main script and 30 for a bit-stream main script.
  *
  * Two methods are decoded:
  *   0x81  byte-run codec: c < 0x80 copies c literals, c >= 0x80 repeats the
@@ -44,9 +48,13 @@ extern "C" {
  *
  * Detection is earned rather than assumed: a 0x81 stream is trial-walked in
  * full and has to produce exactly `raw size - 6` bytes and stop exactly on
- * the last input byte; a 0xa1 stream has to carry the constant parameter
+ * the last input byte or leave exactly six surplus bytes after complete,
+ * non-overshooting tokens. The observed final 0x81 token without its value may
+ * supply exactly one final zero byte, matching the old depacker EOF convention;
+ * other truncated byte-run operands are refused. A 0xa1 stream must carry the
  * block and a plausible packed/unpacked ratio, and its decode has to end
- * within four bytes of the stream end.
+ * with at most six zero-supplied input bytes beyond EOF or four unread
+ * trailing source bytes.
  */
 typedef struct xx_silmarilsft {
     Abstractformat format;

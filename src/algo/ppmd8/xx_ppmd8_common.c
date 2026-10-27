@@ -30,6 +30,9 @@
 
 const uint8_t PPMD8_kExpEscape[16] = {25, 14, 9, 7, 5, 5, 4, 4, 4, 3, 3, 3, 2, 2, 2, 2};
 static const uint16_t kInitBinEsc[] = {0x3CDD, 0x1F3F, 0x59BF, 0x48F3, 0x64A1, 0x5ABC, 0x6632, 0x6051};
+/* SQX method 6 frequency-class startup values. */
+static const uint8_t sqxBinDiv[25] = {2,3,4,5,6,7,9,12,16,21,27,34,42,51,61,72,84,97,111,126,142,159,177,196,216};
+static const uint8_t sqxSeeBase[24] = {1,2,3,5,8,12,17,23,30,38,47,57,68,80,93,107,122,138,155,173,192,212,233,255};
 
 #define MAX_FREQ PPMD8_MAX_FREQ
 #define UNIT_SIZE PPMD8_UNIT_SIZE
@@ -342,7 +345,7 @@ static void RestartModel(CPpmd8 *p)
     for (i = m = 0; m < 25; m++) {
         while (p->NS2Indx[i] == m) i++;
         for (k = 0; k < 8; k++) {
-            uint16_t val = (uint16_t)(PPMD_BIN_SCALE - kInitBinEsc[k] / (i + 1));
+            uint16_t val = (uint16_t)(PPMD_BIN_SCALE - kInitBinEsc[k] / (p->SqxTables ? sqxBinDiv[m] : i + 1));
             uint16_t *dest = p->BinSumm[m] + k;
             for (r = 0; r < 64; r += 8) dest[r] = val;
         }
@@ -352,7 +355,7 @@ static void RestartModel(CPpmd8 *p)
         while (p->NS2Indx[(size_t)i + 3] == m + 3) i++;
         for (k = 0; k < 32; k++) {
             CPpmd_See *s = &p->See[m][k];
-            s->Summ = (uint16_t)((2 * i + 5) << (s->Shift = PPMD_PERIOD_BITS - 4));
+            s->Summ = (uint16_t)((2 * (p->SqxTables ? sqxSeeBase[m] : i) + 5) << (s->Shift = PPMD_PERIOD_BITS - 4));
             s->Count = 7;
         }
     }

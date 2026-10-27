@@ -61,6 +61,14 @@ static bool ppmd8_rd_refill(ppmd8_range_dec *rd)
 
 static inline uint8_t ppmd8_rd_byte(ppmd8_range_dec *rd)
 {
+    if (rd->sqx) {
+        size_t pos = rd->sqx_pos++;
+        size_t index = (pos & ~(size_t)3) + (3U - (pos & 3U));
+        /* The SQX word reader zero-fills its final partial word and range
+         * flush. Bound this explicitly; the container also checks raw CRC. */
+        if (pos >= rd->mem_size && pos - rd->mem_size >= 8U) rd->error = true;
+        return index < rd->mem_size ? rd->mem[index] : 0U;
+    }
     if (rd->ibuf_pos < rd->ibuf_len) {
         return rd->ibuf[rd->ibuf_pos++];
     }
@@ -102,11 +110,55 @@ static void RangeDec_Decode(CPpmd8 *p, ppmd8_range_dec *rd, uint32_t start, uint
     p->Code -= start;
     p->Range *= size;
 
-    while ((p->Low ^ (p->Low + p->Range)) < kTop || (p->Range < kBot && ((p->Range = (0 - p->Low) & (kBot - 1)), 1))) {
+    uint32_t bottom = rd->sqx ? 0x10000U : kBot;
+    while ((p->Low ^ (p->Low + p->Range)) < kTop || (p->Range < bottom && ((p->Range = (0 - p->Low) & (bottom - 1)), 1))) {
         p->Code = (p->Code << 8) | (uint32_t)ppmd8_rd_byte(rd);
         p->Range <<= 8;
         p->Low <<= 8;
     }
+}
+
+bool ppmd8_sqx_decode(CPpmd8 *p, bool *ready, const uint8_t *src, size_t packed_size,
+                      uint8_t *dst, size_t raw_size, xx_pd_struct *pd)
+{
+    ppmd8_range_dec rd;
+    unsigned params[3] = {0,0,0};
+    static const unsigned widths[3] = {1,8,10};
+    size_t i;
+    if (!p || !ready || !src || !dst || packed_size < 4U || (pd && xx_pd_is_stopped(pd))) return false;
+    xx_rt_memset(&rd, 0, sizeof(rd));
+    rd.sqx = true; rd.mem = src; rd.mem_size = packed_size;
+    p->Low = 0; p->Range = UINT32_MAX; p->Code = 0;
+    for (i = 0; i < 4U; ++i) p->Code = (p->Code << 8) | ppmd8_rd_byte(&rd);
+    for (i = 0; i < 3U; ++i) {
+        unsigned j;
+        if (i && params[0]) break;
+        for (j = 0; j < widths[i]; ++j) {
+            uint32_t bit = RangeDec_GetThreshold(p, 2U);
+            if (bit > 1U) return false;
+            params[i] = (params[i] << 1) | bit;
+            RangeDec_Decode(p, &rd, bit, 1U);
+            if (rd.error) return false;
+        }
+    }
+    if (params[0]) {
+        if (!*ready || !p->SqxTables) return false;
+    } else {
+        /* Never let a damaged ten-bit memory parameter request a GiB. */
+        if (params[1] < PPMD8_MIN_ORDER || params[1] > PPMD8_MAX_ORDER || params[2] < 1U || params[2] > 64U) return false;
+        if (!Ppmd8_Alloc(p, params[2] << 20)) return false;
+        p->SqxTables = true;
+        Ppmd8_Init(p, params[1], 0U);
+        *ready = true;
+    }
+    for (i = 0; i < raw_size; ++i) {
+        int symbol;
+        if ((i & 4095U) == 0U && pd && xx_pd_is_stopped(pd)) return false;
+        symbol = Ppmd8_DecodeSymbol(p, &rd);
+        if (rd.error || symbol < 0) return false;
+        dst[i] = (uint8_t)symbol;
+    }
+    return true;
 }
 
 #define MASK(sym) ((int8_t *)charMask)[sym]

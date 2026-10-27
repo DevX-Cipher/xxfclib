@@ -116,6 +116,7 @@ typedef struct is3_stream_s {
     size_t index;
     int64_t archive_size;
     bool payload_variant;
+    xx_io_device *volume_view; /* owned complete-set stream, offsets logical */
 } is3_stream;
 
 static bool is3_read_at(xx_io_device *device, int64_t offset, void *buffer, size_t size)
@@ -196,6 +197,7 @@ static void is3_stream_free(void *opaque)
     for (index = 0U; index < stream->count; ++index)
         if (stream->items[index].name) xx_str_free(stream->items[index].name);
     if (stream->items) xx_mem_free(stream->items);
+    if (stream->volume_view) xx_io_close(stream->volume_view);
     xx_mem_free(stream);
 }
 
@@ -395,7 +397,7 @@ fail:
     return false;
 }
 
-static bool is3_parse(Abstractformat *format, is3_stream **result)
+static bool is3_parse_single(Abstractformat *format, is3_stream **result)
 {
     uint8_t header[IS3_INST_HEADER_SIZE];
     is3_stream *stream = NULL;
@@ -510,6 +512,41 @@ fail:
     return false;
 }
 
+#include "xx_is3_volumes.h"
+
+static bool is3_parse(Abstractformat *format,is3_stream **result,xx_pd_struct *pd)
+{
+    is3_stream *single=NULL,*joined=NULL;xx_io_device *view=NULL;Abstractformat logical;
+    int64_t saved;size_t i;bool ok=false;
+    if(!format||!format->device||xx_pd_is_stopped(pd)||(saved=xx_io_tell(format->device))<0)return false;
+    if(!is3_parse_single(format,&single))goto done;
+    if(!single->payload_variant) {
+        uint8_t flags[2];
+        view=is3_volume_view(format,pd);
+        if(!xx_io_read_at(format->device,format->base_address+10,flags,sizeof(flags)))goto done;
+        /* Never expose directory bytes as a missing member's payload merely
+         * because its numeric extent happens to fit the physical volume. */
+        if((xx_data_get_u16(flags,2,0,false)&3U)&&!view)goto done;
+    }
+    if(xx_pd_is_stopped(pd))goto done;
+    if(view) {
+        logical=*format;logical.device=view;logical.base_address=0;
+        if(!is3_parse_single(&logical,&joined)||joined->count!=single->count)goto done;
+        for(i=0;i<joined->count;i++) {
+            uint8_t *plain=NULL;size_t size=0;
+            if(xx_pd_is_stopped(pd)||!is3_decode_member(&logical,&joined->items[i],&plain,&size)){xx_mem_free(plain);goto done;}
+            xx_mem_free(plain);joined->items[i].volume=1;
+        }
+        joined->volume_view=view;view=NULL;joined->archive_size=single->archive_size;
+        is3_stream_free(single);single=joined;joined=NULL;
+    }
+    *result=single;single=NULL;ok=true;
+done:
+    is3_stream_free(single);is3_stream_free(joined);if(view)xx_io_close(view);
+    if(xx_io_seek64(format->device,saved,SEEK_SET)!=0){if(ok){is3_stream_free(*result);*result=NULL;}ok=false;}
+    return ok;
+}
+
 void xx_is3_init(xx_is3 *archive, xx_io_device *device, int64_t base_address)
 {
     if (!archive) return;
@@ -556,7 +593,7 @@ bool xx_is3_check_is_valid(Abstractformat *format, xx_pd_struct *pd)
 {
     is3_stream *stream;
     (void)pd;
-    if (!is3_parse(format, &stream)) return false;
+    if (xx_pd_is_stopped(pd) || !is3_parse_single(format, &stream)) return false;
     is3_stream_free(stream);
     return true;
 }
@@ -566,7 +603,7 @@ bool xx_is3_handle_base_info(Abstractformat *format, xx_pd_struct *pd)
     is3_stream *stream;
     xx_is3 *archive;
     (void)pd;
-    if (!format || !is3_parse(format, &stream)) return false;
+    if (!format || !is3_parse(format, &stream,pd)) return false;
     archive = (xx_is3 *)format;
     archive->number_of_records = stream->count;
     archive->archive_end = format->base_address + stream->archive_size;
@@ -593,7 +630,7 @@ xx_archive_record_state *xx_is3_create_archive_records_reading(Abstractformat *f
     is3_stream *stream;
     xx_archive_record_state *state;
     (void)pd;
-    if (!is3_parse(format, &stream)) return NULL;
+    if (!is3_parse(format, &stream,pd)) return NULL;
     state = (xx_archive_record_state *)xx_mem_alloc(sizeof(*state));
     if (!state) {
         is3_stream_free(stream);
@@ -641,11 +678,14 @@ bool xx_is3_unpack_current_archive_record(Abstractformat *format, xx_archive_rec
     size_t plain_size = 0U, written = 0U;
     bool result = false;
     bool created = false;
+    Abstractformat logical;
     if (!format || !state || state->format != format || !state->has_record || !(stream = (is3_stream *)state->internal_state) || stream->index >= stream->count ||
         (pd && xx_pd_is_stopped(pd)))
         return false;
     member = &stream->items[stream->index];
-    if (!is3_safe_output_name(member->name) || !is3_decode_member(format, member, &plain, &plain_size)) goto done;
+    logical=*format;
+    if(stream->volume_view){logical.device=stream->volume_view;logical.base_address=0;}
+    if (!is3_safe_output_name(member->name) || !is3_decode_member(&logical, member, &plain, &plain_size)) goto done;
     path_option = is3_option(&state->options, XX_META_ID_OPT_UNPACK_PATH);
     if (!path_option) {
         result = true;

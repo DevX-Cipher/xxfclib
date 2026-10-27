@@ -1,7 +1,8 @@
 /* Copyright (c) 2026 hors<horsicq@gmail.com>
  * SPDX-License-Identifier: MIT
  *
- * SQX member codec (methods 1..4).  Ported from the XArchive reference
+ * SQX member codec (methods 1..4 and PPMd method 6). Methods 1..4
+ * are ported from the XArchive reference
  * decoder Algos/xsqxdecoder.cpp; the algorithm, the table contents and the
  * order of every side effect are kept as they are there.
  */
@@ -9,6 +10,7 @@
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/rt/xx_rt.h"
 #include "xxfclib/data/xx_data.h"
+#include "../ppmd8/xx_ppmd8_internal.h"
 
 #define SQX_NMAIN 0x136
 #define SQX_NPRE 0x13
@@ -319,6 +321,9 @@ typedef struct sqx_state {
     sqx_huff table_b;
     sqx_huff table_len;
     sqx_huff table_dist;
+    CPpmd8 ppm;
+    bool ppm_ready;
+    bool lz_unavailable;
 } sqx_state;
 
 /* A replayed member only has to rebuild the window, so `out` may be NULL and
@@ -423,6 +428,7 @@ static bool sqx_read_block_header(sqx_state *state, sqx_bits *bits, int32_t *cou
 
 static void sqx_state_release(sqx_state *state)
 {
+    Ppmd8_Free(&state->ppm);
     if (state->window) xx_mem_free(state->window);
     state->window = 0;
     sqx_huff_release(&state->pre);
@@ -437,6 +443,7 @@ static void sqx_state_release(sqx_state *state)
 static bool sqx_state_init(sqx_state *state)
 {
     xx_rt_memset(state, 0, sizeof(*state));
+    Ppmd8_Construct(&state->ppm);
     state->window = (uint8_t *)xx_mem_alloc(SQX_MAX_DICT);
     if (!state->window) return false;
     xx_rt_memset(state->window, 0, SQX_MAX_DICT);
@@ -455,7 +462,7 @@ static bool sqx_state_init(sqx_state *state)
     return true;
 }
 
-static bool sqx_unpack_member(sqx_state *state, const uint8_t *packed, size_t packed_size, int64_t unpacked_size, uint16_t flags, uint8_t filter, uint8_t *out,
+static bool sqx_unpack_member(sqx_state *state, const uint8_t *packed, size_t packed_size, int64_t unpacked_size, uint16_t flags, uint8_t filter, uint8_t method, uint8_t *out,
                               size_t out_capacity)
 {
     const int32_t *dist_base;
@@ -500,6 +507,24 @@ static bool sqx_unpack_member(sqx_state *state, const uint8_t *packed, size_t pa
 
     /* The "b0" preprocessor filter is not implemented. */
     if (filter) return false;
+
+    if (method == 6U) {
+        uint8_t *plain;
+        if (unpacked_size == 0 && packed_size == 0U) return true;
+        if (!(flags & 4U)) state->ppm_ready = false;
+        plain = (uint8_t *)xx_mem_alloc(unpacked_size ? (size_t)unpacked_size : 1U);
+        if (!plain) return false;
+        ok = ppmd8_sqx_decode(&state->ppm, &state->ppm_ready, packed, packed_size, plain, (size_t)unpacked_size, NULL);
+        /* PPM and LZ have different solid state. Do not guess how a later
+         * solid SQX 2 LZ member reconstructs its dictionary from PPM data. */
+        if (ok && out && (size_t)unpacked_size <= out_capacity) xx_rt_memcpy(out, plain, (size_t)unpacked_size);
+        if (ok) state->produced = unpacked_size;
+        state->lz_unavailable = true;
+        xx_mem_free(plain);
+        return ok;
+    }
+    if (!(flags & 4U)) state->lz_unavailable = false;
+    if (state->lz_unavailable) return false;
 
     dist_base = sqx_d48base;
     dist_extra = sqx_d48extra;
@@ -740,8 +765,8 @@ XXFC_API bool xx_sqx_decode_memory(const uint8_t *input, size_t input_size, cons
             result = false;
             break;
         }
-        /* Methods 5 and up use a different coder entirely. */
-        if ((member->method < 1) || (member->method > 4)) {
+        /* Method 5 and unknown future methods have no decoder. */
+        if ((member->method < 1) || (member->method > 4 && member->method != 6)) {
             result = false;
             break;
         }
@@ -755,8 +780,12 @@ XXFC_API bool xx_sqx_decode_memory(const uint8_t *input, size_t input_size, cons
         /* A failing member is not fatal to the replay: the reference keeps
          * the state as the failure left it and moves on.  Only the target
          * member's own result has to be complete. */
-        ok = sqx_unpack_member(&state, input + member->data_offset, (size_t)member->packed_size, (int64_t)member->unpacked_size, member->flags, member->filter,
+        ok = sqx_unpack_member(&state, input + member->data_offset, (size_t)member->packed_size, (int64_t)member->unpacked_size, member->flags, member->filter, member->method,
                                is_target ? output : 0, is_target ? (size_t)target_size : 0);
+        if (member->method == 6U && !ok) {
+            result = false;
+            break;
+        }
         if (is_target) {
             if (!ok || (state.produced < (int64_t)target_size)) {
                 result = false;

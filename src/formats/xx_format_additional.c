@@ -7,6 +7,7 @@
 #include "xxfclib/formats/archive/installshield_obl/xx_installshield_obl.h"
 #include "xxfclib/formats/archive/pftw_pkg/xx_pftw_pkg.h"
 #include "xxfclib/formats/archive/sod_installer/xx_sod_installer.h"
+#include "xxfclib/formats/game/fury_dat/xx_fury_dat.h"
 #include "xxfclib/formats/archive/starforce_ovl/xx_starforce_ovl.h"
 #include "xxfclib/formats/archive/stuffit5/xx_stuffit5.h"
 #include "xxfclib/formats/archive/self_unstuffer/xx_self_unstuffer.h"
@@ -233,6 +234,10 @@ xx_file_type_t xx_format_detect_additional(xx_io_device *device)
     }
     if (prefix_size >= 36U && xx_pftw_pkg_fast_detect(device, 0, false)) {
         result = XX_FILE_TYPE_PFTW_PKG; goto done;
+    }
+    if (prefix_size >= 24U && (prefix[0] || prefix[1]) && prefix[2]>=0x21U && prefix[2]<=0x7eU &&
+        prefix[23]<=1U && xx_fury_dat_fast_detect(device, 0, false)) {
+        result = XX_FILE_TYPE_FURY_DAT; goto done;
     }
     if (prefix_size >= 12U && !xx_rt_memcmp(prefix, "pOdA", 4U) && xx_installshield_obl_fast_detect(device, 0, false)) {
         result = XX_FILE_TYPE_INSTALLSHIELD_OBL; goto done;

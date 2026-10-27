@@ -18,6 +18,8 @@
 #include "upx_backend.h"
 #include "xxfc_readers.h"
 #include "../formats/xx_archive_output_name.h"
+#include "xxfclib/formats/installer/rtpatch_setup_data/xx_rtpatch_setup_data.h"
+#include "../formats/executable/resourcefork/xx_resourcefork_output_name.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -32,6 +34,7 @@
 #include <xxfclib/formats/executable/molebox/xx_molebox.h>
 #include <xxfclib/formats/archive/cpio/xx_cpio.h>
 #include <xxfclib/formats/archive/tar/xx_tar.h>
+#include <xxfclib/formats/installer/lifkd/xx_lifkd.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -416,8 +419,10 @@ static bool safe_extract_name(const char *name) {
 /* Match the selected reader's filesystem mapping before the generic guard.
  * This is deliberately a small allowlist: a ZIP with a rooted path, a drive
  * escape or traversal still has exactly the strict policy above. */
-static char *mapped_extract_name(xx_file_type_t type, const char *name) {
+static char *mapped_extract_name(xx_file_type_t type, const char *name, size_t ordinal) {
     switch (type) {
+    case XX_FILE_TYPE_RESOURCEFORK:
+        return rsrc_output_name(name, ordinal);
     case XX_FILE_TYPE_ARQ: case XX_FILE_TYPE_SFX_ARQ: {
         char *mapped;
         if (!name || name[0] == '/' || name[0] == '\\') return NULL;
@@ -441,6 +446,10 @@ static char *mapped_extract_name(xx_file_type_t type, const char *name) {
         return xx_archive_output_name(name, 28591, 0);
     case XX_FILE_TYPE_SHAR:
         return xx_archive_output_name(name, 0, 0);
+    case XX_FILE_TYPE_BEOSPKG:
+        return xx_archive_output_name(name, 65001, 0);
+    case XX_FILE_TYPE_IBMPACK:
+        return xx_archive_output_name(name, 0, 0);
     default:
         return xx_str_dup(name);
     }
@@ -450,7 +459,7 @@ static bool mapped_name_can_suffix(xx_file_type_t type) {
     return type == XX_FILE_TYPE_CAB || type == XX_FILE_TYPE_SFX_CAB ||
         type == XX_FILE_TYPE_CLAYLZ || type == XX_FILE_TYPE_LHA || type == XX_FILE_TYPE_SFX_LHA || type == XX_FILE_TYPE_IS3 ||
         type == XX_FILE_TYPE_NOTETAB || type == XX_FILE_TYPE_AMIGALZX ||
-        type == XX_FILE_TYPE_SFX_LZX || type == XX_FILE_TYPE_SHAR;
+        type == XX_FILE_TYPE_SFX_LZX || type == XX_FILE_TYPE_SHAR || type == XX_FILE_TYPE_BEOSPKG || type == XX_FILE_TYPE_IBMPACK || type == XX_FILE_TYPE_QUANTUM;
 }
 
 /* Enough of what is at a path to tell that nothing replaced or changed it. */
@@ -967,6 +976,281 @@ static void layer_no_room(const xfu_request *request, xx_file_type_t layer,
              holder);
 }
 
+/* A complete executable LHA container can itself be named .001. Validate
+ * its native structure before applying the filename-only split fallback.
+ * Explicit split selections and incomplete first volumes keep their meaning. */
+static bool numbered_lha_sfx(const char *path, xx_io_device *borrowed,
+                             xx_pd_struct *pd) {
+    xx_io_device *source = borrowed ? borrowed : xx_io_file_open(path, "rb");
+    xxfc_opened probe = {0};
+    unsigned char magic[2];
+    int64_t saved;
+    bool valid = false;
+    if (!source) return false;
+    saved = xx_io_tell(source);
+    if (saved >= 0 && xx_io_seek64(source, 0, SEEK_SET) == 0 &&
+        xx_io_read(source, magic, sizeof(magic)) == (ssize_t)sizeof(magic) &&
+        magic[0] == 'M' && magic[1] == 'Z' &&
+        xxfc_open_named(&probe, source, 0, "sfx_lha") &&
+        xx_format_is_valid(probe.format, pd) &&
+        xx_format_handle_base_info(probe.format, pd) &&
+        probe.format->number_of_archive_records > 0 &&
+        !xxfc_is_incomplete(&probe)) valid = true;
+    xxfc_close(&probe);
+    if (borrowed) {
+        if (saved >= 0) (void)xx_io_seek64(source, saved, SEEK_SET);
+    } else xx_io_close(source);
+    return valid;
+}
+
+/* A complete ToolBook archive uses the same .001 suffix as a raw split.
+ * Require both its fixed header and its entire declared directory before
+ * preferring the native archive reader over the filename-only wrapper. */
+static bool numbered_asymetrix(const char *path, xx_io_device *borrowed,
+                              xx_pd_struct *pd) {
+    static const unsigned char signature[8] = {0x60,0x22,0x13,0x63,0x6c,0,0,0};
+    unsigned char header[44];
+    xx_io_device *source = borrowed ? borrowed : xx_io_file_open(path, "rb");
+    xxfc_opened probe = {0};
+    int64_t saved;
+    bool valid = false;
+    if (!source) return false;
+    saved = xx_io_tell(source);
+    if (saved >= 0 && xx_io_read_at(source, 0, header, sizeof(header)) &&
+        !memcmp(header, signature, sizeof(signature)) && header[40] == 1 && !header[41] &&
+        (header[42] || header[43]) &&
+        xxfc_open_named(&probe, source, 0, "asymetrix") &&
+        xx_format_is_valid(probe.format, pd) &&
+        xx_format_handle_base_info(probe.format, pd) &&
+        probe.format->number_of_archive_records == (uint64_t)header[42] + 256U * header[43]) valid = true;
+    xxfc_close(&probe);
+    if (borrowed) {
+        if (saved >= 0) (void)xx_io_seek64(source, saved, SEEK_SET);
+    } else xx_io_close(source);
+    return valid;
+}
+
+/* GTU kits commonly use .001 but are self-contained indexed archives.
+ * The size word is only a cheap prefilter; require the complete native
+ * index/block/frame validation before overriding a filename-only split. */
+static bool numbered_gtu(const char *path, xx_io_device *borrowed,
+                         xx_pd_struct *pd) {
+    unsigned char header[16];
+    xx_io_device *source = borrowed ? borrowed : xx_io_file_open(path, "rb");
+    xxfc_opened probe = {0};
+    int64_t saved, physical;
+    uint32_t stored;
+    bool valid = false;
+    if (!source) return false;
+    saved = xx_io_tell(source);
+    physical = xx_io_total_size(source);
+    if (saved >= 0 && physical >= 16 && (uint64_t)physical <= UINT32_MAX &&
+        xx_io_read_at(source, 0, header, sizeof(header))) {
+        stored = (uint32_t)header[0] | ((uint32_t)header[1] << 8U) |
+                 ((uint32_t)header[2] << 16U) | ((uint32_t)header[3] << 24U);
+        if ((uint64_t)stored == (uint64_t)physical && header[8] == 1U && !header[9] &&
+            header[10] <= 1U && !header[11] && !header[12] && !header[13] &&
+            (header[14] || header[15]) && xxfc_open_named(&probe, source, 0, "gtu") &&
+            xx_format_is_valid(probe.format, pd) && xx_format_handle_base_info(probe.format, pd) &&
+            probe.format->number_of_archive_records > 0 && probe.format->format_size == physical &&
+            !xxfc_is_incomplete(&probe)) valid = true;
+    }
+    xxfc_close(&probe);
+    if (borrowed) {
+        if (saved >= 0) (void)xx_io_seek64(source, saved, SEEK_SET);
+    } else xx_io_close(source);
+    return valid;
+}
+
+/* IBM PACK installation kits use numbered suffixes for independent chained
+ * archives. The signature schedules validation; the full native chain and
+ * physical extent must fit before replacing the suffix-only split fallback. */
+static bool numbered_ibmpack(const char *path, xx_io_device *borrowed,
+                             xx_pd_struct *pd) {
+    unsigned char h[4];
+    xx_io_device *source = borrowed ? borrowed : xx_io_file_open(path, "rb");
+    xxfc_opened probe = {0};
+    int64_t saved, physical;
+    bool valid = false;
+    if (!source) return false;
+    saved = xx_io_tell(source);
+    physical = xx_io_total_size(source);
+    if (saved >= 0 && physical >= 10 && xx_io_read_at(source, 0, h, sizeof(h)) &&
+        h[0] == 0xa5 && h[1] == 0x96 &&
+        ((h[2] == 0xfe && h[3] == 0xff) || (h[2] == 0xff && h[3] == 0xff) ||
+         (h[2] == 0x14 && h[3] == 0x0a) || (h[2] == 0 && h[3] == 0x14)) &&
+        xxfc_open_named(&probe, source, 0, "ibmpack") &&
+        xx_format_is_valid(probe.format, pd) && xx_format_handle_base_info(probe.format, pd) &&
+        probe.format->number_of_archive_records > 0 && probe.format->format_size == physical &&
+        !xxfc_is_incomplete(&probe)) valid = true;
+    xxfc_close(&probe);
+    if (borrowed) {
+        if (saved >= 0) (void)xx_io_seek64(source, saved, SEEK_SET);
+    } else xx_io_close(source);
+    return valid;
+}
+
+/* Knowledge Dynamics libraries also use numbered suffixes. A valid first
+ * member merely schedules a probe: the entire chain must end at physical EOF
+ * before taking precedence over the filename-only split interpretation. */
+static bool numbered_lifkd(const char *path, xx_io_device *borrowed,
+                           xx_pd_struct *pd) {
+    unsigned char h[54];
+    xx_io_device *source = borrowed ? borrowed : xx_io_file_open(path, "rb");
+    xxfc_opened probe = {0};
+    int64_t saved, physical;
+    bool valid = false;
+    if (!source) return false;
+    saved = xx_io_tell(source);
+    physical = xx_io_total_size(source);
+    if (saved >= 0 && physical >= (int64_t)sizeof(h) &&
+        xx_io_read_at(source, 0, h, sizeof(h)) && xx_lifkd_is_member_header(h, sizeof(h)) &&
+        xxfc_open_named(&probe, source, 0, "lifkd") &&
+        xx_format_is_valid(probe.format, pd) && xx_format_handle_base_info(probe.format, pd) &&
+        probe.format->number_of_archive_records > 0 && probe.format->format_size == physical &&
+        !xxfc_is_incomplete(&probe)) valid = true;
+    xxfc_close(&probe);
+    if (borrowed) {
+        if (saved >= 0) (void)xx_io_seek64(source, saved, SEEK_SET);
+    } else xx_io_close(source);
+    return valid;
+}
+
+/* Novell Packed File streams can retain a .001 member suffix. Require the
+ * native header and complete reader validation before overriding raw split. */
+static bool numbered_netwarepacked(const char *path, xx_io_device *borrowed,
+                                   xx_pd_struct *pd) {
+    unsigned char h[31];
+    xx_io_device *source = borrowed ? borrowed : xx_io_file_open(path, "rb");
+    xxfc_opened probe = {0};
+    int64_t saved, physical;
+    bool valid = false;
+    if (!source) return false;
+    saved = xx_io_tell(source);
+    physical = xx_io_total_size(source);
+    if (saved >= 0 && physical > (int64_t)sizeof(h) && xx_io_read_at(source, 0, h, sizeof(h)) &&
+        !memcmp(h, "Packed File ", 12U) && h[24] == 0x1aU && h[25] == 1U && h[26] == 10U &&
+        xxfc_open_named(&probe, source, 0, "netwarepacked") &&
+        xx_format_is_valid(probe.format, pd) && xx_format_handle_base_info(probe.format, pd) &&
+        probe.format->number_of_archive_records == 1 && probe.format->format_size == physical &&
+        !xxfc_is_incomplete(&probe)) valid = true;
+    xxfc_close(&probe);
+    if (borrowed) {
+        if (saved >= 0) (void)xx_io_seek64(source, saved, SEEK_SET);
+    } else xx_io_close(source);
+    return valid;
+}
+
+/* Later NetWare record chains also retain .001 suffixes. The first tagged
+ * record is a scheduling hint; the complete exact-fit chain is decisive. */
+static bool numbered_netware2(const char *path, xx_io_device *borrowed,
+                              xx_pd_struct *pd) {
+    unsigned char h[20];
+    xx_io_device *source = borrowed ? borrowed : xx_io_file_open(path, "rb");
+    xxfc_opened probe = {0};
+    int64_t saved, physical;
+    bool valid = false;
+    if (!source) return false;
+    saved = xx_io_tell(source);
+    physical = xx_io_total_size(source);
+    if (saved >= 0 && physical > 35 && xx_io_read_at(source, 0, h, sizeof(h)) &&
+        !memcmp(h, "\x23\0\0\0\x10" "NetWareFileInfo", sizeof(h)) &&
+        xxfc_open_named(&probe, source, 0, "netware2") &&
+        xx_format_is_valid(probe.format, pd) && xx_format_handle_base_info(probe.format, pd) &&
+        probe.format->number_of_archive_records == 1 && probe.format->format_size == physical &&
+        !xxfc_is_incomplete(&probe)) valid = true;
+    xxfc_close(&probe);
+    if (borrowed) {
+        if (saved >= 0) (void)xx_io_seek64(source, saved, SEEK_SET);
+    } else xx_io_close(source);
+    return valid;
+}
+
+/* Quantum DS archives are complete solid streams even with a .001 suffix.
+ * Check the full native directory and extent before overriding raw split. */
+static bool numbered_quantum(const char *path, xx_io_device *borrowed,
+                             xx_pd_struct *pd) {
+    unsigned char h[8];
+    xx_io_device *source = borrowed ? borrowed : xx_io_file_open(path, "rb");
+    xxfc_opened probe = {0};
+    int64_t saved, physical;
+    bool valid = false;
+    if (!source) return false;
+    saved = xx_io_tell(source);physical = xx_io_total_size(source);
+    if (saved >= 0 && physical > 8 && xx_io_read_at(source,0,h,sizeof(h)) &&
+        h[0]=='D' && h[1]=='S' && !h[2] && h[3] && (h[4]||h[5]) && h[6]>=10U && h[6]<=21U &&
+        xxfc_open_named(&probe,source,0,"quantum") && xx_format_is_valid(probe.format,pd) &&
+        xx_format_handle_base_info(probe.format,pd) && probe.format->number_of_archive_records>0 &&
+        probe.format->format_size==physical && !xxfc_is_incomplete(&probe)) valid=true;
+    xxfc_close(&probe);
+    if (borrowed) { if (saved>=0) (void)xx_io_seek64(source,saved,SEEK_SET); }
+    else xx_io_close(source);
+    return valid;
+}
+
+static bool numbered_red(const char *path, xx_io_device *borrowed,
+                             xx_pd_struct *pd) {
+    unsigned char h[4];
+    xx_io_device *source = borrowed ? borrowed : xx_io_file_open(path, "rb");
+    xxfc_opened probe = {0};
+    int64_t saved, physical;
+    bool valid = false;
+    if (!source) return false;
+    saved = xx_io_tell(source);physical = xx_io_total_size(source);
+    if (saved >= 0 && physical >= 39 && xx_io_read_at(source,0,h,sizeof(h)) &&
+        h[0]=='R' && h[1]=='R' && h[2]==1U && h[3]>=39U &&
+        xxfc_open_named(&probe,source,0,"red") && xx_format_is_valid(probe.format,pd) &&
+        xx_format_handle_base_info(probe.format,pd) && probe.format->number_of_archive_records>0 &&
+        probe.format->format_size==physical && !xxfc_is_incomplete(&probe)) valid=true;
+    xxfc_close(&probe);
+    if (borrowed) { if (saved>=0) (void)xx_io_seek64(source,saved,SEEK_SET); }
+    else xx_io_close(source);
+    return valid;
+}
+
+static bool numbered_rtpatch_setup(const char *path, xx_io_device *borrowed,
+                             xx_pd_struct *pd) {
+    unsigned char h[16];
+    xx_io_device *source = borrowed ? borrowed : xx_io_file_open(path, "rb");
+    xxfc_opened probe = {0};
+    int64_t saved, physical;
+    bool valid = false;
+    unsigned name_length;
+    if (!source) return false;
+    saved = xx_io_tell(source);physical = xx_io_total_size(source);
+    if (saved >= 0 && physical >= 26 && xx_io_read_at(source,0,h,sizeof(h)) &&
+        (name_length=(unsigned)h[14]|((unsigned)h[15]<<8U))>=2U && name_length<=13U &&
+        xx_io_read_at(source,16,h,name_length+2U) && !h[name_length-1U] && h[name_length]==0xb5U && h[name_length+1U]==0x9cU &&
+        xxfc_open_named(&probe,source,0,"rtpatch_setup_data") && xx_format_is_valid(probe.format,pd) &&
+        xx_format_handle_base_info(probe.format,pd) && probe.format->number_of_archive_records>0 &&
+        probe.format->format_size==physical && !((const xx_rtpatch_setup_data *)probe.format)->split) valid=true;
+    xxfc_close(&probe);
+    if (borrowed) { if (saved>=0) (void)xx_io_seek64(source,saved,SEEK_SET); }
+    else xx_io_close(source);
+    return valid;
+}
+
+static bool numbered_rnc(const char *path, xx_io_device *borrowed,
+                             xx_pd_struct *pd) {
+    unsigned char h[12];
+    xx_io_device *source = borrowed ? borrowed : xx_io_file_open(path, "rb");
+    xxfc_opened probe = {0};
+    int64_t saved, physical;
+    bool valid = false;
+    if (!source) return false;
+    saved = xx_io_tell(source);physical = xx_io_total_size(source);
+    if (saved >= 0 && physical >= 18 && xx_io_read_at(source,0,h,sizeof(h)) &&
+        ((h[0]=='R' && h[1]=='N' && h[2]=='C' && (h[3]==1U || h[3]==2U)) ||
+         (!xx_rt_memcmp(h,"BULLFROGRNC",11U) && (h[11]==1U || h[11]==2U))) &&
+        xxfc_open_named(&probe,source,0,"rnc") && xx_format_is_valid(probe.format,pd) &&
+        xx_format_handle_base_info(probe.format,pd) && probe.format->number_of_archive_records>0 &&
+        probe.format->format_size==physical && !xxfc_is_incomplete(&probe)) valid=true;
+    xxfc_close(&probe);
+    if (borrowed) { if (saved>=0) (void)xx_io_seek64(source,saved,SEEK_SET); }
+    else xx_io_close(source);
+    return valid;
+}
+
 static int walk_device(const xfu_request *request, const char *unpack_to,
                        xx_pd_struct *pd, xx_io_device *preopened,
                        unsigned nested_depth, const outer_layers *outer,
@@ -1045,6 +1329,25 @@ static int walk_device(const xfu_request *request, const char *unpack_to,
         }
         if (preopened) xx_io_close(preopened);
         return xfu_native_empty_read(request, pd);
+    }
+    if (!request->reader_name && request->file_type == XX_FILE_TYPE_UNKNOWN &&
+        xfu_split_is_first_volume(archive_path) && !cancelled(request, pd)) {
+        const char *numbered_reader = numbered_ibmpack(archive_path, preopened, pd) ? "ibmpack" :
+            numbered_gtu(archive_path, preopened, pd) ? "gtu" :
+            numbered_lifkd(archive_path, preopened, pd) ? "lifkd" :
+            numbered_netwarepacked(archive_path, preopened, pd) ? "netwarepacked" :
+            numbered_netware2(archive_path, preopened, pd) ? "netware2" :
+            numbered_quantum(archive_path, preopened, pd) ? "quantum" :
+            numbered_red(archive_path, preopened, pd) ? "red" :
+            numbered_rnc(archive_path, preopened, pd) ? "rnc" :
+            numbered_rtpatch_setup(archive_path, preopened, pd) ? "rtpatch_setup_data" :
+            numbered_asymetrix(archive_path, preopened, pd) ? "asymetrix" :
+            numbered_lha_sfx(archive_path, preopened, pd) ? "sfx_lha" : NULL;
+        if (numbered_reader) {
+            resolved_request = *request;
+            resolved_request.reader_name = numbered_reader;
+            request = &resolved_request;
+        }
     }
     if ((request->reader_name && !strcmp(request->reader_name, "split")) ||
         (!request->reader_name && (request->file_type == XX_FILE_TYPE_NUMBERED_SPLIT ||
@@ -1779,7 +2082,7 @@ reader_opened:
             bool success, cut, unsafe, itself, password_failure = false;
             bool encrypted = entry.is_encrypted;
             char *destination = NULL;
-            char *output_name = unpack_to ? mapped_extract_name(opened.type, entry.name) : NULL;
+            char *output_name = unpack_to ? mapped_extract_name(opened.type, entry.name, (size_t)visited) : NULL;
             path_stamp before = {0};
             unsigned long refusals;
             int level;

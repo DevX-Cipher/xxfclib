@@ -21,7 +21,7 @@
 
 /**
  * @file xx_rar.h
- * @brief RAR 4.x and RAR 5.x archive reader and extractor.
+ * @brief RAR 1.4, RAR 4.x and RAR 5.x archive reader and extractor.
  *
  * The reader handles stored and supported compressed entries, including RAR3/4
  * AES-128 and RAR5 AES-256 encrypted members and headers.
@@ -61,7 +61,8 @@ typedef struct xx_rar XRar;
 typedef enum xx_rar_version_e {
     XX_RAR_VERSION_UNKNOWN = 0,
     XX_RAR_VERSION_4 = 4,
-    XX_RAR_VERSION_5 = 5
+    XX_RAR_VERSION_5 = 5,
+    XX_RAR_VERSION_14 = 14
 } xx_rar_version_t;
 
 typedef enum xx_rar_data_struct_id_e {

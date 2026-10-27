@@ -79,6 +79,8 @@ static bool doc_escape_po(doc_bytes *b, const uint8_t *p, size_t n)
     }
     return doc_text(b, "\"\n");
 }
+#include "xx_sun_mo.h"
+
 static bool doc_mo(Abstractformat *f, pm_stream *s, const uint8_t *p, size_t n, xx_pd_struct *pd)
 {
     uint32_t count, orig, trans, hash_count, hash;
@@ -88,7 +90,7 @@ static bool doc_mo(Abstractformat *f, pm_stream *s, const uint8_t *p, size_t n, 
     bool ok = false;
     if (n < 28) return false;
     little = xx_data_get_u32(p, 4, 0, false) == 0x950412deU;
-    if (!little && xx_data_get_u32(p, 4, 0, true) != 0x950412deU) return false;
+    if (!little && xx_data_get_u32(p, 4, 0, true) != 0x950412deU) return doc_sun_mo(f, s, p, n, pd);
     /* Major revision 1 adds system-dependent strings. Refuse rather than
      * silently lose messages. All major revision 0 catalogs are represented. */
     if (xx_data_get_u32(p + 4, 4, 0, !little) >> 16) return false;
@@ -749,11 +751,16 @@ xx_file_type_t xx_ue2_documents_detect_device(xx_io_device *d)
     n = size < (int64_t)sizeof(h) ? (size_t)size : sizeof(h);
     if (xx_io_seek64(d, 0, SEEK_SET) != 0 || xx_io_read(d, h, n) != (ssize_t)n) goto done;
     if (xx_data_get_u32(h, 4, 0, false) == 0x950412deU || xx_data_get_u32(h, 4, 0, true) == 0x950412deU) type = XX_FILE_TYPE_GNU_GETTEXT_MO;
-    else if (xx_data_get_u32(h, 4, 0, false) == 0x00035f3fU) type = XX_FILE_TYPE_WINDOWS_HELP;
-    else if (xx_data_get_u32(h, 4, 0, true) == 0x3cb86418U && xx_data_get_u32(h + 4, 4, 0, true) == 0xcaef9c95U && xx_data_get_u32(h + 8, 4, 0, true) == 0xcd211cbfU &&
+    else if (n >= 20) {
+        bool be;
+        uint32_t messages;
+        if (doc_sun_header(h, n, size, &be, &messages)) type = XX_FILE_TYPE_GNU_GETTEXT_MO;
+    }
+    if (type == XX_FILE_TYPE_UNKNOWN && xx_data_get_u32(h, 4, 0, false) == 0x00035f3fU) type = XX_FILE_TYPE_WINDOWS_HELP;
+    else if (type == XX_FILE_TYPE_UNKNOWN && xx_data_get_u32(h, 4, 0, true) == 0x3cb86418U && xx_data_get_u32(h + 4, 4, 0, true) == 0xcaef9c95U && xx_data_get_u32(h + 8, 4, 0, true) == 0xcd211cbfU &&
              xx_data_get_u32(h + 12, 4, 0, true) == 0x60a1bdddU)
         type = XX_FILE_TYPE_QT_QM;
-    else {
+    else if (type == XX_FILE_TYPE_UNKNOWN) {
         size_t at = 0;
         while (at < n) {
             size_t start = at;

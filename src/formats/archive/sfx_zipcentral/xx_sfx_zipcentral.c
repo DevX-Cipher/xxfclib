@@ -242,6 +242,8 @@ typedef struct sfx_carrier_view {
     int64_t begin;
     int64_t length;
     int64_t position;
+    int64_t patch_offset;
+    uint32_t patch_value;
 } sfx_carrier_view;
 
 static ssize_t sfx_carrier_view_read(xx_io_device *device, void *buffer, size_t size)
@@ -255,6 +257,14 @@ static ssize_t sfx_carrier_view_read(xx_io_device *device, void *buffer, size_t 
     if (xx_io_seek64(view->source, view->begin + view->position, SEEK_SET) != 0) return -1;
     received = xx_io_read(view->source, buffer, size);
     if (received < 0 || (size_t)received > size) return -1;
+    if(view->patch_offset>=0){
+        unsigned i;
+        for(i=0;i<4;i++){
+            int64_t at=view->patch_offset+i;
+            if(at>=view->position && at-view->position<received)
+                ((uint8_t*)buffer)[at-view->position]=(uint8_t)(view->patch_value>>(i*8U));
+        }
+    }
     view->position += received;
     return received;
 }
@@ -294,6 +304,7 @@ static void sfx_carrier_view_init(sfx_carrier_view *view, xx_io_device *source, 
 {
     xx_mem_zero(view, sizeof(*view));
     view->source = source;
+    view->patch_offset = -1;
     view->begin = begin;
     view->length = length;
     view->device.priv = view;
@@ -363,9 +374,29 @@ done:
     return r->inner_ready;
 }
 
+#include "xx_zip_pe_resource.h"
+#include "xx_zip_resource_bundle.h"
+#include "xx_bs_zip_crc.h"
+#include "xx_atari_zip.h"
+#include "xx_ne_zip.h"
+#include "xx_dos_zip_disk.h"
+#include "xx_dos_zip_bias.h"
+#include "xx_dos_zip_duplicate.h"
+
 static bool sfx_carrier_ensure(xx_sfx_zipcentral *r, xx_pd_struct *pd)
 {
-    return r && (r->inner_ready || sfx_carrier_absolute_ensure(r, pd) || sfx_carrier_relative_ensure(r, pd));
+    int resource;
+    if(!r)return false;
+    if(r->inner_ready)return true;
+    resource=sfx_zip_bundle_ensure(r,pd);if(resource)return resource>0;
+    resource=sfx_zip_resource_ensure(r,pd);if(resource)return resource>0;
+    resource=sfx_bs_zip_crc_ensure(r,pd);if(resource)return resource>0;
+    resource=sfx_atari_zip_ensure(r,pd);if(resource)return resource>0;
+    resource=sfx_ne_zip_ensure(r,pd);if(resource)return resource>0;
+    resource=sfx_dos_zip_disk_ensure(r,pd);if(resource)return resource>0;
+    resource=sfx_dos_zip_bias_ensure(r,pd);if(resource)return resource>0;
+    resource=sfx_dos_zip_duplicate_ensure(r,pd);if(resource)return resource>0;
+    return sfx_carrier_absolute_ensure(r,pd)||sfx_carrier_relative_ensure(r,pd);
 }
 
 static bool pm_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
@@ -433,6 +464,7 @@ static xx_archive_record_state *sfx_carrier_records(Abstractformat *f, const xx_
     xx_archive_record_state *state;
     demolition_state *demo;
     if (!sfx_carrier_ensure(r, pd)) return pm_create_records(f, opts, pd);
+    if (sfx_zip_bundle_get(f)) return sfx_zip_bundle_records(f, opts, pd);
     state = xx_zip_create_archive_records_reading(&r->inner.format, opts, pd);
     if (!state) return NULL;
     /* NULL-format API calls must keep using the wrapper callbacks, including
@@ -463,6 +495,7 @@ static xx_archive_record_state *sfx_carrier_records(Abstractformat *f, const xx_
 static const xx_archive_record *sfx_carrier_current(Abstractformat *f, xx_archive_record_state *state)
 {
     xx_sfx_zipcentral *r = (xx_sfx_zipcentral *)f;
+    if (sfx_zip_bundle_get(f)) return state && state->has_record ? &state->current_record : NULL;
     return r->inner_ready ? xx_zip_get_current_archive_record(&r->inner.format, state) : pm_current(f, state);
 }
 static bool sfx_carrier_next(Abstractformat *f, xx_archive_record_state *state, xx_pd_struct *pd)
@@ -470,6 +503,7 @@ static bool sfx_carrier_next(Abstractformat *f, xx_archive_record_state *state, 
     xx_sfx_zipcentral *r = (xx_sfx_zipcentral *)f;
     demolition_state *demo;
     bool result;
+    if (sfx_zip_bundle_get(f)) return sfx_zip_bundle_next(state, pd);
     if (!r->inner_ready) return pm_next(f, state, pd);
     demo = demolition_detach(state);
     result = xx_zip_archive_record_move_to_next(&r->inner.format, state, pd) && sfx_carrier_normalize_record(r, state, pd) && demolition_record(r, state, demo, pd);
@@ -484,6 +518,7 @@ static bool sfx_carrier_unpack(Abstractformat *f, xx_archive_record_state *state
     const char *recovered;
     bool result;
     size_t i;
+    if (sfx_zip_bundle_get(f)) return sfx_zip_bundle_unpack(f, state, pd);
     if (!r->inner_ready) return pm_unpack(f, state, pd);
     if (!state || !state->has_record || carrier_stop(pd)) return false;
     demo = demolition_detach(state);
@@ -519,7 +554,8 @@ done:
 static void sfx_carrier_free_records(Abstractformat *f, xx_archive_record_state *state)
 {
     xx_sfx_zipcentral *r = (xx_sfx_zipcentral *)f;
-    if (r->inner_ready) xx_zip_free_archive_records_reading(&r->inner.format, state);
+    if (sfx_zip_bundle_get(f)) xx_archive_record_state_free(state);
+    else if (r->inner_ready) xx_zip_free_archive_records_reading(&r->inner.format, state);
     else pm_free_records(f, state);
 }
 void xx_sfx_zipcentral_init(xx_sfx_zipcentral *r, xx_io_device *d, int64_t b)
@@ -549,6 +585,8 @@ xx_sfx_zipcentral *xx_sfx_zipcentral_create(xx_io_device *d, int64_t b)
 void xx_sfx_zipcentral_destroy(xx_sfx_zipcentral *r)
 {
     if (r) {
+        sfx_zip_bundle_destroy(sfx_zip_bundle_get(&r->format));
+        r->format.priv = NULL;
         if (r->inner_ready) xx_zip_destroy(&r->inner);
         xx_mem_free(r->relative_view);
         xx_str_wfree(r->legacy_name);
@@ -564,15 +602,21 @@ void xx_sfx_zipcentral_free(xx_sfx_zipcentral *r)
 }
 bool xx_sfx_zipcentral_check_is_valid(Abstractformat *f, xx_pd_struct *pd)
 {
-    return f && (sfx_carrier_ensure((xx_sfx_zipcentral *)f, pd) || pm_valid(f, pd));
+    if(!f)return false;
+    if(sfx_carrier_ensure((xx_sfx_zipcentral*)f,pd))return true;
+    return f->priv!=&sfx_zip_resource_invalid && pm_valid(f,pd);
 }
 bool xx_sfx_zipcentral_handle_base_info(Abstractformat *f, xx_pd_struct *pd)
 {
     xx_sfx_zipcentral *r = (xx_sfx_zipcentral *)f;
     if (!f) return false;
-    if (!sfx_carrier_ensure(r, pd)) return pm_handle(f, pd);
+    if (!sfx_carrier_ensure(r, pd)) {
+        if(f->priv==&sfx_zip_resource_invalid){f->is_valid=false;return false;}
+        return pm_handle(f,pd);
+    }
+    f->is_crypted=sfx_zip_bundle_get(f) ? sfx_zip_bundle_get(f)->encrypted : r->inner.format.is_crypted;
     f->format_size = pm_available(f);
-    f->number_of_archive_records = r->inner.format.number_of_archive_records;
+    f->number_of_archive_records = sfx_zip_bundle_get(f) ? sfx_zip_bundle_get(f)->records : r->inner.format.number_of_archive_records;
     f->overlay_size = 0;
     f->overlay_offset = -1;
     f->is_valid = true;

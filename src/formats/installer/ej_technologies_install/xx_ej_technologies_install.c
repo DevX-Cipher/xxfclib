@@ -763,6 +763,24 @@ static bool ejti_clean_end(ejti_cursor *cursor, const ejti_walk *walk)
     return true;
 }
 
+/* Empty regular-mode launchers have an explicit zero-length member list.
+ * Check every remaining byte, not just the short layout-disambiguation window,
+ * so a missing list or an unlisted payload cannot become an empty archive. */
+static bool ejti_empty_end(ejti_cursor *cursor, int64_t position, xx_pd_struct *pd)
+{
+    uint8_t tail[EJTI_CLEAN_WINDOW];
+    if (position < 0 || position > cursor->size || cursor->size - position > 0x10000) return false;
+    while (position < cursor->size) {
+        size_t take = cursor->size - position > (int64_t)sizeof(tail) ? sizeof(tail) : (size_t)(cursor->size - position);
+        size_t index;
+        if ((pd && xx_pd_is_stopped(pd)) || !ejti_get(cursor, position, tail, take)) return false;
+        for (index = 0U; index < take; ++index)
+            if (tail[index] != 0U) return false;
+        position += (int64_t)take;
+    }
+    return !(pd && xx_pd_is_stopped(pd));
+}
+
 static bool ejti_parse(Abstractformat *format, ejti_stream **result, xx_pd_struct *pd)
 {
     ejti_cursor *cursor = NULL;
@@ -802,7 +820,13 @@ static bool ejti_parse(Abstractformat *format, ejti_stream **result, xx_pd_struc
     stream->container_offset = container;
     if (!ejti_parse_variables(cursor, stream, &list, &list_length, pd)) goto fail;
     stream->listed = ejti_count_names(list, list_length);
-    if (stream->listed == 0U || stream->listed > EJTI_MAX_MEMBERS) goto fail;
+    if (stream->listed > EJTI_MAX_MEMBERS) goto fail;
+    if (stream->listed == 0U) {
+        if (!ejti_empty_end(cursor, stream->records_offset, pd)) goto fail;
+        walk.result = EJTI_WALK_COMPLETE;
+        walk.end = stream->records_offset;
+        goto complete;
+    }
 
     walk.capacity = EJTI_MAX_MEMBERS;
     walk.items = (ejti_member *)xx_mem_calloc(walk.capacity, sizeof(*walk.items));
@@ -840,6 +864,7 @@ static bool ejti_parse(Abstractformat *format, ejti_stream **result, xx_pd_struc
     if (walk.result != EJTI_WALK_COMPLETE && walk.result != EJTI_WALK_TRUNCATED) goto fail;
     if (!ejti_attach_names(walk.items, walk.count, list, list_length) || !ejti_make_names_unique(walk.items, walk.count)) goto fail;
 
+complete:
     stream->padded = padded;
     stream->has_trailer = walk.has_trailer;
     stream->trailer_count = walk.trailer_count;
@@ -1054,10 +1079,6 @@ xx_archive_record_state *xx_ej_technologies_install_create_archive_records_readi
     ejti_stream *stream;
     xx_archive_record_state *state;
     if (!ejti_parse(format, &stream, pd)) return NULL;
-    if (stream->count == 0U) {
-        ejti_stream_free(stream);
-        return NULL;
-    }
     state = (xx_archive_record_state *)xx_mem_alloc(sizeof(*state));
     if (!state) {
         ejti_stream_free(stream);
@@ -1067,11 +1088,11 @@ xx_archive_record_state *xx_ej_technologies_install_create_archive_records_readi
     state->internal_state = stream;
     state->free_internal = ejti_stream_free;
     state->total_records = stream->count;
-    if (!ejti_copy_options(&state->options, options) || !ejti_set_record(&state->current_record, &stream->items[0])) {
+    if (!ejti_copy_options(&state->options, options) || (stream->count != 0U && !ejti_set_record(&state->current_record, &stream->items[0]))) {
         xx_archive_record_state_free(state);
         return NULL;
     }
-    state->has_record = true;
+    state->has_record = stream->count != 0U;
     return state;
 }
 
@@ -1084,7 +1105,7 @@ bool xx_ej_technologies_install_archive_record_move_to_next(Abstractformat *form
 {
     ejti_stream *stream;
     (void)pd;
-    if (!format || !state || state->format != format || !(stream = (ejti_stream *)state->internal_state) || ++stream->index >= stream->count) {
+    if (!format || !state || state->format != format || !(stream = (ejti_stream *)state->internal_state) || stream->count == 0U || ++stream->index >= stream->count) {
         if (state) state->has_record = false;
         return false;
     }

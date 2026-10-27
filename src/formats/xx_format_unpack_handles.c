@@ -9,6 +9,7 @@
 #include "xxfclib/formats/archive/zip/xx_zip.h"
 #include "xxfclib/rt/xx_rt.h"
 #include "xxfclib/data/xx_data.h"
+#include "xxfclib/formats/installer/lifkd/xx_lifkd.h"
 
 typedef struct xx_unpack_handle_row {
     xx_handle_type_t handle;
@@ -185,6 +186,62 @@ static int xx_handle_signature(xx_file_type_t type, xx_io_device *dev)
     Abstractextractor *extractor = xx_abstract_extractor_get(type);
     uint8_t magic[4];
     if (!extractor) return 0;
+    if (type == XX_FILE_TYPE_IBMPACK) {
+        /* A signature is only a scheduling hint. Native chain validation
+         * still precedes publication of this handle, including for .001. */
+        return xx_io_read_at(dev,0,magic,sizeof(magic)) && magic[0]==0xa5 && magic[1]==0x96 &&
+            ((magic[2]==0xfe && magic[3]==0xff) || (magic[2]==0xff && magic[3]==0xff) ||
+             (magic[2]==0x14 && magic[3]==0x0a) || (magic[2]==0 && magic[3]==0x14)) ? 1 : 0;
+    }
+    if (type == XX_FILE_TYPE_RTPATCH_SETUP_DATA) {
+        uint8_t h[16]; unsigned n;
+        return xx_io_read_at(dev,0,h,sizeof(h)) && (n=(unsigned)h[14]|((unsigned)h[15]<<8U))>=2U && n<=13U &&
+            xx_io_read_at(dev,16,h,n+2U) && !h[n-1U] && h[n]==0xb5U && h[n+1U]==0x9cU ? 1 : 0;
+    }
+    if (type == XX_FILE_TYPE_RNC) {
+        uint8_t h[12];
+        return xx_io_read_at(dev,0,h,sizeof(h)) &&
+            ((h[0]=='R' && h[1]=='N' && h[2]=='C' && (h[3]==1U || h[3]==2U)) ||
+             (!xx_rt_memcmp(h,"BULLFROGRNC",11U) && (h[11]==1U || h[11]==2U))) ? 1 : 0;
+    }
+    if (type == XX_FILE_TYPE_RED) {
+        return xx_io_read_at(dev,0,magic,sizeof(magic)) && magic[0]=='R' && magic[1]=='R' &&
+            magic[2]==1U && magic[3]>=39U ? 1 : 0;
+    }
+    if (type == XX_FILE_TYPE_QUANTUM) {
+        uint8_t h[8];
+        return xx_io_read_at(dev,0,h,sizeof(h)) && h[0]=='D' && h[1]=='S' && !h[2] && h[3] &&
+            (h[4]||h[5]) && h[6]>=10U && h[6]<=21U ? 1 : 0;
+    }
+    if (type == XX_FILE_TYPE_NETWARE2) {
+        uint8_t h[20];
+        return xx_io_read_at(dev,0,h,sizeof(h)) &&
+            !xx_rt_memcmp(h,"\x23\0\0\0\x10" "NetWareFileInfo",sizeof(h)) ? 1 : 0;
+    }
+    if (type == XX_FILE_TYPE_NETWAREPACKED) {
+        uint8_t h[31];
+        return xx_io_read_at(dev,0,h,sizeof(h)) && !xx_rt_memcmp(h,"Packed File ",12U) &&
+            h[24]==0x1aU && h[25]==1U && h[26]==10U ? 1 : 0;
+    }
+    if (type == XX_FILE_TYPE_LIFKD) {
+        uint8_t h[54];
+        /* Schedule the complete native chain check before a .001 suffix can
+         * hide this headerless installer format. */
+        return xx_io_read_at(dev,0,h,sizeof(h)) && xx_lifkd_is_member_header(h,sizeof(h)) ? 1 : 0;
+    }
+    if (type == XX_FILE_TYPE_GTU) {
+        uint8_t h[16];
+        int64_t size = xx_io_total_size(dev);
+        /* Headerless GTU kits also use .001. Schedule full native validation
+         * before the suffix-only split interpretation can hide this handle. */
+        return size >= 16 && (uint64_t)size <= UINT32_MAX && xx_io_read_at(dev,0,h,sizeof(h)) &&
+            xx_data_get_u32(h,4,0,false) == (uint64_t)size && h[8] == 1U && !h[9] &&
+            h[10] <= 1U && !h[11] && !h[12] && !h[13] && (h[14] || h[15]) ? 1 : 0;
+    }
+    if (type == XX_FILE_TYPE_FURY_DAT) {
+        uint8_t h[24];
+        return xx_io_read_at(dev,0,h,sizeof(h)) && (h[0] || h[1]) && h[2]>=0x21U && h[2]<=0x7eU && h[23]<=1U ? 1 : 0;
+    }
     if (type == XX_FILE_TYPE_SOD_INSTALLER) {
         uint8_t h[12];unsigned year;
         if(!xx_io_read_at(dev,0,h,sizeof(h)))return 0;

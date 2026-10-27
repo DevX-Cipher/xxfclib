@@ -274,7 +274,17 @@ static bool sp_blob(Abstractformat *f, int64_t at, int64_t end, xx_pd_struct *pd
     while (p < end) {
         uint16_t name;
         uint32_t packed, raw;
-        if (carrier_stop(pd) || end - p < 25 || !pm_read(f, p, h, 25)) return false;
+        if (carrier_stop(pd) || end - p < 21 || !pm_read(f, p, h, 21)) return false;
+        if (!xx_rt_memcmp(h, "SPIS\x1a", 5)) {
+            if (total != declared || h[12] != 1U || xx_data_get_u32(h + 17, 4, 0, false) > 2U ||
+                (xx_rt_memcmp(h + 5, "NON", 3) && xx_rt_memcmp(h + 5, "RLE", 3) && xx_rt_memcmp(h + 5, "LZH", 3) &&
+                 xx_rt_memcmp(h + 5, "CUS", 3) && xx_rt_memcmp(h + 5, "LH5", 3))) return false;
+            declared = xx_data_get_u32(h + 8, 4, 0, false);
+            total = 0U;
+            p += 21;
+            continue;
+        }
+        if (end - p < 25 || !pm_read(f, p, h, 25)) return false;
         name = xx_data_get_u16(h, 2, 0, false);
         raw = xx_data_get_u32(h + 8, 4, 0, false);
         packed = xx_data_get_u32(h + 12, 4, 0, false);
@@ -350,12 +360,15 @@ static bool carrier_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
     int64_t overlay, cab, cabend, physical = pm_available(f), limit = physical, at = -1;
     uint8_t h[128];
     unsigned count = 0;
-    bool certificate = false;
+    bool certificate = false, installus_pe = false;
     if (sp_pe_resource(f, s, pd)) return true;
     if (carrier_pe(f, &overlay, &cab, &cabend, pd)) {
         if (!sp_pe_payload_end(f, overlay, &limit, &certificate, pd)) return false;
         at = overlay;
-        if (carrier_range(limit, (uint64_t)at, sizeof(h)) && pm_read(f, at, h, sizeof(h)) && !xx_rt_memcmp(h, prologue, sizeof(h))) goto installus;
+        if (carrier_range(limit, (uint64_t)at, sizeof(h)) && pm_read(f, at, h, sizeof(h)) && !xx_rt_memcmp(h, prologue, sizeof(h))) {
+            installus_pe = true;
+            goto installus;
+        }
         while (at < limit) {
             uint32_t bytes;
             char name[48];
@@ -446,7 +459,7 @@ installus: {
     for (i = 0; i < blobs; ++i) {
         char name[48];
         if (sizes[i] < 21) return false;
-        if (blobs == 2) {
+        if (blobs == 2 && !installus_pe) {
             if (!sp_installus_members(f, s, at, at + (int64_t)sizes[i], pd)) return false;
         } else {
             if (!sp_blob(f, at, at + (int64_t)sizes[i], pd)) return false;

@@ -83,6 +83,7 @@
 #define XX_PP20_VARIANT_PPLS 2U
 #define XX_PP20_VARIANT_PX20 3U
 #define XX_PP20_VARIANT_PPBK 4U
+#define XX_PP20_VARIANT_IMAGE 5U
 
 typedef struct xx_pp20_context_s {
     uint64_t uncompressed_size;
@@ -172,7 +173,7 @@ static uint32_t xx_pp20_get_bits(xx_pp20_bits *bits, unsigned width)
 /* ---------------------------------------------------------- decoder ---- */
 
 static bool xx_pp20_decrunch(const uint8_t *input, size_t stream_start, size_t stream_end, const uint8_t *widths, uint8_t skip_bits, uint8_t *output, size_t output_size,
-                             xx_pd_struct *pd)
+                             xx_pd_struct *pd, size_t *unconsumed)
 {
     xx_pp20_bits bits;
     size_t cursor = output_size;
@@ -239,6 +240,7 @@ static bool xx_pp20_decrunch(const uint8_t *input, size_t stream_start, size_t s
             --cursor;
         }
     }
+    if (unconsumed) *unconsumed = bits.position - bits.floor;
     return cursor == 0U;
 }
 
@@ -345,7 +347,7 @@ static bool xx_pp20_decode_stream(Abstractformat *self, xx_io_device *destinatio
     output = (uint8_t *)xx_mem_alloc((size_t)parsed.uncompressed_size);
     if (!output ||
         !xx_pp20_decrunch(input, header_size, (size_t)input_size - XX_PP20_TRAILER_SIZE, parsed.offset_widths, parsed.skip_bits, output, (size_t)parsed.uncompressed_size,
-                          pd) ||
+                          pd, NULL) ||
         (pd && xx_pd_is_stopped(pd)) || (destination && !xx_pp20_write_all(destination, output, (size_t)parsed.uncompressed_size, pd))) {
         goto cleanup;
     }
@@ -387,6 +389,8 @@ static const xx_var *xx_pp20_find_option(const xx_list_s *options, uint32_t meta
     }
     return NULL;
 }
+
+#include "xx_pp20_slot_image.h"
 
 static bool xx_pp20_populate_record(Abstractformat *self, xx_archive_record *record)
 {
@@ -475,14 +479,24 @@ void xx_pp20_free(xx_pp20 *archive)
 bool xx_pp20_check_is_valid(Abstractformat *self, xx_pd_struct *pd)
 {
     xx_pp20_context context;
-    return xx_pp20_decode_stream(self, NULL, &context, pd);
+    pp20_image *image;
+    int64_t saved = self && self->device ? xx_io_tell(self->device) : -1;
+    bool valid = xx_pp20_decode_stream(self, NULL, &context, pd);
+    if (!valid) { image = pp20_image_open(self, pd); valid = image != NULL; pp20_image_free(image); }
+    if (saved >= 0) (void)xx_io_seek64(self->device, saved, SEEK_SET);
+    return valid;
 }
 
 bool xx_pp20_handle_base_info(Abstractformat *self, xx_pd_struct *pd)
 {
     xx_pp20_context context;
     xx_pp20 *archive;
+    int64_t saved = self && self->device ? xx_io_tell(self->device) : -1;
     if (!self || !xx_pp20_decode_stream(self, NULL, &context, pd)) {
+        if (self && pp20_image_info(self, pd)) {
+            if (saved >= 0) (void)xx_io_seek64(self->device, saved, SEEK_SET);
+            return true;
+        }
         if (self) {
             archive = (xx_pp20 *)self;
             archive->uncompressed_size = 0U;
@@ -497,6 +511,7 @@ bool xx_pp20_handle_base_info(Abstractformat *self, xx_pd_struct *pd)
             self->is_valid = false;
             self->base_info_handled = false;
         }
+        if (saved >= 0) (void)xx_io_seek64(self->device, saved, SEEK_SET);
         return false;
     }
     archive = (xx_pp20 *)self;
@@ -516,6 +531,7 @@ bool xx_pp20_handle_base_info(Abstractformat *self, xx_pd_struct *pd)
     self->is_crypted = context.crypted;
     self->is_valid = true;
     self->base_info_handled = true;
+    if (saved >= 0) (void)xx_io_seek64(self->device, saved, SEEK_SET);
     return true;
 }
 
@@ -528,14 +544,14 @@ int64_t xx_pp20_get_format_size(Abstractformat *self, xx_pd_struct *pd)
 uint64_t xx_pp20_get_number_of_archive_records(Abstractformat *self, xx_pd_struct *pd)
 {
     if (!self || (!self->base_info_handled && !xx_format_handle_base_info(self, pd))) return 0U;
-    return 1U;
+    return self->number_of_archive_records;
 }
 
 bool xx_pp20_unpack_to_device(xx_pp20 *archive, xx_io_device *destination, xx_pd_struct *pd)
 {
     xx_pp20_context context;
     if (!archive || !destination || (!archive->format.base_info_handled && !xx_format_handle_base_info(&archive->format, pd)) || !archive->format.is_valid ||
-        xx_pp20_variant_is_crypted(archive->variant) || !xx_pp20_decode_stream(&archive->format, destination, &context, pd)) {
+        xx_pp20_variant_is_crypted(archive->variant) || archive->variant == XX_PP20_VARIANT_IMAGE || !xx_pp20_decode_stream(&archive->format, destination, &context, pd)) {
         return false;
     }
     return context.stream_size == archive->format.format_size && context.uncompressed_size == archive->uncompressed_size;
@@ -549,6 +565,7 @@ xx_archive_record_state *xx_pp20_create_archive_records_reading(Abstractformat *
     if (!self || !self->device || (!self->base_info_handled && !xx_format_handle_base_info(self, pd)) || !self->is_valid) {
         return NULL;
     }
+    if (((xx_pp20 *)self)->variant == XX_PP20_VARIANT_IMAGE) return pp20_image_records(self, options, pd);
     state = (xx_archive_record_state *)xx_mem_alloc(sizeof(*state));
     if (!state) return NULL;
     xx_archive_record_state_init(state, self);
@@ -572,6 +589,11 @@ bool xx_pp20_archive_record_move_to_next(Abstractformat *self, xx_archive_record
     if (!self || !state || state->format != self || !state->has_record || (pd && xx_pd_is_stopped(pd))) {
         return false;
     }
+    if (((xx_pp20 *)self)->variant == XX_PP20_VARIANT_IMAGE) {
+        if (++state->current_index < state->total_records) return pp20_image_record(self, state);
+        state->has_record = false;
+        return false;
+    }
     xx_archive_record_cleanup(&state->current_record);
     xx_archive_record_init(&state->current_record);
     state->has_record = false;
@@ -590,6 +612,7 @@ bool xx_pp20_unpack_current_archive_record(Abstractformat *self, xx_archive_reco
     if (!self || !state || state->format != self || !state->has_record || (pd && xx_pd_is_stopped(pd))) {
         return false;
     }
+    if (archive->variant == XX_PP20_VARIANT_IMAGE) return pp20_image_unpack(self, state, pd);
     if (xx_pp20_variant_is_crypted(archive->variant)) return false;
     path_value = xx_pp20_find_option(&state->options, XX_META_ID_OPT_UNPACK_PATH);
     if (!path_value) {

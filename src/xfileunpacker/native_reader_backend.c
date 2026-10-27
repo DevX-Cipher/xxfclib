@@ -31,6 +31,7 @@
 #include <xxfclib/formats/archive/zstd/xx_zstd.h>
 #include <xxfclib/formats/archive/unixcompress/xx_unixcompress.h>
 #include <xxfclib/formats/archive/uue/xx_uue.h>
+#include <xxfclib/formats/archive/is_stored/xx_is_stored.h>
 #include <xxfclib/strings/xx_string.h>
 
 #ifdef _WIN32
@@ -113,7 +114,7 @@ static bool native_is_filter_type(xx_file_type_t type) {
     case XX_FILE_TYPE_XZ: case XX_FILE_TYPE_LZMA:
     case XX_FILE_TYPE_LZIP: case XX_FILE_TYPE_LZ4:
     case XX_FILE_TYPE_LZOP: case XX_FILE_TYPE_ZSTD:
-    case XX_FILE_TYPE_UNIX_COMPRESS: case XX_FILE_TYPE_UUE:
+    case XX_FILE_TYPE_UNIX_COMPRESS: case XX_FILE_TYPE_UUE: case XX_FILE_TYPE_IS_STORED:
         return true;
     default: return false;
     }
@@ -422,6 +423,7 @@ static const char *native_filter_reader(xx_file_type_t filter_type) {
     case XX_FILE_TYPE_LZOP: return "lzop";
     case XX_FILE_TYPE_ZSTD: return "zstd";
     case XX_FILE_TYPE_UNIX_COMPRESS: return "unixcompress";
+    case XX_FILE_TYPE_IS_STORED: return "is_stored";
     default: return NULL;
     }
 }
@@ -438,6 +440,7 @@ static bool native_filter_unpack(Abstractformat *format, xx_file_type_t filter_t
     case XX_FILE_TYPE_LZOP: return xx_lzop_unpack_to_device((xx_lzop *)format, destination, pd);
     case XX_FILE_TYPE_ZSTD: return xx_zstd_unpack_to_device((xx_zstd *)format, destination, pd);
     case XX_FILE_TYPE_UNIX_COMPRESS: return xx_unixcompress_unpack_to_device((xx_unixcompress *)format, destination, pd);
+    case XX_FILE_TYPE_IS_STORED: return xx_is_stored_unpack_to_device((xx_is_stored *)format, destination, pd);
     default: return false;
     }
 }
@@ -639,6 +642,7 @@ static uint64_t native_filter_size(const xxfc_opened *opened, xx_file_type_t fil
     case XX_FILE_TYPE_XZ: return xx_xz_get_uncompressed_size((const xx_xz *)opened->format);
     case XX_FILE_TYPE_LZIP: return xx_lzip_get_uncompressed_size((const xx_lzip *)opened->format);
     case XX_FILE_TYPE_ZSTD: return xx_zstd_get_uncompressed_size((const xx_zstd *)opened->format);
+    case XX_FILE_TYPE_IS_STORED: return (uint64_t)opened->format->format_size;
     default: return 0;
     }
 }

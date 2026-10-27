@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "xxfclib/data/xx_data.h"
+#include "xx_arcv4_complete_member.h"
 
 #define ARCV4_HEADER_SIZE 0x79cU
 #define ARCV4_ZERO_OFFSET 0x08U
@@ -317,7 +318,12 @@ static bool arcv4_decode_member(Abstractformat *format, const arcv4_member *memb
     uint8_t *output = NULL;
     size_t written = 0U;
     bool decoded = false;
-    if (!format || !member || !plain || !plain_size || member->spanned) return false;
+    if (!format || !member || !plain || !plain_size) return false;
+    if (member->spanned) {
+        if (member->crc32) return false;
+        return xx_arcv4_recover_split_prefix(format,member->data_offset,member->packed_size,member->original_size,
+                                             member->method,member->name,plain,plain_size,NULL);
+    }
     packed = (uint8_t *)xx_mem_alloc(member->packed_size != 0U ? member->packed_size : 1U);
     output = (uint8_t *)xx_mem_alloc(member->original_size != 0U ? member->original_size : 1U);
     if (!packed || !output || (member->packed_size != 0U && !arcv4_read_at(format->device, member->data_offset, packed, member->packed_size))) goto done;
@@ -339,6 +345,8 @@ done:
     if (output) xx_mem_free(output);
     return false;
 }
+
+#include "xx_arcv4_complete_member_impl.h"
 
 void xx_arcv4_init(xx_arcv4 *archive, xx_io_device *device, int64_t base_address)
 {

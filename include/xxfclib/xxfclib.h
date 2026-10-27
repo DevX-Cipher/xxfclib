@@ -27,11 +27,14 @@
 #ifndef XXFCLIB_H
 #define XXFCLIB_H
 
+#include "xxfclib/translation/xx_translation.h"
+
 #include "xxfclib/sort/xx_sort.h"
 #include "xxfclib/formats/archive/stor_resource/xx_stor_resource.h"
 #include "xxfclib/formats/archive/installshield_obl/xx_installshield_obl.h"
 #include "xxfclib/formats/archive/pftw_pkg/xx_pftw_pkg.h"
 #include "xxfclib/formats/archive/sod_installer/xx_sod_installer.h"
+#include "xxfclib/formats/game/fury_dat/xx_fury_dat.h"
 #include "xxfclib/formats/archive/starforce_ovl/xx_starforce_ovl.h"
 #include "xxfclib/formats/archive/self_unstuffer/xx_self_unstuffer.h"
 #include "xxfclib/formats/archive/secura/xx_secura.h"

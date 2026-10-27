@@ -35,13 +35,16 @@ static bool executable_carrier_pma_at(Abstractformat *f, pm_stream *s, int64_t b
         if (packed > INT32_MAX || raw > INT32_MAX || (h[5] == '0' && packed != raw) || !carrier_range(limit, at + size, packed)) return false;
         at += size + packed;
     }
-    if (!records || limit - at > 127) {
+    if (limit - at > 127) {
         return false;
     }
     while (at < limit) {
         uint8_t b;
-        if (!pm_read(f, at++, &b, 1) || b != 26) return false;
+        if (!pm_read(f, at++, &b, 1) || (b != 26 && (records || b))) return false;
     }
+    /* A verified stub can carry only the PMarc zero terminator and CP/M
+     * record padding. Publish its true empty member set, without a raw copy. */
+    if (!records) { s->size = limit; return true; }
     return executable_carrier_component(f, s, base, limit - base, "payload.pma");
 }
 static bool sfx_carrier_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
@@ -53,7 +56,18 @@ static bool sfx_carrier_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
         return false;
     }
     first = xx_data_get_u16(h, 2, 0, true);
-    if (first == 0x180a) {
+    if (first == 0x1852) {
+        static const char banner[] = "PMexe Version 2.00 for CP/M";
+        uint8_t meta[11], text[sizeof(banner)-1U];
+        uint32_t stub;
+        /* PMexe 2.00 records its stub extent in the -pms- header. U3's
+         * independent PMA SFX parser adds the 26-byte prologue to this word. */
+        if (!pm_read(f,0,meta,sizeof(meta)) || !pm_read(f,14,text,sizeof(text)) ||
+            xx_rt_memcmp(text,banner,sizeof(text))) return false;
+        stub=xx_data_get_u32(meta+7,4,0,false);
+        if (stub<=84U || stub>1048576U) return false;
+        return executable_carrier_pma_at(f,s,(int64_t)stub+26,pd);
+    } else if (first == 0x180a) {
         locations[count++] = 75;
         locations[count++] = 87;
     } else if (first == 0x1879) locations[count++] = 198;

@@ -9,7 +9,8 @@ static const xx_file_type_t types[] = {XX_FILE_TYPE_PMARC_SFX};
 static const uint8_t a0[] = {0x18, 0x0a};
 static const uint8_t a1[] = {0x18, 0x79};
 static const uint8_t a2[] = {0xeb, 0x18};
-static const xx_format_search_anchor anchors[] = {{a0, sizeof(a0), 0}, {a1, sizeof(a1), 0}, {a2, sizeof(a2), 0}};
+static const uint8_t a3[] = {0x18, 0x52};
+static const xx_format_search_anchor anchors[] = {{a0, sizeof(a0), 0}, {a1, sizeof(a1), 0}, {a2, sizeof(a2), 0}, {a3, sizeof(a3), 0}};
 static Abstractformat *open_reader(xx_io_device *d)
 {
     xx_pmarc_sfx *r = xx_pmarc_sfx_create(d, 0);

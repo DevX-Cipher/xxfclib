@@ -916,7 +916,7 @@ typedef struct gi_raw_names_s {
     size_t *lengths;
 } gi_raw_names;
 
-static bool gi_walk(Abstractformat *format, gi_list **result, bool names, xx_pd_struct *pd)
+static bool gi_walk_layout(Abstractformat *format, gi_list **result, bool names, xx_pd_struct *pd, size_t archive_header_size)
 {
     gi_list *list = NULL;
     gi_input *in = NULL;
@@ -956,9 +956,12 @@ static bool gi_walk(Abstractformat *format, gi_list **result, bool names, xx_pd_
     {
         uint8_t header[GI_ARCHIVE_HEADER];
         size_t index;
-        for (index = 0U; index < sizeof(header); ++index)
+        for (index = 0U; index < archive_header_size; ++index)
             if (!gi_in_byte(in, &header[index])) goto stop;
-        if (xx_data_get_u16(header + GI_ARCHIVE_HEADER_FLAG, 2, 0, false) != 0U) goto stop;
+        if (archive_header_size == 14U) {
+            if (list->location.total > UINT32_MAX || xx_data_get_u32(header, 4, 0, false) != (uint32_t)list->location.total ||
+                xx_data_get_u16(header + 12U, 2, 0, false) != 1U) goto stop;
+        } else if (xx_data_get_u16(header + GI_ARCHIVE_HEADER_FLAG, 2, 0, false) != 0U) goto stop;
     }
     {
         uint32_t index;
@@ -1130,6 +1133,24 @@ done:
         return false;
     }
     *result = list;
+    return true;
+}
+
+/* Old builders put the two shared-state table blocks after a 14-byte
+ * prelude. Retry that layout only when the ordinary walk found no records,
+ * and publish it only after every data block and END reach exact EOF. */
+static bool gi_walk(Abstractformat *format, gi_list **result, bool names, xx_pd_struct *pd)
+{
+    gi_list *legacy = NULL;
+    if (!gi_walk_layout(format, result, names, pd, GI_ARCHIVE_HEADER)) return false;
+    if ((*result)->count == 0U && !(*result)->complete && !gi_stopped(pd)) {
+        bool decoded = gi_walk_layout(format, &legacy, names, pd, 14U);
+        if (decoded && legacy->complete && legacy->end == legacy->location.total && !gi_stopped(pd)) {
+            gi_list_free(*result);
+            *result = legacy;
+        } else if (legacy) gi_list_free(legacy);
+    }
+    if (gi_stopped(pd)) { gi_list_free(*result); *result = NULL; return false; }
     return true;
 }
 
@@ -1345,7 +1366,9 @@ xx_archive_record_state *xx_gentee_installer_create_archive_records_reading(Abst
     gi_list *list;
     xx_archive_record_state *state;
     if (!gi_walk(format, &list, true, pd)) return NULL;
-    if (list->count == 0U) {
+    /* An empty installer is valid only after a decoded END command at exact
+     * physical EOF. Runtime-only templates and interrupted chains still fail. */
+    if (list->count == 0U && (!list->complete || list->end != list->location.total)) {
         gi_list_free(list);
         return NULL;
     }
@@ -1358,11 +1381,11 @@ xx_archive_record_state *xx_gentee_installer_create_archive_records_reading(Abst
     state->internal_state = list;
     state->free_internal = gi_list_free;
     state->total_records = (int64_t)list->count;
-    if (!gi_copy_options(&state->options, options) || !gi_set_record(&state->current_record, &list->items[0])) {
+    if (!gi_copy_options(&state->options, options) || (list->count && !gi_set_record(&state->current_record, &list->items[0]))) {
         xx_archive_record_state_free(state);
         return NULL;
     }
-    state->has_record = true;
+    state->has_record = list->count != 0U;
     return state;
 }
 

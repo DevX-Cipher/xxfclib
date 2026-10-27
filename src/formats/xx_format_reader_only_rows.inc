@@ -335,6 +335,7 @@
 { XX_FILE_TYPE_SMILE_GAME_PACK, xx_smile_game_pack_get_abstract_extractor, xx_smile_game_pack_get_abstract_detector },
 { XX_FILE_TYPE_SNATCHIT_CP2, xx_snatchit_cp2_get_abstract_extractor, xx_snatchit_cp2_get_abstract_detector },
 { XX_FILE_TYPE_SOD_INSTALLER, xx_sod_installer_get_abstract_extractor, xx_sod_installer_get_abstract_detector },
+{ XX_FILE_TYPE_FURY_DAT, xx_fury_dat_get_abstract_extractor, xx_fury_dat_get_abstract_detector },
 { XX_FILE_TYPE_SOLARISPKG_ZIP, xx_solarispkg_zip_get_abstract_extractor, xx_solarispkg_zip_get_abstract_detector },
 { XX_FILE_TYPE_SOLAR_FS, xx_solar_fs_get_abstract_extractor, xx_solar_fs_get_abstract_detector },
 { XX_FILE_TYPE_SONY_IMAGE, xx_sony_image_get_abstract_extractor, xx_sony_image_get_abstract_detector },

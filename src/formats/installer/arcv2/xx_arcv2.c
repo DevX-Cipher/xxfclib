@@ -62,6 +62,7 @@ typedef struct arcv2_stream_s {
     uint32_t volume_flags;
     uint16_t disk_number;
     arcv2_scramble scramble;
+    xx_io_device *volumes; /* Owned normalized complete-volume stream. */
 } arcv2_stream;
 
 static bool arcv2_read_at(xx_io_device *device, int64_t offset, void *buffer, size_t size)
@@ -188,6 +189,7 @@ static void arcv2_stream_free(void *opaque)
         if (stream->items[index].name) xx_mem_free(stream->items[index].name);
     }
     if (stream->items) xx_mem_free(stream->items);
+    if (stream->volumes) xx_io_close(stream->volumes);
     xx_mem_free(stream);
 }
 
@@ -202,7 +204,7 @@ static bool arcv2_add_member(arcv2_stream *stream, const arcv2_member *member)
     return true;
 }
 
-static bool arcv2_parse(Abstractformat *format, arcv2_stream **result, xx_pd_struct *pd)
+static bool arcv2_parse_single(Abstractformat *format, arcv2_stream **result, xx_pd_struct *pd)
 {
     uint8_t archive_header[ARCV2_ARCHIVE_HEADER_SIZE];
     arcv2_stream *stream = NULL;
@@ -276,6 +278,8 @@ fail:
     arcv2_stream_free(stream);
     return false;
 }
+
+#include "xx_arcv2_volumes.h"
 
 static uint8_t arcv2_scramble_seed(arcv2_scramble scramble)
 {
@@ -473,7 +477,7 @@ void xx_arcv2_free(xx_arcv2 *archive)
 bool xx_arcv2_check_is_valid(Abstractformat *format, xx_pd_struct *pd)
 {
     arcv2_stream *stream;
-    if (!arcv2_parse(format, &stream, pd)) return false;
+    if (!arcv2_parse_single(format, &stream, pd)) return false;
     arcv2_stream_free(stream);
     return true;
 }
@@ -515,8 +519,11 @@ xx_archive_record_state *xx_arcv2_create_archive_records_reading(Abstractformat 
 {
     arcv2_stream *stream;
     xx_archive_record_state *state;
+    Abstractformat logical;
     if (!arcv2_parse(format, &stream, pd)) return NULL;
-    arcv2_probe_scramble(format, stream);
+    logical = *format;
+    if (stream->volumes) { logical.device = stream->volumes; logical.base_address = 0; }
+    arcv2_probe_scramble(&logical, stream);
     state = (xx_archive_record_state *)xx_mem_alloc(sizeof(*state));
     if (!state) {
         arcv2_stream_free(stream);
@@ -565,11 +572,14 @@ bool xx_arcv2_unpack_current_archive_record(Abstractformat *format, xx_archive_r
     size_t written = 0U;
     bool result = false;
     bool created = false;
+    Abstractformat logical;
     if (!format || !state || state->format != format || !state->has_record || !(stream = (arcv2_stream *)state->internal_state) || stream->index >= stream->count ||
         (pd && xx_pd_is_stopped(pd)))
         return false;
     member = &stream->items[stream->index];
-    if (!arcv2_safe_output_name(member->name) || !arcv2_decode_member(format, member, stream->scramble, &plain, &plain_size)) goto done;
+    logical = *format;
+    if (stream->volumes) { logical.device = stream->volumes; logical.base_address = 0; }
+    if (!arcv2_safe_output_name(member->name) || !arcv2_decode_member(&logical, member, stream->scramble, &plain, &plain_size)) goto done;
     path_option = arcv2_option(&state->options, XX_META_ID_OPT_UNPACK_PATH);
     if (!path_option) {
         result = true;

@@ -25,7 +25,7 @@
  * and a file record's body, starting at +7, is at least 26 bytes:
  *
  *   +0x00  u8      "b0" preprocessor filter selector
- *   +0x05  u8      method: 0 stored, 1..4 the Huffman coder, 5+ undefined
+ *   +0x05  u8      method: 0 stored, 1..4 Huffman/LZ, 6 PPMd
  *   +0x06  u32 LE  CRC-32 of the decoded member
  *   +0x0a  u32 LE  attributes; 0x10 marks a directory
  *   +0x0e  u32 LE  timestamp
@@ -50,9 +50,10 @@
  * which is why extraction here re-walks the directory and loads the archive
  * rather than reading a single member's range.
  *
- * Methods this reader decodes: 0 (stored) and 1..4 (the Huffman coder).
- * Method 5 and up, a nonzero "b0" filter and the alternative in-block
- * "direct" coder are refused by the codec rather than approximated.
+ * Methods this reader decodes: 0, legacy 1..4 and unfiltered PPMd method 6,
+ * including continued PPM models. SQX 2 LZ table changes, mixed solid PPM/LZ
+ * dictionary transitions, filters and the in-block direct coder remain
+ * unsupported. Method 6 is checked against its stored raw CRC accumulator.
  */
 
 #include "xxfclib/rt/xx_rt.h"
@@ -420,7 +421,7 @@ static bool xx_sqx_walk(Abstractformat *self, xx_pd_struct *pd, xx_sqx_stream *s
                 goto done;
             }
         }
-        if (table && !is_folder && body[5] >= 1U && body[5] <= 4U) {
+        if (table && !is_folder && ((body[5] >= 1U && body[5] <= 4U) || body[5] == 6U)) {
             xx_mem_zero(&entry, sizeof(entry));
             /* Offsets in the table are relative to the image the decode
              * loads, which starts at base_address -- not absolute file
@@ -513,10 +514,10 @@ static bool xx_sqx_decode(Abstractformat *self, const xx_sqx_member *member, uin
         *out_size = plain_size;
         return true;
     }
-    /* Methods 5 and up exist in the container but have no decoder here.
+    /* Method 5 and unknown future methods have no decoder here.
      * Falling through to the stored path would hand back a bitstream dressed
      * as file data. */
-    if (member->method > 4U) return false;
+    if (member->method > 4U && member->method != 6U) return false;
     /* Empty members carry no coded block, even in a solid archive. They
      * must not replay or reset the preceding dictionary merely to emit an
      * empty file. A one-sided zero size is still malformed. */
@@ -570,6 +571,17 @@ static bool xx_sqx_decode(Abstractformat *self, const xx_sqx_member *member, uin
      * plausible bytes of very nearly the right length, and the count is the
      * only thing that catches it. */
     if (written != plain_size) goto fail;
+    if (member->method == 6U) {
+        /* SQX stores the running CRC accumulator without final inversion. */
+        uint32_t crc = UINT32_MAX;
+        size_t j;
+        for (j = 0U; j < written; ++j) {
+            unsigned k;
+            crc ^= plain[j];
+            for (k = 0U; k < 8U; ++k) crc = (crc >> 1) ^ ((0U - (crc & 1U)) & 0xEDB88320U);
+        }
+        if (crc != member->crc32) goto fail;
+    }
 
     xx_mem_free(image);
     xx_mem_free(table);

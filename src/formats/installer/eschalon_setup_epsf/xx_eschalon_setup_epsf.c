@@ -47,6 +47,7 @@
 #include "xxfclib/algo/crc/xx_crc.h"
 #include "xxfclib/algo/store/xx_store.h"
 #include "xxfclib/formats/installer/arcv4/xx_arcv4.h"
+#include "../arcv4/xx_arcv4_complete_member.h"
 #include "xxfclib/io/xx_io.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/strings/xx_string.h"
@@ -849,6 +850,15 @@ static bool epsf_decode_member(Abstractformat *format, const epsf_stream *stream
     *plain = NULL;
     *plain_size = 0U;
     if (member->original_size > limit || member->original_size > EPSF_MAX_MEMBER || member->original_size > (uint64_t)SIZE_MAX - 1U) return false;
+    if(member->kind==EPSF_KIND_ARCV && member->method==2U && !member->check && member->packed_size<=UINT32_MAX && member->data_offset>=40) {
+        uint8_t h[40];
+        if(epsf_read_at(format->device,member->data_offset-40,h,sizeof(h)) &&
+           xx_data_get_u32(h,4,0,false)==UINT32_MAX && xx_data_get_u32(h+4,4,0,false)==2U &&
+           !xx_rt_memcmp(h+8,"DATA",4U) && (h[12]&0xffU)==1U &&
+           xx_data_get_u32(h+20,4,0,false)==member->packed_size && !xx_data_get_u32(h+28,4,0,false))
+            return xx_arcv4_recover_split_prefix(format,member->data_offset,(uint32_t)member->packed_size,
+                (uint32_t)member->original_size,member->method,member->name,plain,plain_size,NULL);
+    }
     if (member->kind == EPSF_KIND_SCRIPT) {
         size_t decoded = 0U;
         input_size = epsf_script_input_size(&stream->layout);

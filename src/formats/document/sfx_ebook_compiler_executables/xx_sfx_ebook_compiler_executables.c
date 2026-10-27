@@ -13,9 +13,9 @@
  * sfx_nullsoft_pimp reader (MIT, same author).
  *
  * The executable is parsed only as far as its section table; nothing in it
- * is executed.  Every stream is inflated through a sink that counts, caps
- * and checksums the output, so a file is extracted only when its size and
- * its Adler-32 trailers match.
+ * is executed. Compressed book streams use a capped counting sink and
+ * Adler-32 checks. SHOW's footer directory bounds stored assets; its
+ * explicit no-assets runtime footer produces a zero-record cursor.
  */
 
 #include "xxfclib/codepages/xx_codepage.h"
@@ -359,6 +359,8 @@ static void ebk_stream_free(void *opaque)
     xx_mem_free(stream);
 }
 
+#include "xx_ebook_show_footer.h"
+
 /* --- the executable ---------------------------------------------------------- */
 
 /* The PE headers must be present.  *overlay receives where the last
@@ -637,6 +639,7 @@ static bool ebk_scan(Abstractformat *format, bool with_names, ebk_info *info, xx
     if (total < format->base_address) return false;
     size = total - format->base_address;
     xx_rt_memset(info, 0, sizeof(*info));
+    if (ebk_show_scan(format, info, NULL, 0U, pd)) return true;
     if (!ebk_pe(format->device, format->base_address, size, &overlay, &headers_end)) return false;
     if (overlay >= 0) candidates[count++] = overlay;
     if (ebk_read_at(format->device, format->base_address + size - 6, tail, sizeof(tail))) {
@@ -796,6 +799,7 @@ static bool ebk_decode(Abstractformat *format, uint32_t variant, const ebk_membe
     ebk_sink sink;
     int64_t base = format->base_address, total, chunk_at;
     uint32_t chunk;
+    if (variant == EBK_VARIANT_SHOW_FOOTER) return ebk_show_copy(format, member, target, pd);
     xx_rt_memset(&sink, 0, sizeof(sink));
     sink.device.write = ebk_sink_write;
     sink.target = target;
@@ -861,10 +865,10 @@ static bool ebk_set_record(Abstractformat *format, uint32_t variant, xx_archive_
     record->compressed_size = member->packed_span;
     if (!xx_archive_record_set_original_name(record, member->name) ||
         !xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSED_SIZE, (uint64_t)member->packed_span) ||
-        !xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSION_METHOD, EBK_METHOD_DEFLATE) ||
+        !xx_archive_record_set_meta_u64(record, XX_META_ID_COMPRESSION_METHOD, variant == EBK_VARIANT_SHOW_FOOTER ? 0U : EBK_METHOD_DEFLATE) ||
         !xx_archive_record_set_meta_bool(record, XX_META_ID_IS_ENCRYPTED, false) || !xx_archive_record_set_meta_bool(record, XX_META_ID_IS_FOLDER, false))
         return false;
-    if (variant == XX_SFX_EBOOK_VARIANT_EBOOK_CREATOR) return xx_archive_record_set_meta_u64(record, XX_META_ID_UNCOMPRESSED_SIZE, member->raw_size);
+    if (variant == XX_SFX_EBOOK_VARIANT_EBOOK_CREATOR || variant == EBK_VARIANT_SHOW_FOOTER) return xx_archive_record_set_meta_u64(record, XX_META_ID_UNCOMPRESSED_SIZE, member->raw_size);
     /* SBook Builder keeps no unpacked size; the chunks give it only when
      * they are inflated. */
     return xx_archive_record_set_meta_u64(record, XX_META_ID_LAST_MOD_TIME, member->dos_stamp & 0xFFFFU) &&
@@ -971,33 +975,38 @@ xx_archive_record_state *xx_sfx_ebook_compiler_executables_create_archive_record
     stream->variant = info.variant;
     /* At most 65535 eBook Creator files, each proven by ten bytes in the
      * file; SBook files are counted by a walk that read each of them. */
-    stream->items = (ebk_member *)xx_mem_calloc(info.count, sizeof(*stream->items));
     stream->count = info.count;
-    if (!stream->items) goto fail;
+    if (info.count) {
+        stream->items = (ebk_member *)xx_mem_calloc(info.count, sizeof(*stream->items));
+        if (!stream->items) goto fail;
+    }
     if (info.variant == XX_SFX_EBOOK_VARIANT_EBOOK_CREATOR) {
         if (!ebc_walk(format->device, format->base_address, size, info.payload, info.count, stream->items, &end, pd) || end != info.members_end) goto fail;
         if (info.names >= 0) (void)ebc_names(format->device, format->base_address, size, info.members_end, info.count, stream->items, &end, &count);
         for (index = 0U; index < info.count; ++index) {
             if (!stream->items[index].name && !(stream->items[index].name = ebk_index_name(index))) goto fail;
         }
+    } else if (info.variant == EBK_VARIANT_SHOW_FOOTER) {
+        ebk_info repeated;
+        if (!ebk_show_scan(format, &repeated, stream->items, info.count, pd) || repeated.count != info.count || repeated.end != info.end) goto fail;
     } else {
         if (!sb_walk(format->device, format->base_address, size, info.first, stream->items, info.count, &count, &end, pd) || count != info.count ||
             end != info.members_end)
             goto fail;
     }
     for (index = 0U; index < info.count; ++index) stream->items[index].safe = ebk_safe_output_name(stream->items[index].name);
-    if (!ebk_unique_names(stream->items, stream->count)) goto fail;
+    if (stream->count && !ebk_unique_names(stream->items, stream->count)) goto fail;
     state = (xx_archive_record_state *)xx_mem_alloc(sizeof(*state));
     if (!state) goto fail;
     xx_archive_record_state_init(state, format);
     state->internal_state = stream;
     state->free_internal = ebk_stream_free;
     state->total_records = stream->count;
-    if (!ebk_copy_options(&state->options, options) || !ebk_set_record(format, stream->variant, &state->current_record, &stream->items[0])) {
+    if (!ebk_copy_options(&state->options, options) || (stream->count && !ebk_set_record(format, stream->variant, &state->current_record, &stream->items[0]))) {
         xx_archive_record_state_free(state);
         return NULL;
     }
-    state->has_record = true;
+    state->has_record = stream->count != 0U;
     return state;
 fail:
     ebk_stream_free(stream);
@@ -1023,7 +1032,7 @@ bool xx_sfx_ebook_compiler_executables_archive_record_move_to_next(Abstractforma
         state->has_record = false;
         return false;
     }
-    state->has_record = true;
+    state->has_record = stream->count != 0U;
     return true;
 }
 

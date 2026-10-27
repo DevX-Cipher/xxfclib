@@ -55,6 +55,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include "xxfclib/data/xx_data.h"
+#include "xx_squashfs_noeos_lzma.h"
 
 #define XX_SQUASHFS_SUPERBLOCK_SIZE 0x80
 #define XX_SQUASHFS_META_MAX 8192U
@@ -197,7 +198,7 @@ static bool xx_squashfs_lzma_block(const uint8_t *input, size_t input_size, uint
             return true;
         }
     }
-    return false;
+    return sqfs_noeos_lzma(input,input_size,output,output_cap,false,written);
 }
 
 /* SquashFS XZ blocks are complete .xz streams, so the xz format reader decodes
@@ -1333,7 +1334,17 @@ static bool xx_squashfs_extract_member(Abstractformat *self, const xx_squashfs_p
             emit = packed;
             emit_size = (size_t)chunk->on_disk;
         } else {
-            if (!xx_squashfs_decompress(&parsed->super, packed, (size_t)chunk->on_disk, plain, plain_capacity, &produced)) {
+            int64_t remaining=member->uncompressed_size-produced_total;
+            size_t want=(size_t)(chunk->out_size<remaining?chunk->out_size:remaining);
+            /* A no-marker range flush can become zero before the final
+             * literal. For unfragmented legacy LZMA, the inode supplies the
+             * exact final-block size; shared fragment blocks keep the
+             * bounded unknown-size path below. */
+            bool exact_lzma=parsed->super.major<4 && parsed->super.fragments==0 && !chunk->skip &&
+                remaining>0 && want<=plain_capacity && chunk->on_disk>5 &&
+                packed[0]==0x5dU && !packed[1] && !packed[2] &&
+                sqfs_noeos_lzma(packed,(size_t)chunk->on_disk,plain,want,true,&produced);
+            if (!exact_lzma && !xx_squashfs_decompress(&parsed->super, packed, (size_t)chunk->on_disk, plain, plain_capacity, &produced)) {
                 goto cleanup;
             }
             emit = plain;

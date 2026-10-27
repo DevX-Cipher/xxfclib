@@ -124,6 +124,7 @@ typedef struct {
     uint8_t *UnitsStart;
     uint32_t AlignOffset;
     unsigned RestoreMethod;
+    bool SqxTables; /* SQX method 6 startup probabilities, including restarts */
 
     /* Subbotin Range Coder state */
     uint32_t Range;
@@ -187,11 +188,16 @@ typedef struct {
     uint8_t input_byte; /* scalar startup/low-level coder state */
     size_t ibuf_pos;
     size_t ibuf_len;
+    bool sqx;
+    size_t sqx_pos;
     bool error;
 } ppmd8_range_dec;
 
 bool ppmd8_rd_init(CPpmd8 *p, ppmd8_range_dec *rd, xx_io_device *dev, const uint8_t *mem, size_t mem_size, int64_t remaining);
 int Ppmd8_DecodeSymbol(CPpmd8 *p, ppmd8_range_dec *rd);
+/* A fresh range coder per member; the PPM model survives solid members. */
+bool ppmd8_sqx_decode(CPpmd8 *p, bool *ready, const uint8_t *src, size_t packed_size,
+                      uint8_t *dst, size_t raw_size, xx_pd_struct *pd);
 
 bool xx_ppmd8_decompress_stream(ppmd8_range_dec *rd, int64_t uncomp_size, int order, uint32_t mem_mb, int restore_method, xx_io_device *dst_dev, uint8_t *mem_dst,
                                 size_t mem_cap, size_t *out_written, xx_pd_struct *pd);

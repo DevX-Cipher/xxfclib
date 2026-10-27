@@ -20,8 +20,9 @@
  *      FINEAR header here, body cut off at the end of the file       15
  *   2  continuation fragment, the tail of a member that began on the
  *      PREVIOUS volume, so it has no FINEAR header of its own        16
- * A fragment cannot be decoded from one volume, so unpack refuses any method
- * other than 0.
+ * A boundary method-6 / method-2 pair can be joined through a unique sibling
+ * with the same version, name and timestamp, then verified by the FINEAR raw
+ * length and CRC. Unresolved fragments continue to fail closed.
  *
  * Stream ("LingvoArch").  Not handled by the reference extractor or XArchive; the layout was
  * recovered from the 11 distinct samples of the reference corpus.  Every one
@@ -558,7 +559,7 @@ static bool lva_finear_header(Abstractformat *format, const lva_member *member, 
 /* Decode a whole (method 0) FINEAR payload, verifying its stored plaintext
  * length and CRC-16/ARC.  Fails closed: a payload that is not FINEAR, or one
  * that does not reproduce both, is not returned at all. */
-static bool lva_decode_member(Abstractformat *format, const lva_member *member, uint8_t **plain, size_t *plain_size)
+static bool lva_decode_whole(Abstractformat *format, const lva_member *member, uint8_t **plain, size_t *plain_size)
 {
     uint8_t *packed = NULL;
     uint8_t *output = NULL;
@@ -589,6 +590,14 @@ fail:
     if (packed) xx_mem_free(packed);
     xx_mem_free(output);
     return false;
+}
+
+#include "xx_lingvoarc_volumes.h"
+
+static bool lva_decode_member(Abstractformat *format, const lva_member *member, uint8_t **plain, size_t *plain_size, xx_pd_struct *pd)
+{
+    if (member->method == 0U) return lva_decode_whole(format, member, plain, plain_size);
+    return lva_decode_fragment(format, member, plain, plain_size, pd);
 }
 
 /* ---- records ------------------------------------------------------------ */
@@ -843,7 +852,7 @@ bool xx_lingvoarc_unpack_current_archive_record(Abstractformat *format, xx_archi
     member = &stream->items[stream->index % stream->count];
     name = xx_archive_record_get_original_name(&state->current_record);
     if (!name || !lva_safe_output_name(name)) return false;
-    if (stream->variant == XX_LINGVOARC_VARIANT_CONTAINER && !raw && !lva_decode_member(format, member, &plain, &plain_size)) return false;
+    if (stream->variant == XX_LINGVOARC_VARIANT_CONTAINER && !raw && !lva_decode_member(format, member, &plain, &plain_size, pd)) return false;
     path_option = lva_option(&state->options, XX_META_ID_OPT_UNPACK_PATH);
     if (!path_option) {
         /* No destination: report whether the member decodes.  A container

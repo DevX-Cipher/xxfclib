@@ -36,10 +36,10 @@
  * "<name>.fragment" and extracting it fails outright.  Every later
  * incomplete segment does start here and is a genuine prefix.
  *
- * SCOPE: this reader covers ONE device.  The reference joins a lead .PAK with
- * its .PA1 / .PA2 siblings by deriving their paths from the source QFile's
- * name; an xx_io_device exposes no path, so there is nothing to derive from
- * and no sibling is opened.  A member whose stream runs off the end of this
+ * Path-backed devices can join complete pairs or numbered .PA1..PA9 sets when a unique
+ * sibling matches the split member's metadata and all assembled CRCs pass.
+ * Memory devices and incomplete/ambiguous sets retain the single-volume
+ * behavior. A member whose stream runs off the end of this
  * volume is published as "<name>.partNN" and extracts to the part this volume
  * holds: LZ decoding is prefix-correct, so the slice yields the member's true
  * leading bytes rather than nothing.  The ".partNN" suffix is what says the
@@ -131,6 +131,7 @@ typedef struct xx_fpak_stream_s {
     int64_t parsed_size;
     int64_t total_packed;
     int64_t total_raw;
+    xx_io_device *volumes; /**< Owned logical view of a verified volume pair. */
 } xx_fpak_stream;
 
 typedef enum xx_fpak_assembly_e {
@@ -249,6 +250,7 @@ static void xx_fpak_stream_free(void *pointer)
     }
     xx_mem_free(stream->segments);
     xx_mem_free(stream->members);
+    if (stream->volumes) xx_io_close(stream->volumes);
     xx_mem_free(stream);
 }
 
@@ -500,6 +502,7 @@ static xx_fpak_assembly xx_fpak_assemble(xx_fpak_stream *stream, int64_t expecte
         } else {
             const xx_fpak_segment *first = &stream->segments[current.first_segment];
             if (first->packed_size != segment->packed_size || first->raw_size != segment->raw_size || first->crc32 != segment->crc32 ||
+                first->method != segment->method || first->flags != segment->flags ||
                 first->dos_time != segment->dos_time || first->dos_date != segment->dos_date || !xx_str_equals(first->name, segment->name)) {
                 return XX_FPAK_ASSEMBLY_MALFORMED;
             }
@@ -539,7 +542,7 @@ static xx_fpak_assembly xx_fpak_assemble(xx_fpak_stream *stream, int64_t expecte
     return XX_FPAK_ASSEMBLY_INCOMPLETE;
 }
 
-static xx_fpak_stream *xx_fpak_parse(Abstractformat *self, xx_pd_struct *pd)
+static xx_fpak_stream *xx_fpak_parse_single(Abstractformat *self, xx_pd_struct *pd)
 {
     xx_fpak_stream *stream;
 
@@ -632,6 +635,7 @@ fail:
 /* Concatenate the member's slices, re-proving each segment header first. */
 static bool xx_fpak_read_member_data(Abstractformat *self, const xx_fpak_stream *stream, const xx_fpak_member *member, uint8_t **out, size_t *out_size, xx_pd_struct *pd)
 {
+    Abstractformat logical;
     uint8_t *packed;
     size_t offset = 0U;
     size_t index;
@@ -645,6 +649,7 @@ static bool xx_fpak_read_member_data(Abstractformat *self, const xx_fpak_stream 
     if (member->first_segment > stream->segment_count || member->segment_count > stream->segment_count - member->first_segment) {
         return false;
     }
+    if (stream->volumes) { logical = *self; logical.device = stream->volumes; logical.base_address = 0; self = &logical; }
     packed = (uint8_t *)xx_mem_alloc((size_t)member->compressed_size);
     if (!packed) return false;
 
@@ -749,6 +754,8 @@ fail:
     xx_mem_free(packed);
     return false;
 }
+
+#include "xx_fpak_volumes.h"
 
 /* -------------------------------------------------------------- records -- */
 

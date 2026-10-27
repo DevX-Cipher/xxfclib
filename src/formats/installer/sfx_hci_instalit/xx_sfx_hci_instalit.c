@@ -1,7 +1,7 @@
 /* Copyright (c) 2026 hors<horsicq@gmail.com>
  * SPDX-License-Identifier: MIT
  *
- * HCI Instalit / "Shadow": the Win16 self-extracting installer and the data
+ * HCI Instalit / "Shadow": the Win16/Win32 self-extracting installers and the data
  * volumes it installs from.  xx_sfx_hci_instalit.h carries the layout.
  *
  * The executable is never run or emulated.  The reader walks the NE resource
@@ -20,6 +20,8 @@
 
 #include "xxfclib/rt/xx_rt.h"
 #include "xxfclib/formats/installer/sfx_hci_instalit/xx_sfx_hci_instalit.h"
+#include "xxfclib/formats/executable/pe/xx_pe.h"
+#include "../../executable/pe/xx_pe_resources_internal.h"
 
 #include "xxfclib/algo/crc/xx_crc.h"
 #include "xxfclib/algo/dcl/xx_dcl.h"
@@ -854,7 +856,7 @@ static bool sh_ne_exefiles(Abstractformat *self, int64_t image_size, const sh_ne
         uint16_t type_id, count, row;
         size_t rows;
         char type_name[64];
-        bool named;
+        bool named, exetype;
         if (!sh_ne_type_at(ne, at, &type_id, &count, &rows) || ++types > SH_MAX_RESOURCE_TYPES) {
             return false;
         }
@@ -865,7 +867,8 @@ static bool sh_ne_exefiles(Abstractformat *self, int64_t image_size, const sh_ne
         } else {
             named = sh_ne_nametable(ne, type_id, 0U, true, type_name, sizeof(type_name));
         }
-        if (!named || !sh_is_exefile(type_name)) continue;
+        exetype = named && sh_same_name(type_name, "EXETYPE");
+        if (!named || (!sh_is_exefile(type_name) && !exetype)) continue;
         for (row = 0U; row < count; ++row) {
             const uint8_t *info = ne->table + rows + (size_t)row * 12U;
             int64_t offset = (int64_t)xx_data_get_u16(info, 2, 0, false) << ne->shift;
@@ -878,8 +881,17 @@ static bool sh_ne_exefiles(Abstractformat *self, int64_t image_size, const sh_ne
             if (length < 10 || !sh_within(image_size, offset, length) || !sh_read_at(self->device, self->base_address + offset, head, sizeof(head))) {
                 continue;
             }
-            raw = head[0] == 'M' && head[1] == 'Z';
-            packed = xx_data_get_u32(head + 4U, 4, 0, false);
+            if (exetype) {
+                /* EXETYPE stores total logical length then unfinalized CRC32;
+                 * FFFFFFFF is the explicit stored-body marker. */
+                uint32_t logical = xx_data_get_u32(head, 4, 0, false);
+                if (logical < 8U || (int64_t)logical > length || (int64_t)logical - 8 > SH_MAX_PACKED) continue;
+                packed = logical - 8U;
+                raw = xx_data_get_u32(head + 4U, 4, 0, false) == UINT32_MAX;
+            } else {
+                raw = head[0] == 'M' && head[1] == 'Z';
+                packed = xx_data_get_u32(head + 4U, 4, 0, false);
+            }
             dcl = !raw && head[8] <= 1U && head[9] >= 4U && head[9] <= 6U && packed >= 3U && (int64_t)packed <= length - 8;
             if (!raw && !dcl) continue;
             ++found;
@@ -895,26 +907,26 @@ static bool sh_ne_exefiles(Abstractformat *self, int64_t image_size, const sh_ne
                 } else {
                     have_name = sh_ne_nametable(ne, type_id, id, false, stored, sizeof(stored));
                     if (!have_name) {
-                        (void)xx_rt_snprintf(stored, sizeof(stored), "#%u", (unsigned)(id & 0x7FFFU));
+                        (void)xx_rt_snprintf(stored, sizeof(stored), exetype ? "EXETYPE_%u.bin" : "#%u", (unsigned)(id & 0x7FFFU));
                         have_name = true;
                     }
                 }
-                entry->name = sh_make_name(have_name ? stored : NULL, "EXEFILE_", found);
+                entry->name = sh_make_name(have_name ? stored : NULL, exetype ? "EXETYPE_" : "EXEFILE_", found);
                 if (!entry->name) return false;
                 entry->header_offset = self->base_address + offset;
                 if (raw) {
                     entry->kind = SH_ENTRY_EXEFILE_RAW;
-                    entry->header_size = 0;
-                    entry->data_offset = self->base_address + offset;
-                    entry->packed_size = length;
-                    entry->unpacked_size = length;
+                    entry->header_size = exetype ? 8 : 0;
+                    entry->data_offset = self->base_address + offset + entry->header_size;
+                    entry->packed_size = exetype ? (int64_t)packed : length;
+                    entry->unpacked_size = entry->packed_size;
                     entry->method = 0U;
                 } else {
                     entry->kind = SH_ENTRY_EXEFILE_DCL;
                     entry->header_size = 8;
                     entry->data_offset = self->base_address + offset + 8;
                     entry->packed_size = (int64_t)packed;
-                    entry->crc = xx_data_get_u32(head, 4, 0, false);
+                    entry->crc = exetype ? ~xx_data_get_u32(head + 4U, 4, 0, false) : xx_data_get_u32(head, 4, 0, false);
                     entry->crc_kind = SH_CRC_32;
                     entry->method = SH_METHOD_DCL;
                 }
@@ -923,6 +935,66 @@ static bool sh_ne_exefiles(Abstractformat *self, int64_t image_size, const sh_ne
         }
     }
     return found != 0U;
+}
+
+/* Win32 Shadow preserves the EXEFILE resource header and footer/catalog.
+ * Use the bounded private PE resource cursor instead of scanning file bytes. */
+static bool sh_pe_exefiles(Abstractformat *self, int64_t image_size, sh_layout *layout, xx_pd_struct *pd)
+{
+    uint8_t dos[64], sig[4];
+    uint32_t pe_offset;
+    xx_pe pe;
+    xx_resource_state *state = NULL;
+    unsigned found = 0U, rows = 0U;
+    bool result = false;
+    if (image_size < 64 || !sh_read_at(self->device, self->base_address, dos, sizeof(dos)) || dos[0] != 'M' || dos[1] != 'Z') return false;
+    pe_offset = xx_data_get_u32(dos + 60U, 4, 0, false);
+    if (!sh_within(image_size, pe_offset, 24) || !sh_read_at(self->device, self->base_address + pe_offset, sig, sizeof(sig)) ||
+        xx_rt_memcmp(sig, "PE\0\0", sizeof(sig))) return false;
+    xx_pe_init(&pe, self->device, self->base_address);
+    state = pe_resource_stream_create(&pe.format, pd);
+    if (!state) goto done;
+    for (;;) {
+        const xx_resource_record *resource = pe_resource_stream_current(&pe.format, state);
+        uint8_t head[10];
+        uint32_t packed;
+        int64_t offset;
+        bool raw, dcl;
+        if (!resource) break;
+        if (++rows > SH_MAX_RECORDS || (pd && xx_pd_is_stopped(pd))) goto done;
+        if (!resource->type_name || !sh_is_exefile(resource->type_name)) goto next;
+        offset = resource->offset - self->base_address;
+        if (resource->size < 10 || resource->size > SH_MAX_PACKED + 8 || !sh_within(image_size, offset, resource->size) ||
+            !sh_read_at(self->device, resource->offset, head, sizeof(head))) goto next;
+        raw = head[0] == 'M' && head[1] == 'Z';
+        packed = xx_data_get_u32(head + 4U, 4, 0, false);
+        dcl = !raw && head[8] <= 1U && head[9] >= 4U && head[9] <= 6U && packed >= 3U && (int64_t)packed <= resource->size - 8;
+        if (!raw && !dcl) goto next;
+        if (++found > SH_MAX_EXEFILES) goto done;
+        if (!layout) { result = true; goto done; }
+        {
+            sh_entry *entry = sh_layout_add(layout);
+            if (!entry) goto done;
+            entry->name = sh_make_name(resource->name, "EXEFILE_", found);
+            if (!entry->name) goto done;
+            entry->header_offset = resource->offset;
+            entry->header_size = raw ? 0 : 8;
+            entry->data_offset = resource->offset + (raw ? 0 : 8);
+            entry->packed_size = raw ? resource->size : (int64_t)packed;
+            entry->unpacked_size = raw ? resource->size : 0;
+            entry->kind = raw ? SH_ENTRY_EXEFILE_RAW : SH_ENTRY_EXEFILE_DCL;
+            entry->method = raw ? 0U : SH_METHOD_DCL;
+            if (!raw) { entry->crc = xx_data_get_u32(head, 4, 0, false); entry->crc_kind = SH_CRC_32; }
+            ++layout->exefile_count;
+        }
+    next:
+        if (!pe_resource_stream_next(&pe.format, state, pd)) break;
+    }
+    result = found != 0U;
+done:
+    if (state) pe_resource_stream_free(&pe.format, state);
+    xx_pe_destroy(&pe);
+    return result;
 }
 
 /* DCL streams in EXEFILE resources carry no unpacked size: measure it. */
@@ -1113,7 +1185,7 @@ static bool sh_parse(Abstractformat *self, sh_layout *layout, bool full, xx_pd_s
     int64_t total, image_size;
     sh_footer footer;
     sh_ne ne;
-    bool is_ne, has_footer, footer_ok;
+    bool is_sfx, is_pe = false, has_footer, footer_ok;
     uint8_t *catalog = NULL;
     bool result = false;
 
@@ -1128,15 +1200,20 @@ static bool sh_parse(Abstractformat *self, sh_layout *layout, bool full, xx_pd_s
 
     has_footer = sh_read_footer(self, image_size, &footer);
     footer_ok = has_footer && sh_footer_catalog_ok(self, &footer);
-    is_ne = sh_ne_load(self, image_size, &ne, full);
+    is_sfx = sh_ne_load(self, image_size, &ne, full);
 
-    if (is_ne) {
+    if (is_sfx) {
         /* The SFX stub: EXEFILE resources are required; a footer is
          * optional (stub-only releases have none). */
         layout->kind = XX_SFX_HCI_INSTALIT_KIND_SFX;
         if (!sh_ne_exefiles(self, image_size, &ne, full ? layout : NULL, pd)) {
             goto done;
         }
+        if (has_footer && !footer_ok) has_footer = false;
+    } else if (sh_pe_exefiles(self, image_size, full ? layout : NULL, pd)) {
+        is_sfx = true;
+        is_pe = true;
+        layout->kind = XX_SFX_HCI_INSTALIT_KIND_SFX;
         if (has_footer && !footer_ok) has_footer = false;
     } else {
         /* A data volume: nothing but the footer and its catalog. */
@@ -1150,16 +1227,16 @@ static bool sh_parse(Abstractformat *self, sh_layout *layout, bool full, xx_pd_s
         int64_t catalog_size = (int64_t)footer.records_end - catalog_offset;
         uint32_t stride;
         if (catalog_size <= 0 || catalog_size > (int64_t)SH_MAX_RECORDS * SH_REC_SIZE_WIDE) {
-            if (!is_ne) goto done;
+            if (!is_sfx) goto done;
         } else {
             catalog = sh_read_block(self, image_size, catalog_offset, catalog_size);
             stride = catalog ? sh_catalog_stride(catalog, (size_t)catalog_size) : 0U;
             if (stride == 0U) {
-                if (!is_ne) goto done;
+                if (!is_sfx) goto done;
             } else {
                 layout->record_size = stride;
                 layout->catalog_records = (uint32_t)((size_t)catalog_size / stride);
-                if (!is_ne) {
+                if (!is_sfx) {
                     /* A volume's first member starts its data. */
                     if (xx_data_get_u32(catalog + 1U, 4, 0, false) != 0U) goto done;
                 }
@@ -1167,17 +1244,25 @@ static bool sh_parse(Abstractformat *self, sh_layout *layout, bool full, xx_pd_s
         }
         if (full && layout->record_size != 0U) {
             /* SFX: data follows [PVL]; volume: data starts at offset 0. */
-            bool data_here = !is_ne || footer.pvl != 0U;
-            int64_t data_base = is_ne ? (int64_t)footer.pvl + SH_BLOCK_TAG_SIZE : 0;
+            bool data_here = !is_sfx || footer.pvl != 0U;
+            int64_t data_base = is_sfx ? (int64_t)footer.pvl + SH_BLOCK_TAG_SIZE : 0;
             if (!sh_catalog_members(self, catalog, (size_t)catalog_size, layout->record_size, catalog_offset, data_base, footer.pvm, data_here, layout, pd)) {
                 goto done;
+            }
+            if (is_pe) {
+                size_t index;
+                /* Win32 Shadow's0xE0 catalog method is DCL; the NE/data-volume
+                 * generation retains its original0xE0 LZW interpretation. */
+                for (index = 0U; index < layout->count; ++index)
+                    if (layout->entries[index].kind == SH_ENTRY_MEMBER && layout->entries[index].method == SH_METHOD_LZW)
+                        layout->entries[index].method = SH_METHOD_DCL;
             }
         }
     }
 
     /* The obfuscated script lives in the SFX only; a volume's pointer names
      * an offset in its setup program. */
-    if (is_ne && has_footer && footer.script != 0U) {
+    if (is_sfx && has_footer && footer.script != 0U) {
         int64_t script_end = footer.pvl != 0U ? (int64_t)footer.pvl : footer.offset;
         int64_t body = (int64_t)footer.script + SH_SCRIPT_TAG_SIZE;
         if (body <= script_end && script_end - body <= SH_MAX_SCRIPT && sh_tag_at(self, footer.script, "\x08[SCRIPT]", SH_SCRIPT_TAG_SIZE)) {

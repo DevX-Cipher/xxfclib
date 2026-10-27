@@ -33,6 +33,13 @@ static bool sfx_carrier_parse(Abstractformat *f, pm_stream *s, xx_pd_struct *pd)
     }
     if (!v[0] || v[0] > 1048576 || !v[1] || v[1] > 65535 || v[2] > 32767 || !v[3] || v[3] > 65535 || !v[4] || v[4] > (uint64_t)INT64_MAX / v[0]) return false;
     bytes = v[0] * v[4];
+    /* Reflection's labelled binary transfer terminates its ASCII label
+     * with FF (Keven Miller's UNWRQ.C). Keep the existing delimiter-free
+     * representation only when its complete declared extent already fits. */
+    if (bytes != (uint64_t)(limit - (int64_t)p)) {
+        if (p >= n || h[p] != 0xff || bytes != (uint64_t)(limit - (int64_t)p - 1)) return false;
+        ++p;
+    }
     if (bytes != (uint64_t)(limit - (int64_t)p) || !pm_add(f, s, "host-file.bin", (int64_t)p, (int64_t)bytes)) return false;
     s->size = limit;
     return true;

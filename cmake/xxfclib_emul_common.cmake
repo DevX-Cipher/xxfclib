@@ -22,6 +22,8 @@ set(XXFC_EMUL_CORE_SOURCES
     src/global/xx_global.c
     src/global/platforms/xx_global_cpu.c
     src/io/xx_io.c
+    src/translation/xx_translation.c
+    src/translation/xx_translation_io.c
     src/history/xx_history.c
     src/io/xx_io_buffer.c
     src/io/xx_io_file.c

@@ -164,7 +164,7 @@ static char *xx_quantum_name_to_string(const uint8_t *raw, size_t size)
     for (cursor = 0U; cursor < size; ++cursor) {
         unsigned char ch = raw[cursor];
         bool safe =
-            ch > 0x20U && ch < 0x7fU && ch != '%' && ch != '/' && ch != '\\' && ch != ':' && ch != '*' && ch != '?' && ch != '"' && ch != '<' && ch != '>' && ch != '|';
+            ch > 0x20U && ch < 0x7fU && ch != '%' && ch != '~' && ch != '/' && ch != '\\' && ch != ':' && ch != '*' && ch != '?' && ch != '"' && ch != '<' && ch != '>' && ch != '|';
         if (safe) {
             result[position++] = (char)ch;
         } else {
@@ -177,6 +177,31 @@ static char *xx_quantum_name_to_string(const uint8_t *raw, size_t size)
      * character, so the name is never empty here. */
     result[position] = '\0';
     return result;
+}
+
+/* Names are already reversible ASCII escapes. Preserve that representation
+ * rather than escaping '%' a second time. '~' is reserved above for generated
+ * suffixes, so a literal stored name cannot impersonate a collision result. */
+static bool xx_quantum_same_output(const char *a, const char *b)
+{
+    for (;;) {
+        unsigned char x=(unsigned char)*a++,y=(unsigned char)*b++;
+#ifdef _WIN32
+        if(x>='A'&&x<='Z')x=(unsigned char)(x+32);
+        if(y>='A'&&y<='Z')y=(unsigned char)(y+32);
+#endif
+        if(x!=y)return false;
+        if(!x)return true;
+    }
+}
+static char *xx_quantum_output_name(const xx_quantum_stream *stream, size_t index)
+{
+    bool collision=stream->count>2048U;char suffix[40];
+    for(size_t i=0;!collision&&i<stream->count;i++)
+        if(i!=index&&xx_quantum_same_output(stream->items[i].name,stream->items[index].name))collision=true;
+    if(!collision)return xx_str_dup(stream->items[index].name);
+    xx_rt_snprintf(suffix,sizeof(suffix),"~xx-%08llu",(unsigned long long)index);
+    return xx_str_concat(stream->items[index].name,suffix);
 }
 
 static void xx_quantum_stream_free(void *pointer)
@@ -637,6 +662,7 @@ bool xx_quantum_unpack_current_archive_record(Abstractformat *self, xx_archive_r
     const char *base_path = NULL;
     char *converted_path = NULL;
     char *target_path = NULL;
+    char *relative = NULL;
     const uint8_t *plain;
     size_t plain_size;
     size_t plain_offset = 0U;
@@ -673,11 +699,13 @@ bool xx_quantum_unpack_current_archive_record(Abstractformat *self, xx_archive_r
         xx_str_free(converted_path);
         return false;
     }
-    if (base_path[0] != '\0' && base_path[xx_str_len(base_path) - 1U] != '/' && base_path[xx_str_len(base_path) - 1U] != '\\') {
-        target_path = xx_str_concat3(base_path, "/", member->name);
+    relative = xx_quantum_output_name(stream,stream->index);
+    if (relative && base_path[0] != '\0' && base_path[xx_str_len(base_path) - 1U] != '/' && base_path[xx_str_len(base_path) - 1U] != '\\') {
+        target_path = xx_str_concat3(base_path, "/", relative);
     } else {
-        target_path = xx_str_concat(base_path, member->name);
+        target_path = relative ? xx_str_concat(base_path, relative) : NULL;
     }
+    xx_str_free(relative);
     xx_str_free(converted_path);
     if (!target_path) return false;
 

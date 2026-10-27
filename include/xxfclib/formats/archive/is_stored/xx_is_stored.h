@@ -7,7 +7,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/** Atari stored wrapper using fixed XOR A9. */
+/** Fixed XOR A9 and checksum-verified positional PE wrappers. */
 typedef struct xx_is_stored {
     Abstractformat format;
 } xx_is_stored;
@@ -18,6 +18,7 @@ XXFC_API void xx_is_stored_free(xx_is_stored *);
 XXFC_API bool xx_is_stored_check_is_valid(Abstractformat *, xx_pd_struct *);
 XXFC_API bool xx_is_stored_handle_base_info(Abstractformat *, xx_pd_struct *);
 XXFC_API xx_file_type_t xx_is_stored_detect(xx_io_device *, int64_t);
+XXFC_API bool xx_is_stored_unpack_to_device(xx_is_stored *, xx_io_device *, xx_pd_struct *);
 #ifdef __cplusplus
 }
 #endif

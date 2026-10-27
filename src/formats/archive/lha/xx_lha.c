@@ -83,6 +83,7 @@
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/strings/xx_string.h"
 #include "xxfclib/algo/lzh/xx_lzh.h"
+#include "xx_lha_atari_inline_internal.h"
 #include "xx_lha_legacy_native.h"
 #include "xx_lha_lh2_native.h"
 #include "xx_lha_lh3_native.h"
@@ -144,7 +145,10 @@ static bool xx_lha_path_safe(const char *name)
 {
     const char *cursor = name;
 
-    if (!name || !name[0] || name[0] == '/' || name[0] == '\\' || xx_rt_strchr(name, ':') || xx_rt_strchr(name, '\\')) return false;
+    /* Internal colons are literal filename bytes and the output boundary
+     * escapes them as %3A. Only a leading drive designator is a path root. */
+    if (!name || !name[0] || name[0] == '/' || name[0] == '\\' || xx_rt_strchr(name, '\\') ||
+        (((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z')) && name[1] == ':')) return false;
     while (*cursor) {
         const char *end = cursor;
         size_t length;
@@ -208,6 +212,15 @@ static uint16_t xx_lha_crc16(const uint8_t *data, size_t size, size_t skip_offse
 static bool xx_lha_checksum_ok(const uint8_t *header, int32_t base_size);
 static bool xx_lha_tag_ok(const uint8_t *prefix);
 static bool xx_lha_name_byte_ok(uint8_t byte);
+/* Only the exact bounded GEMDOS inline-SFX wrapper sets this private tag.
+ * That Atari writer omits the optional common-header CRC at level 2.
+ * Ordinary LHA and every other SFX producer keep the stricter probe rule. */
+static const uint8_t atari_inline_context = 0;
+void xx_lha_set_atari_inline_context(xx_lha *archive)
+{
+    if (archive) archive->format.priv = (void *)&atari_inline_context;
+}
+
 static xx_lha_stream *xx_lha_parse(Abstractformat *self, xx_pd_struct *pd);
 static bool xx_lha_decode(Abstractformat *self, const xx_lha_member *member, uint8_t **out, size_t *out_size, xx_pd_struct *pd);
 
@@ -593,12 +606,13 @@ static xx_lha_stream *xx_lha_parse(Abstractformat *self, xx_pd_struct *pd)
                 goto fail;
             }
         } else if (level >= 2U) {
-            /* Levels 2 and 3 have no checksum byte, so the common header's
-             * CRC16 is their only structural self-check. Without it the whole
-             * defence against a false positive would be four fixed tag
-             * characters, which unrelated data hits far too often -- and
-             * every real level-2/3 writer emits one. */
-            goto fail;
+            /* The exact inline GEMDOS carrier bounds the whole stream and
+             * identifies its writer independently. Its Atari level-2 headers
+             * omit the common CRC; require the extension terminator to consume
+             * the declared header exactly. Other probes still require CRC. */
+            if (level != 2U || os_id != (uint8_t)'a' ||
+                self->priv != &atari_inline_context ||
+                ext_pos + word_size != header_total) goto fail;
         }
 
         /* Level 1's subtraction can underflow a lying size field. */
@@ -916,6 +930,7 @@ void xx_lha_destroy(xx_lha *archive)
     if (archive->format.close) archive->format.close(&archive->format);
     xx_format_cleanup_extra_parameters(&archive->format);
     archive->number_of_records = 0U;
+    archive->format.priv = NULL;
 }
 
 void xx_lha_free(xx_lha *archive)

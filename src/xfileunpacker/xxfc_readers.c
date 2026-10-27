@@ -36,6 +36,8 @@ static const xxfc_reader_alias aliases[] = {
     {"starforce_ovl", XX_FILE_TYPE_STARFORCE_OVL},
     {"ovl", XX_FILE_TYPE_STARFORCE_OVL},
     {"sod_installer", XX_FILE_TYPE_SOD_INSTALLER},
+    {"fury_dat", XX_FILE_TYPE_FURY_DAT},
+    {"fury", XX_FILE_TYPE_FURY_DAT},
     {"sod_package", XX_FILE_TYPE_SOD_INSTALLER},
     {"pftw_pkg", XX_FILE_TYPE_PFTW_PKG},
     {"pftw", XX_FILE_TYPE_PFTW_PKG},

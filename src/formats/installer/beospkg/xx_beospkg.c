@@ -38,6 +38,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "xxfclib/data/xx_data.h"
+#include "../../xx_archive_output_name.h"
 
 #ifdef BEOSPKG
 #define XX_BEOSPKG_FILE_TYPE XX_FILE_TYPE_BEOSPKG
@@ -631,6 +632,7 @@ bool xx_beospkg_unpack_current_archive_record(Abstractformat *format, xx_archive
     const char *base = NULL;
     char *owned_base = NULL;
     char *path = NULL;
+    char *relative = NULL;
     uint8_t *plain = NULL;
     size_t plain_size = 0U;
     size_t written = 0U;
@@ -660,8 +662,12 @@ bool xx_beospkg_unpack_current_archive_record(Abstractformat *format, xx_archive
         base = owned_base;
     }
     if (!base) goto done;
-    path = (base[0] && base[xx_str_len(base) - 1U] != '/' && base[xx_str_len(base) - 1U] != '\\') ? xx_str_concat3(base, "/", member->name)
-                                                                                                  : xx_str_concat(base, member->name);
+    relative = xx_archive_output_name(member->name, 65001, 0);
+    if (relative)
+        XX_ARCHIVE_OUTPUT_RESOLVE(relative, stream->items, stream->count, stream->index, name, 65001, 0);
+    if (!relative) goto done;
+    path = (base[0] && base[xx_str_len(base) - 1U] != '/' && base[xx_str_len(base) - 1U] != '\\') ? xx_str_concat3(base, "/", relative)
+                                                                                                  : xx_str_concat(base, relative);
     if (!path || !xx_store_create_dirs_a(path, false)) goto done;
     {
         xx_io_device *destination = xx_io_file_open(path, "wb");
@@ -682,6 +688,7 @@ done:
     if (!result && path && created) xx_rt_remove(path);
     if (plain) xx_mem_free(plain);
     if (path) xx_str_free(path);
+    if (relative) xx_mem_free(relative);
     if (owned_base) xx_str_free(owned_base);
     return result;
 }

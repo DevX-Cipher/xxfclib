@@ -51,8 +51,11 @@ extern "C" {
  *   The method word says whether a payload is whole: 0 is self-contained, 6 is
  *   the first fragment of a member that continues on the next volume (FINEAR
  *   header present, body cut off at the end of the volume) and 2 is the
- *   continuation fragment on the following volume.  A fragment cannot be
- *   decoded from one volume, so unpack fails closed for any method but 0.
+ *   continuation fragment on the following volume. For filesystem-backed
+ *   volumes at base zero, a unique boundary method-6 / method-2 sibling pair
+ *   with matching version, name and timestamp can be joined. Decoding must
+ *   reproduce the original FINEAR length and CRC before any output is written.
+ *   Unresolved or ambiguous fragments fail closed; raw fragments remain local.
  *   The version 2 field widths were recovered by reverse-engineering a
  *   reference decoder; no version 2 sample has been seen.
  *

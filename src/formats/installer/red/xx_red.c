@@ -32,8 +32,8 @@
  * Decoding the payload as-is produces the first 4094 bytes and then garbage.
  * The ring starts filled with 0x20, which is what xx_lzh5_decode_memory does.
  *
- * Members that are fragments of a file split across volumes are listed but
- * fail to unpack: joining volumes is the caller's business, not this reader's.
+ * Two-fragment members can use a unique, checksum-verified sibling. Longer
+ * chains and unavailable or ambiguous continuations still fail to unpack.
  */
 #include "xxfclib/rt/xx_rt.h"
 #include "xxfclib/formats/installer/red/xx_red.h"
@@ -77,6 +77,7 @@ typedef struct red_member_s {
     uint16_t method;
     uint16_t fragment;
     uint16_t last_fragment;
+    uint8_t *resolved_plain;
 } red_member;
 
 typedef struct red_stream_s {
@@ -138,8 +139,10 @@ static void red_stream_free(void *opaque)
     red_stream *stream = (red_stream *)opaque;
     size_t index;
     if (!stream) return;
-    for (index = 0U; index < stream->count; ++index)
+    for (index = 0U; index < stream->count; ++index) {
         if (stream->items[index].name) xx_str_free(stream->items[index].name);
+        xx_mem_free(stream->items[index].resolved_plain);
+    }
     if (stream->items) xx_mem_free(stream->items);
     xx_mem_free(stream);
 }
@@ -281,6 +284,14 @@ static bool red_decode_member(Abstractformat *format, const red_member *member, 
     size_t output_size;
     bool decoded = false;
     if (!format || !member || !plain || !plain_size || member->packed_size < 0 || member->unpacked_size > SIZE_MAX) return false;
+    if (member->resolved_plain) {
+        output_size = (size_t)member->unpacked_size;
+        output = (uint8_t *)xx_mem_alloc(output_size ? output_size : 1U);
+        if (!output) return false;
+        xx_rt_memcpy(output, member->resolved_plain, output_size);
+        *plain = output; *plain_size = output_size;
+        return true;
+    }
     /* A fragment of a file split across volumes cannot be decoded alone. */
     if (member->fragment > 1U || member->last_fragment == 0U) return false;
     output_size = (size_t)member->unpacked_size;
@@ -324,6 +335,8 @@ fail:
     if (output) xx_mem_free(output);
     return false;
 }
+
+#include "xx_red_volumes.h"
 
 void xx_red_init(xx_red *archive, xx_io_device *device, int64_t base_address)
 {
@@ -409,6 +422,7 @@ xx_archive_record_state *xx_red_create_archive_records_reading(Abstractformat *f
     xx_archive_record_state *state;
     (void)pd;
     if (!red_parse(format, &stream)) return NULL;
+    red_resolve_fragments(format, stream, pd);
     state = (xx_archive_record_state *)xx_mem_alloc(sizeof(*state));
     if (!state) {
         red_stream_free(stream);
@@ -418,6 +432,7 @@ xx_archive_record_state *xx_red_create_archive_records_reading(Abstractformat *f
     state->internal_state = stream;
     state->free_internal = red_stream_free;
     state->total_records = stream->count;
+    state->current_index = 0;
     if (!red_copy_options(&state->options, options) || !red_set_record(&state->current_record, &stream->items[0])) {
         xx_archive_record_state_free(state);
         return NULL;
