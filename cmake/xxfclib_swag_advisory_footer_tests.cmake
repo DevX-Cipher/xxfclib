@@ -1,0 +1,7 @@
+option(XXFC_BUILD_SWAG_ADVISORY_FOOTER_TESTS "Build SWAG advisory footer regressions" OFF)
+if(XXFC_BUILD_SWAG_ADVISORY_FOOTER_TESTS AND NOT TARGET test_swag_advisory_footer)
+    enable_testing()
+    add_executable(test_swag_advisory_footer "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_swag_advisory_footer.c")
+    target_link_libraries(test_swag_advisory_footer PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_swag_advisory_footer COMMAND test_swag_advisory_footer "${CMAKE_CURRENT_BINARY_DIR}/swag-advisory-footer-output")
+endif()
