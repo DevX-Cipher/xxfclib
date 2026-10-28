@@ -6712,7 +6712,8 @@ XXFC_API const char *xx_os_to_string(xx_os_t os);
 #ifndef SQX
 #define SQX XX_FILE_TYPE_SQX
 #endif
-#ifndef IMP
+/* Objective-C reserves IMP for its method implementation pointer type. */
+#if !defined(IMP) && !defined(__OBJC__)
 #define IMP XX_FILE_TYPE_IMP
 #endif
 #ifndef COMPACTPRO

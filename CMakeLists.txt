@@ -7899,3 +7899,4 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_larc_pfx334_tests.cmake")
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_larc_pfx420_tests.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_spis_lh5_key_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_squeeze1_crlf_tests.cmake")

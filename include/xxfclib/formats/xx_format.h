@@ -713,7 +713,10 @@ XXFC_API const char *xx_format_get_password(const Abstractformat *format);
 #define nCRC32 crc32
 #define isFolder is_folder
 #define bIsFolder is_folder
+/* Preserve the isDirectory: selector in Objective-C APIs such as NSURL. */
+#ifndef __OBJC__
 #define isDirectory is_folder
+#endif
 #define isEncrypted is_encrypted
 #define bIsEncrypted is_encrypted
 #define listMeta list_meta
