@@ -19,6 +19,7 @@ list(FILTER XXFORMATS_SOURCES EXCLUDE REGEX
 # DIE music readers require the separate signature engine and its runtime.
 list(FILTER XXFORMATS_SOURCES EXCLUDE REGEX "/src/formats/audio/die_music/")
 list(APPEND XXFORMATS_SOURCES
+    ${CMAKE_CURRENT_LIST_DIR}/src/extractor/xx_extractor.c
     ${XXFC_CODEPAGE_SOURCES}
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/installer/fead/encoder/deflate.c
     ${CMAKE_CURRENT_LIST_DIR}/src/formats/installer/fead/encoder/trees.c

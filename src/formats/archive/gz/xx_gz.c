@@ -570,10 +570,12 @@ void xx_gz_init(xx_gz *gz, xx_io_device *dev, int64_t base_address)
     gz->format.unpack_current_archive_record = xx_gz_unpack_current_archive_record;
     gz->format.archive_record_move_to_next = xx_gz_archive_record_move_to_next;
     gz->format.free_archive_records_reading = xx_gz_free_archive_records_reading;
+#if !defined(XXFC_ARCHIVE_WRITE_TAR_ONLY) || !XXFC_ARCHIVE_WRITE_TAR_ONLY
     gz->format.create_archive_records_writing = xx_gz_create_archive_records_writing;
     gz->format.pack_archive_record = xx_gz_pack_archive_record;
     gz->format.finalize_archive_records_writing = xx_gz_finalize_archive_records_writing;
     gz->format.free_archive_records_writing = xx_gz_free_archive_records_writing;
+#endif
     gz->format.destroy = xx_gz_vtable_destroy;
     gz->stream_end = -1;
 }

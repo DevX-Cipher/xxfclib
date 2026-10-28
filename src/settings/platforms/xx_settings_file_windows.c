@@ -30,6 +30,21 @@ static size_t path_length(const WCHAR *path)
     return size;
 }
 
+xxfc_status_t xx_settings_platform_file_is_regular(const char *path, bool *regular)
+{
+    WCHAR *wide = (WCHAR *)xx_rt_utf8_to_utf16(path);
+    DWORD attributes, error;
+    *regular = false;
+    if (!wide) return XXFC_ERR_INVALID_ARG;
+    attributes = GetFileAttributesW(wide);
+    error = attributes == INVALID_FILE_ATTRIBUTES ? GetLastError() : ERROR_SUCCESS;
+    xx_rt_free(wide);
+    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return XXFC_OK;
+    if (error != ERROR_SUCCESS) return XXFC_ERR_IO;
+    *regular = (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_DEVICE)) == 0;
+    return XXFC_OK;
+}
+
 static bool create_parents(WCHAR *path)
 {
     unsigned int unc_parts = path[0] == L'\\' && path[1] == L'\\' ? 2 : 0;

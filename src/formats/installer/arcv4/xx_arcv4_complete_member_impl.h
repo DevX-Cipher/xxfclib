@@ -52,7 +52,7 @@ static bool arcv4_recovery_candidate(void *opaque,const char *name,bool director
         if(m->spanned||m->method!=s->method||m->original_size!=s->raw||m->packed_size<=s->packed||
            m->packed_size>ARCV4_RECOVERY_LIMIT||xx_str_icmp(arcv4_leaf(m->name),arcv4_leaf(s->name)))continue;
         if(++s->attempts>32U){more=false;break;}
-        if(!arcv4_prefix_equal(s,d,m->data_offset)||xx_pd_is_stopped(s->pd)||!arcv4_decode_member(&f,m,&plain,&size))continue;
+        if(!arcv4_prefix_equal(s,d,m->data_offset)||xx_pd_is_stopped(s->pd)||!arcv4_decode_member(&f,m,&plain,&size,s->pd))continue;
         if(s->plain) {
             if(size!=s->size||xx_rt_memcmp(plain,s->plain,size)){s->conflict=true;more=false;}
             xx_mem_free(plain);plain=NULL;

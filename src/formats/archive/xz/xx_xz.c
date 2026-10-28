@@ -853,10 +853,12 @@ void xx_xz_init(xx_xz *xz, xx_io_device *dev, int64_t base_address)
     xz->format.unpack_current_archive_record = xx_xz_unpack_current_archive_record;
     xz->format.archive_record_move_to_next = xx_xz_archive_record_move_to_next;
     xz->format.free_archive_records_reading = xx_xz_free_archive_records_reading;
+#if !defined(XXFC_ARCHIVE_WRITE_TAR_ONLY) || !XXFC_ARCHIVE_WRITE_TAR_ONLY
     xz->format.create_archive_records_writing = xx_xz_create_archive_records_writing;
     xz->format.pack_archive_record = xx_xz_pack_archive_record;
     xz->format.finalize_archive_records_writing = xx_xz_finalize_archive_records_writing;
     xz->format.free_archive_records_writing = xx_xz_free_archive_records_writing;
+#endif
     xz->format.destroy = xx_xz_vtable_destroy;
     xz->index_offset = -1;
     xz->footer_offset = -1;

@@ -44,6 +44,7 @@
 #include "xx_die_engine_xdisasm.h"
 
 #include "../js/xx_js_internal.h"
+#include "../regex/xx_regex_die.h"
 #include "xxfclib/algo/kpa/xx_kpa.h"
 
 typedef enum {
@@ -576,108 +577,6 @@ static const char *ne_os_name(cd_u8 nOS)
 static const char *ne_arch_name(cd_u8 nOS)
 {
     return ((nOS == 4) || (nOS == 5)) ? "386" : "286";
-}
-
-/* Work budget for one isArchiveRecordPresentExp call.
- *
- * jsregexp_exec caps the backtracking of a single match, but the cap is per
- * subject: an archive with many long entry names multiplies it, and the
- * total grows with the entry count without limit. Measured against the
- * Obfuscapk pattern over 64 KB names: 8.6 s for 40 entries, 32 s for 200,
- * and on from there in proportion to the entry count.
- *
- * The regular expression engine reports no step count, so a budget over the
- * expensive names can only be wall clock, and a wall-clock budget must never
- * be what decides whether a name matches: the same file would answer
- * differently on a different machine, or on the same machine twice. A plain
- * deadline over the whole walk does exactly that - with 6 crafted names in
- * front of a matching one, cdie answered "detected" on some runs and "not
- * detected" on others, where the reference always answers "detected".
- *
- * So the walk goes over the short names first, with no budget at all. Every
- * name a real archive holds is short - a ZIP entry name is a path, and paths
- * stop at PATH_MAX - so for real input the second pass has nothing to do and
- * the answer is exactly the reference's, whatever the machine. Only names
- * longer than any path, which is to say only names that were built to be
- * slow, are left to the deadline, and only when the short names produced no
- * match.                                                                    */
-#define ARCHIVE_EXP_SHORT_NAME 4096
-#define ARCHIVE_EXP_BUDGET_MS 1500
-
-/* isArchiveRecordPresentExp: true if any archive record name matches the
- * regular expression pPattern with a non-empty captured(0). Mirrors
- * XArchive::isArchiveRecordPresentExp over XBinary::isRegExpPresent (the same
- * unanchored QRegularExpression match). */
-static int archive_record_present_exp(DieEngine *pEngine, const char *pPattern)
-{
-    JSRegExp *pRegExp = NULL;
-    char *pError = NULL;
-    cd_i32 *pnCaps = NULL;
-    int bFound = 0;
-    int nPass = 0;
-    size_t i = 0;
-    cd_i64 nDeadline = 0;
-
-    if ((!pEngine->bHasZip) || (pPattern == NULL)) {
-        return 0;
-    }
-
-    pRegExp = jsregexp_compile(pPattern, "", &pError);
-
-    if (pError != NULL) {
-        cd_free(pError);
-    }
-
-    if (pRegExp == NULL) {
-        return 0;
-    }
-
-    pnCaps = (cd_i32 *)cd_malloc((size_t)(jsregexp_ngroups(pRegExp) + 1) * 2 * sizeof(cd_i32));
-
-    /* Pass 0 takes the names no longer than a path, pass 1 the rest. The
-     * reference walks the record list under isPdStructNotCanceled, so a
-     * cancelled scan drops out of the loop instead of running the expression
-     * over every remaining name.                                           */
-    for (nPass = 0; (nPass < 2) && (!bFound); nPass++) {
-        if (nPass == 1) {
-            nDeadline = (cd_i64)x_clock_ms() + ARCHIVE_EXP_BUDGET_MS;
-        }
-
-        for (i = 0; (xx_zip_get_record_names(&pEngine->zip) && i < xx_zip_get_record_names(&pEngine->zip)->count) && (!pEngine->bStop); i++) {
-            const char *pName = *(char **)xx_list_at(xx_zip_get_record_names(&pEngine->zip), i);
-            size_t nLength = 0;
-
-            if (pName == NULL) {
-                continue;
-            }
-
-            nLength = x_strlen(pName);
-
-            if ((nLength > ARCHIVE_EXP_SHORT_NAME) != (nPass == 1)) {
-                continue;
-            }
-
-            /* Checked once per name rather than in batches: one name can be
-             * the whole budget on its own, and a clock reading costs nothing
-             * next to a match attempt on a name this long. */
-            if ((nPass == 1) && ((cd_i64)x_clock_ms() > nDeadline)) {
-                break;
-            }
-
-            if (jsregexp_exec(pRegExp, pName, nLength, 0, pnCaps)) {
-                if (pnCaps[1] > pnCaps[0]) { /* captured(0) non-empty */
-                    bFound = 1;
-
-                    break;
-                }
-            }
-        }
-    }
-
-    cd_free(pnCaps);
-    jsregexp_free(pRegExp);
-
-    return bFound;
 }
 
 /* Clamps an offset/size pair to the file, mirroring _fixOffsetAndSize.
@@ -1399,7 +1298,7 @@ static JSVal api_dispatch(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, v
 
         case A_isArchiveRecordPresentExp: {
             char *pPattern = arg_string(pCtx, nArgc, pArgv, 0);
-            int bResult = archive_record_present_exp(pEngine, pPattern);
+            int bResult = xx_regex_die_archive_present(pEngine, pPattern);
 
             cd_free(pPattern);
 

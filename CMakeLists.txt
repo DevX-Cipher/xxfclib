@@ -53,6 +53,8 @@ set(CMAKE_C_EXTENSIONS OFF)
 option(BUILD_SHARED_LIBS "Build xxfclib as a shared/dynamic library instead of static" OFF)
 option(XXFC_BUILD_BOTH "Build both static and shared library targets" OFF)
 option(XXFC_BUILD_TESTS "Build test suite to verify linkage and functionality" OFF)
+option(XXFC_BUILD_STRINGS_TESTS "Build focused streaming strings tests and billion-record benchmark" OFF)
+option(XXFC_BUILD_EXTRACTOR_TESTS "Build bounded format-carving and extraction tests" OFF)
 option(XXFC_BUILD_THREAD_TESTS "Build the focused threading and thread pool tests" OFF)
 option(XXFC_BUILD_DISASM_TESTS "Build the focused DIE disassembly regression test" OFF)
 option(XXFC_BUILD_SCAN_TESTS "Build the focused scan and subdevice regression tests" OFF)
@@ -81,6 +83,7 @@ option(XXFC_BUILD_SAMPLES "Build xxfclib sample programs" OFF)
 option(XXFC_STATIC_NO_CRT "Build the static archive so it can be linked with /NODEFAULTLIB (MSVC x64 or ARM64)" OFF)
 option(XXFC_SHARED_NO_CRT "Build the MSVC x64 shared library without the C runtime" ON)
 option(XXFC_BUILD_DIE_ENGINE "Also build die_engine, a static library holding only the DIE signature engine" ON)
+option(XXFC_DIE_ENGINE_TAR_ONLY_WRITING "Keep only TAR archive creation in the focused DIE engine" OFF)
 
 set(XXFC_MSVC_X64 FALSE)
 set(XXFC_MSVC_ARM64 FALSE)
@@ -346,11 +349,14 @@ set(XXFCLIB_PUBLIC_HEADERS
     include/xxfclib/sig/xx_sig.h
     include/xxfclib/die_engine/die_engine.h
     include/xxfclib/die_engine/die_engine_debug.h
+    include/xxfclib/regex/xx_regex.h
     include/xxfclib/js/xx_js.h
     include/xxfclib/js/xx_js_debug.h
     include/xxfclib/memory/xx_memory.h
     include/xxfclib/formats/xx_memory_map.h
     include/xxfclib/strings/xx_string.h
+    include/xxfclib/strings/xx_strings_scan.h
+    include/xxfclib/extractor/xx_extractor.h
     include/xxfclib/io/xx_io_snapshot.h
     include/xxfclib/data/xx_byte_transform.h
     include/xxfclib/data/xx_data.h
@@ -1929,7 +1935,11 @@ set(XXFCLIB_SOURCES
     src/js/xx_js_interp.c
     src/js/xx_js_value.c
     src/js/xx_js_builtins.c
-    src/js/xx_js_regexp.c
+    src/regex/xx_regex.c
+    src/regex/xx_regex_search.c
+    src/regex/xx_regex_js.c
+    src/regex/xx_regex_js_lex.c
+    src/regex/xx_regex_js_strings.c
     src/js/xx_js_bytecode.c
     # Detect It Easy signature execution engine, moved here from cdie. The
     # script API binds the JavaScript interpreter above to the scan driver.
@@ -1941,6 +1951,7 @@ set(XXFCLIB_SOURCES
     src/die_engine/xx_die_engine_legacy.c
     src/die_engine/xx_die_engine_scan.c
     src/die_engine/xx_die_engine_api.c
+    src/regex/xx_regex_die.c
     # Its binary-format parsers. These answer predicate queries for signature
     # scripts ("is this import present?"), which is a different job from the
     # readers in src/formats/ -- those enumerate structure for extraction and
@@ -1998,6 +2009,8 @@ set(XXFCLIB_SOURCES
     src/memory/platforms/xx_memory_avx2.c
     src/memory/platforms/xx_memory_neon.c
     src/strings/xx_string.c
+    src/strings/xx_strings_scan.c
+    src/extractor/xx_extractor.c
     src/data/xx_pd.c
     src/data/xx_data_raw.c
     src/data/xx_data_io.c
@@ -5562,6 +5575,9 @@ if(XXFC_BUILD_DIE_ENGINE)
     xxfclib_select_stream_sources(XXFC_DIE_ENGINE_SOURCES)
     add_library(die_engine STATIC ${XXFC_DIE_ENGINE_SOURCES})
     xxfclib_configure_target(die_engine FALSE)
+    if(XXFC_DIE_ENGINE_TAR_ONLY_WRITING)
+        target_compile_definitions(die_engine PRIVATE XXFC_ARCHIVE_WRITE_TAR_ONLY=1)
+    endif()
     add_library(xxfclib::die_engine ALIAS die_engine)
     list(APPEND XXFCLIB_INSTALL_TARGETS die_engine)
 endif()
@@ -5709,6 +5725,38 @@ if(XXFC_BUILD_TESTS OR XXFC_BUILD_SCAN_TESTS)
         target_compile_options(test_io_sub PRIVATE -UNDEBUG)
     endif()
     add_test(NAME test_io_sub COMMAND test_io_sub)
+endif()
+
+if(XXFC_BUILD_TESTS OR XXFC_BUILD_EXTRACTOR_TESTS)
+    enable_testing()
+    add_executable(test_extractor tests/test_extractor.c)
+    if(MSVC)
+        target_link_options(test_extractor PRIVATE /STACK:8388608)
+        target_compile_definitions(test_extractor PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+    if(TARGET die_engine)
+        target_link_libraries(test_extractor PRIVATE xxfclib::die_engine)
+    else()
+        target_link_libraries(test_extractor PRIVATE xxfclib::xxfclib)
+    endif()
+    add_test(NAME test_extractor COMMAND test_extractor)
+    set_tests_properties(test_extractor PROPERTIES TIMEOUT 60)
+endif()
+
+if(XXFC_BUILD_TESTS OR XXFC_BUILD_STRINGS_TESTS)
+    enable_testing()
+    add_executable(test_strings_scan tests/test_strings_scan.c)
+    add_executable(bench_strings_billion tools/bench_strings_billion.c)
+    if(TARGET die_engine)
+        set(_xxfc_strings_library xxfclib::die_engine)
+    else()
+        set(_xxfc_strings_library xxfclib::xxfclib)
+    endif()
+    target_link_libraries(test_strings_scan PRIVATE ${_xxfc_strings_library})
+    target_link_libraries(bench_strings_billion PRIVATE ${_xxfc_strings_library})
+    add_test(NAME test_strings_scan COMMAND test_strings_scan)
+    add_test(NAME test_strings_generated COMMAND bench_strings_billion --count 100000 --text)
+    set_tests_properties(test_strings_scan test_strings_generated PROPERTIES TIMEOUT 60)
 endif()
 
 if(XXFC_BUILD_TESTS OR XXFC_BUILD_THREAD_TESTS)
@@ -7714,6 +7762,13 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_secura_tests.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_patchwise_tests.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_installjammer_tests.cmake")
 
+# Public regex API checks can also be built independently of the interpreter.
+option(XXFC_BUILD_REGEX_TESTS "Build focused public regex API tests" OFF)
+if(XXFC_BUILD_TESTS OR XXFC_BUILD_REGEX_TESTS)
+    enable_testing()
+    add_subdirectory(tests/regex)
+endif()
+
 # Focused JS regression and performance harness, excluded from normal builds.
 option(XXFC_BUILD_JS_TESTS "Build focused JavaScript correctness and performance tests" OFF)
 if(XXFC_BUILD_JS_TESTS)
@@ -7819,3 +7874,28 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_red_volume_tests.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_resourcefork_name_tests.cmake")
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_squashfs_noeos_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_arcv4_complete_tests.cmake")
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_pklite_tests.cmake")
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_pklite_tests.cmake")
+elseif(XXFC_BUILD_PKLITE_TESTS)
+    message(FATAL_ERROR "PKLITE tests require cmake/xxfclib_pklite_tests.cmake")
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_pe_rawfile_tests.cmake")
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_pe_rawfile_tests.cmake")
+elseif(XXFC_BUILD_PE_RAWFILE_TESTS)
+    message(FATAL_ERROR "PE raw-file tests require cmake/xxfclib_pe_rawfile_tests.cmake")
+endif()
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_larc_pfx_tail_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_larc_pfx_erased_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_larc_pfx21_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_larc_pfx334_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_larc_pfx420_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_spis_lh5_key_tests.cmake")

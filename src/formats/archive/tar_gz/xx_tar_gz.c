@@ -157,10 +157,12 @@ void xx_tar_gz_init(xx_tar_gz *tar_gz, xx_io_device *dev, int64_t base_address)
     tar_gz->format.unpack_current_archive_record = xx_tar_gz_unpack_current_archive_record;
     tar_gz->format.archive_record_move_to_next = xx_tar_gz_archive_record_move_to_next;
     tar_gz->format.free_archive_records_reading = xx_tar_gz_free_archive_records_reading;
+#if !defined(XXFC_ARCHIVE_WRITE_TAR_ONLY) || !XXFC_ARCHIVE_WRITE_TAR_ONLY
     tar_gz->format.create_archive_records_writing = xx_tar_gz_create_archive_records_writing;
     tar_gz->format.pack_archive_record = xx_tar_gz_pack_archive_record;
     tar_gz->format.finalize_archive_records_writing = xx_tar_gz_finalize_archive_records_writing;
     tar_gz->format.free_archive_records_writing = xx_tar_gz_free_archive_records_writing;
+#endif
     tar_gz->format.destroy = xx_tar_gz_vtable_destroy;
     xx_tar_gz_clear_public_state(tar_gz);
 }

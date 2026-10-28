@@ -12,6 +12,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+xxfc_status_t xx_settings_platform_file_is_regular(const char *path, bool *regular)
+{
+    struct stat info;
+    *regular = false;
+    if (stat(path, &info) != 0) return errno == ENOENT || errno == ENOTDIR ? XXFC_OK : XXFC_ERR_IO;
+    *regular = S_ISREG(info.st_mode);
+    return XXFC_OK;
+}
+
 xxfc_status_t xx_settings_platform_read_file(const char *path, char **text, size_t *size)
 {
     *text = NULL;

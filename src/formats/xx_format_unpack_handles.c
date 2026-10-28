@@ -238,6 +238,10 @@ static int xx_handle_signature(xx_file_type_t type, xx_io_device *dev)
             xx_data_get_u32(h,4,0,false) == (uint64_t)size && h[8] == 1U && !h[9] &&
             h[10] <= 1U && !h[11] && !h[12] && !h[13] && (h[14] || h[15]) ? 1 : 0;
     }
+    if (type == XX_FILE_TYPE_PE_RAWFILE || type == XX_FILE_TYPE_PKLITE) {
+        uint8_t mz[2];
+        return xx_io_read_at(dev,0,mz,sizeof(mz)) && mz[0]=='M' && mz[1]=='Z' ? 1 : 0;
+    }
     if (type == XX_FILE_TYPE_FURY_DAT) {
         uint8_t h[24];
         return xx_io_read_at(dev,0,h,sizeof(h)) && (h[0] || h[1]) && h[2]>=0x21U && h[2]<=0x7eU && h[23]<=1U ? 1 : 0;
@@ -284,6 +288,7 @@ static unsigned xx_handle_priority(xx_handle_type_t handle)
 {
     xx_file_type_t type = xx_format_handle_type_file_type(handle);
     switch (type) {
+        case XX_FILE_TYPE_PE_RAWFILE: case XX_FILE_TYPE_PKLITE: return 0U;
         case XX_FILE_TYPE_GZ: case XX_FILE_TYPE_BZ2: case XX_FILE_TYPE_XZ:
         case XX_FILE_TYPE_LZIP: case XX_FILE_TYPE_LZMA: case XX_FILE_TYPE_LZ4:
         case XX_FILE_TYPE_ZSTD: case XX_FILE_TYPE_ZIP: return 0U;

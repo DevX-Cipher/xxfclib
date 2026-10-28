@@ -14,6 +14,7 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${XXFC_CODEPAGE_SOURCES}
     # Engine
     ${CMAKE_CURRENT_LIST_DIR}/src/die_engine/xx_die_engine_api.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/regex/xx_regex_die.c
     ${CMAKE_CURRENT_LIST_DIR}/src/die_engine/xx_die_engine_compat.c
     ${CMAKE_CURRENT_LIST_DIR}/src/die_engine/xx_die_engine_engine.c
     ${CMAKE_CURRENT_LIST_DIR}/src/die_engine/xx_die_engine_legacy.c
@@ -40,7 +41,11 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/js/xx_js_interp.c
     ${CMAKE_CURRENT_LIST_DIR}/src/js/xx_js_lex.c
     ${CMAKE_CURRENT_LIST_DIR}/src/js/xx_js_parse.c
-    ${CMAKE_CURRENT_LIST_DIR}/src/js/xx_js_regexp.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/regex/xx_regex.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/regex/xx_regex_search.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/regex/xx_regex_js.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/regex/xx_regex_js_lex.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/regex/xx_regex_js_strings.c
     ${CMAKE_CURRENT_LIST_DIR}/src/js/xx_js_value.c
 
     # Native format readers and inspection APIs used by signatures.
@@ -225,6 +230,21 @@ set(XXFC_DIE_ENGINE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_avx2.c
     ${CMAKE_CURRENT_LIST_DIR}/src/memory/platforms/xx_memory_neon.c
     ${CMAKE_CURRENT_LIST_DIR}/src/strings/xx_string.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/strings/xx_strings_scan.c
+    # Extraction widget: curated native readers, without the global catalog.
+    ${CMAKE_CURRENT_LIST_DIR}/src/extractor/xx_extractor.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/image/bmp/xx_bmp.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/image/gif/xx_gif.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/image/ico/xx_ico.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/image/tiff/xx_tiff.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/zlib/xx_zlib.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/archive/cab/xx_cab.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/lzx/xx_lzx.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/algo/quantum/xx_quantum.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/audio/audio_mpeg_mp3/xx_audio_mpeg_mp3.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/video/mp4/xx_mp4.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/other/riff/xx_riff.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/formats/document/djvu/xx_djvu.c
     ${CMAKE_CURRENT_LIST_DIR}/src/var/xx_var.c
     ${CMAKE_CURRENT_LIST_DIR}/src/data/xx_pd.c
     ${CMAKE_CURRENT_LIST_DIR}/src/data/xx_data_raw.c

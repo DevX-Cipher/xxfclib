@@ -312,17 +312,17 @@ static bool arcv4_set_record(xx_archive_record *record, const arcv4_member *memb
            xx_archive_record_set_meta_bool(record, XX_META_ID_IS_ENCRYPTED, false) && xx_archive_record_set_meta_bool(record, XX_META_ID_IS_FOLDER, false);
 }
 
-static bool arcv4_decode_member(Abstractformat *format, const arcv4_member *member, uint8_t **plain, size_t *plain_size)
+static bool arcv4_decode_member(Abstractformat *format, const arcv4_member *member, uint8_t **plain, size_t *plain_size, xx_pd_struct *pd)
 {
     uint8_t *packed = NULL;
     uint8_t *output = NULL;
     size_t written = 0U;
     bool decoded = false;
-    if (!format || !member || !plain || !plain_size) return false;
+    if (!format || !member || !plain || !plain_size || xx_pd_is_stopped(pd)) return false;
     if (member->spanned) {
         if (member->crc32) return false;
         return xx_arcv4_recover_split_prefix(format,member->data_offset,member->packed_size,member->original_size,
-                                             member->method,member->name,plain,plain_size,NULL);
+                                             member->method,member->name,plain,plain_size,pd);
     }
     packed = (uint8_t *)xx_mem_alloc(member->packed_size != 0U ? member->packed_size : 1U);
     output = (uint8_t *)xx_mem_alloc(member->original_size != 0U ? member->original_size : 1U);
@@ -335,7 +335,7 @@ static bool arcv4_decode_member(Abstractformat *format, const arcv4_member *memb
     } else {
         decoded = xx_arcv4_decode_memory(packed, member->packed_size, output, member->original_size, &written);
     }
-    if (!decoded || written != member->original_size || xx_crc32_calc(0U, output, written) != member->crc32) goto done;
+    if (xx_pd_is_stopped(pd) || !decoded || written != member->original_size || xx_crc32_calc(0U, output, written) != member->crc32) goto done;
     xx_mem_free(packed);
     *plain = output;
     *plain_size = written;
@@ -485,7 +485,7 @@ bool xx_arcv4_unpack_current_archive_record(Abstractformat *format, xx_archive_r
         (pd && xx_pd_is_stopped(pd)))
         return false;
     member = &stream->items[stream->index];
-    if (!arcv4_safe_output_name(member->name) || !arcv4_decode_member(format, member, &plain, &plain_size)) goto done;
+    if (!arcv4_safe_output_name(member->name) || !arcv4_decode_member(format, member, &plain, &plain_size, pd)) goto done;
     path_option = arcv4_option(&state->options, XX_META_ID_OPT_UNPACK_PATH);
     if (!path_option) {
         result = true;

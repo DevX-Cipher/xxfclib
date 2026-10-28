@@ -18,6 +18,13 @@ typedef enum xx_settings_format_e {
     XX_SETTINGS_FORMAT_NATIVE = 2
 } xx_settings_format_t;
 
+/** @brief Persistent storage policy for an application. */
+typedef enum xx_settings_mode_e {
+    XX_SETTINGS_MODE_AUTO = 0,     /**< A regular PORTABLE marker beside the executable selects INI. */
+    XX_SETTINGS_MODE_PORTABLE = 1, /**< Always use an INI beside the executable. */
+    XX_SETTINGS_MODE_NATIVE = 2    /**< Always use the current user's platform settings. */
+} xx_settings_mode_t;
+
 typedef enum xx_settings_value_type_e {
     XX_SETTINGS_VALUE_NONE = 0,
     XX_SETTINGS_VALUE_BOOL = 1,
@@ -58,6 +65,28 @@ XXFC_API xx_settings *xx_settings_create_ini(const char *utf8_path);
  * falling back to HOME/.config. Names must be nonempty path components.
  */
 XXFC_API xx_settings *xx_settings_create_native(const char *organization, const char *application);
+/**
+ * @brief Check for a portable application marker beside the executable.
+ * @p application_directory must be the absolute UTF-8 executable directory;
+ * the current working directory is never searched. A regular file named
+ * "PORTABLE" or legacy "portable" selects portable mode; its contents are ignored.
+ * Directories with these names do not select portable mode. @p portable is always
+ * initialized to false, including on failure. Invalid arguments, allocation or
+ * filesystem query failures return an error rather than selecting native mode.
+ */
+XXFC_API xxfc_status_t xx_settings_is_portable(const char *application_directory, bool *portable);
+/**
+ * @brief Create application settings using the selected portable/native policy.
+ * @p application_directory is the absolute UTF-8 directory containing the executable,
+ * supplied by the caller; the current working directory is never searched. It is
+ * required for AUTO/PORTABLE and ignored for NATIVE. Portable settings use
+ * application_directory/application.ini. AUTO selects portable storage only when
+ * xx_settings_is_portable finds a regular "PORTABLE" or legacy "portable" file.
+ * Creation does not load or save. Invalid input, allocation failure or a failed
+ * marker query returns NULL; a portable failure never switches to native storage.
+ * Explicit paths, including environment overrides, can use xx_settings_create_ini.
+ */
+XXFC_API xx_settings *xx_settings_create_application(const char *application_directory, const char *organization, const char *application, xx_settings_mode_t mode);
 /** @brief Destroy the store; detach it if it is the global settings pointer. Does not save. */
 XXFC_API void xx_settings_destroy(xx_settings *settings);
 

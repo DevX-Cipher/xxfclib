@@ -19,6 +19,8 @@
  * SOFTWARE.
  */
 
+#include "xxfclib/formats/archive/pe_rawfile/xx_pe_rawfile.h"
+#include "xxfclib/formats/archive/pklite/xx_pklite.h"
 #include "xxfclib/rt/xx_rt.h"
 #include "xxfclib/formats/xx_format.h"
 #include "../xx_format_detect_internal.h"
@@ -4062,6 +4064,18 @@ xx_file_type_t xx_format_get_file_type_device(xx_io_device *dev)
             return XX_FILE_TYPE_SFX_LOCALZIP;
         }
         (void)xx_io_seek64(dev, orig_pos, SEEK_SET);
+        /* Validate the packed DOS image before the generic executable view. */
+        if (xx_pklite_fast_detect(dev,0,false)) {
+            (void)xx_io_seek64(dev,orig_pos,SEEK_SET);
+            return XX_FILE_TYPE_PKLITE;
+        }
+        (void)xx_io_seek64(dev,orig_pos,SEEK_SET);
+        /* All specific SFX readers precede this named-resource container. */
+        if (xx_pe_rawfile_fast_detect(dev,0,false)) {
+            (void)xx_io_seek64(dev,orig_pos,SEEK_SET);
+            return XX_FILE_TYPE_PE_RAWFILE;
+        }
+        (void)xx_io_seek64(dev,orig_pos,SEEK_SET);
         xx_pe pe;
         xx_ne ne;
         xx_le le;

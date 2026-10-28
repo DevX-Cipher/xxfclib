@@ -511,7 +511,6 @@ JSVal js_call_function(JSCtx *pCtx, JSObj *pFn, JSVal thisVal, int nArgc, JSVal 
 {
     JSVal result = js_undefined();
 
-    (void)bConstruct;
     if (pCtx->bDebugAborted) return result;
 
     if (pFn == NULL) {
@@ -567,7 +566,10 @@ JSVal js_call_function(JSCtx *pCtx, JSObj *pFn, JSVal thisVal, int nArgc, JSVal 
 
             js_release(pCtx, target);
         } else if (pFn->nativeFn) {
+            int bPreviousConstruct = pCtx->bNativeConstruct;
+            pCtx->bNativeConstruct = bConstruct;
             result = pFn->nativeFn(pCtx, thisVal, nArgc, pArgv, pFn->pUser);
+            pCtx->bNativeConstruct = bPreviousConstruct;
         }
 
         pCtx->pDebugFrame = debug.pPrevious;

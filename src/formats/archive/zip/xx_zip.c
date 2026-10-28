@@ -124,7 +124,7 @@ void xx_zip_init(xx_zip *zip, xx_io_device *dev, int64_t base_address)
     zip->format.unpack_current_archive_record = xx_zip_unpack_current_archive_record;
     zip->format.archive_record_move_to_next = xx_zip_archive_record_move_to_next;
     zip->format.free_archive_records_reading = xx_zip_free_archive_records_reading;
-#if !defined(XXFC_PROFILE_APK_EMUL)
+#if !defined(XXFC_PROFILE_APK_EMUL) && (!defined(XXFC_ARCHIVE_WRITE_TAR_ONLY) || !XXFC_ARCHIVE_WRITE_TAR_ONLY)
     zip->format.create_archive_records_writing = xx_zip_create_archive_records_writing;
     zip->format.pack_archive_record = xx_zip_pack_archive_record;
     zip->format.finalize_archive_records_writing = xx_zip_finalize_archive_records_writing;
@@ -2844,7 +2844,7 @@ void xx_zip_free_archive_records_reading(Abstractformat *self, xx_archive_record
 /* --- Stream Archive Records Writing / Packing                          --- */
 /* ========================================================================= */
 
-#if !defined(XXFC_PROFILE_APK_EMUL)
+#if !defined(XXFC_PROFILE_APK_EMUL) && (!defined(XXFC_ARCHIVE_WRITE_TAR_ONLY) || !XXFC_ARCHIVE_WRITE_TAR_ONLY)
 #define XX_ZIP_AES_EXTRA_FIELD_SIZE 11U
 #define XX_ZIP_AES_VENDOR_VERSION_AE2 2U
 

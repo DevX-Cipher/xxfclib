@@ -259,10 +259,12 @@ void xx_bz2_init(xx_bz2 *bz2, xx_io_device *dev, int64_t base_address)
     bz2->format.unpack_current_archive_record = xx_bz2_unpack_current_archive_record;
     bz2->format.archive_record_move_to_next = xx_bz2_archive_record_move_to_next;
     bz2->format.free_archive_records_reading = xx_bz2_free_archive_records_reading;
+#if !defined(XXFC_ARCHIVE_WRITE_TAR_ONLY) || !XXFC_ARCHIVE_WRITE_TAR_ONLY
     bz2->format.create_archive_records_writing = xx_bz2_create_archive_records_writing;
     bz2->format.pack_archive_record = xx_bz2_pack_archive_record;
     bz2->format.finalize_archive_records_writing = xx_bz2_finalize_archive_records_writing;
     bz2->format.free_archive_records_writing = xx_bz2_free_archive_records_writing;
+#endif
     bz2->format.destroy = xx_bz2_vtable_destroy;
     bz2->stream_end = -1;
 }

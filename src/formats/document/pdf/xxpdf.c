@@ -1289,6 +1289,38 @@ static xx_io_device *pdf_records_stage(const char *destination, char **stage_pat
     }
     return NULL;
 }
+bool xx_pdf_unpack_current_archive_record_to_device(Abstractformat *f, xx_archive_record_state *s, xx_io_device *destination, xx_pd_struct *pd)
+{
+    pdf_document *d;
+    pdf_entry *e;
+    pdf_record_cursor *cursor;
+    const xx_var *option;
+    size_t limit = PDF_DEFAULT_LIMIT, memory_limit, size = 0, capacity = 0, done = 0;
+    uint8_t *data = NULL;
+    bool ok = false;
+    if (!f || !s || !destination || s->format != f || !s->has_record || !s->internal_state || xx_pd_is_stopped(pd) ||
+        !(d = (pdf_document *)((xx_pdf *)f)->document) || d->encrypted) return false;
+    cursor = (pdf_record_cursor *)s->internal_state;
+    if (cursor->index >= d->member_count) return false;
+    e = &d->entries[d->members[cursor->index]];
+    memory_limit = d->limit;
+    d->pd = pd;
+    option = xx_format_resolve_extra_parameter(f, &s->options, XX_META_ID_OPT_MAX_MEMBER_SIZE);
+    if (option && xx_var_get_u64(option) < limit) limit = (size_t)xx_var_get_u64(option);
+    option = xx_format_resolve_extra_parameter(f, &s->options, XX_META_ID_OPT_MEMORY_LIMIT);
+    if (option && xx_var_get_u64(option) < memory_limit) memory_limit = (size_t)xx_var_get_u64(option);
+    if ((e->size_known && e->decoded_size > limit) || !pdf_decode(d,e,limit,memory_limit,&data,&size,&capacity) ||
+        (e->size_known && size != e->decoded_size)) goto done;
+    while (done < size) {
+        size_t n = size - done > 65536U ? 65536U : size - done;
+        if (xx_pd_is_stopped(pd) || xx_io_write(destination,data+done,n) != (ssize_t)n) goto done;
+        done += n;
+    }
+    ok = !xx_pd_is_stopped(pd);
+done:
+    xx_mem_free(data);
+    return ok;
+}
 static bool pdf_records_unpack(Abstractformat *f, xx_archive_record_state *s, xx_pd_struct *pd)
 {
     pdf_document *d;

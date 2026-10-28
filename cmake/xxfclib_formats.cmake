@@ -205,3 +205,19 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_red_volume_tests.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_resourcefork_name_tests.cmake")
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_squashfs_noeos_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_arcv4_complete_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_pe_rawfile_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_pklite_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_larc_pfx_tail_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_larc_pfx_erased_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_larc_pfx21_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_larc_pfx334_tests.cmake")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_larc_pfx420_tests.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/xxfclib_spis_lh5_key_tests.cmake")

@@ -27,7 +27,7 @@ static bool xx_lha_legacy_bit(const uint8_t *input, size_t input_size, size_t *b
     return true;
 }
 
-static bool xx_lha_legacy_decode_native(uint32_t method, const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, xx_pd_struct *pd)
+static bool xx_lha_legacy_decode_native_with_padding(uint32_t method, const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, xx_pd_struct *pd, bool allow_one_zero_padding)
 {
     uint8_t history[4096];
     size_t source = 0U, destination = 0U, bit_position = 0U;
@@ -101,8 +101,20 @@ static bool xx_lha_legacy_decode_native(uint32_t method, const uint8_t *input, s
          * byte in the packed size after the final flag group.  Four clean
          * reference-validated fixtures decode byte-for-byte and stop at precisely this
          * byte.  Keep every other trailing byte or longer tail invalid. */
-        if (source != input_size && !(input_size - source == 1U && input[source] == 0U)) return false;
+        if (source != input_size && !(allow_one_zero_padding && input_size - source == 1U && input[source] == 0U)) return false;
     } else if ((bit_position + 7U) / 8U != input_size) return false;
     return !xx_pd_is_stopped(pd);
+}
+
+static inline bool xx_lha_legacy_decode_native(uint32_t method, const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, xx_pd_struct *pd)
+{
+    return xx_lha_legacy_decode_native_with_padding(method, input, input_size, output, output_size, pd, true);
+}
+
+/* Carrier framing retries must not combine a removed byte with the ordinary
+ * decoder's separate zero-alignment allowance. No trailing bytes are accepted. */
+static inline bool xx_lha_legacy_decode_native_exact(uint32_t method, const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, xx_pd_struct *pd)
+{
+    return xx_lha_legacy_decode_native_with_padding(method, input, input_size, output, output_size, pd, false);
 }
 #endif

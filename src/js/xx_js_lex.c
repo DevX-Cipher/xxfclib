@@ -24,6 +24,7 @@
  * the classic "previous significant token" heuristic.                       */
 
 #include "xx_js_lex.h"
+#include "../regex/xx_regex_js_lex.h"
 
 typedef struct {
     const char *pText;
@@ -141,34 +142,6 @@ static void lex_error(char **ppError, const char *pMessage, int nLine)
 
         xx_rt_snprintf(sBuf, sizeof(sBuf), "SyntaxError: %s at line %d", pMessage, nLine);
         *ppError = xx_js_strdup(sBuf);
-    }
-}
-
-static int prev_allows_regexp(JSLexer *pLexer)
-{
-    JSToken *pPrev = NULL;
-
-    if (pLexer->nCount == 0) {
-        return 1;
-    }
-
-    pPrev = &pLexer->pTokens[pLexer->nCount - 1];
-
-    switch (pPrev->type) {
-        case T_IDENT:
-        case T_NUMBER:
-        case T_STRING:
-        case T_REGEXP:
-        case T_RPAREN:
-        case T_RBRACKET:
-        case T_RBRACE:
-        case T_THIS:
-        case T_TRUE:
-        case T_FALSE:
-        case T_NULL:
-        case T_INC:
-        case T_DEC: return 0;
-        default: return 1;
     }
 }
 
@@ -531,50 +504,12 @@ int js_lex_run(JSLexer *pLexer, const char *pSource, char **ppError)
         }
 
         /* Regular expression literal. */
-        if ((*p == '/') && prev_allows_regexp(pLexer)) {
-            const char *pStart = p + 1;
-            const char *q = pStart;
-            int bInClass = 0;
+        {
+            const char *pEnd;
 
-            while (*q) {
-                if (*q == '\\') {
-                    /* A regex literal cannot cross a line terminator, even
-                     * with a preceding backslash. Leave normal lexing to
-                     * account for the newline on this invalid input. */
-                    if (q[1] == 0 || q[1] == '\n' || q[1] == '\r') {
-                        break;
-                    }
-
-                    q += 2;
-                    continue;
-                }
-
-                if (*q == '[') {
-                    bInClass = 1;
-                } else if (*q == ']') {
-                    bInClass = 0;
-                } else if ((*q == '/') && (!bInClass)) {
-                    break;
-                } else if (*q == '\n' || *q == '\r') {
-                    break;
-                }
-
-                q++;
-            }
-
-            if (*q == '/') {
-                const char *pFlags = q + 1;
-                const char *pFlagsEnd = pFlags;
-
-                while (is_ident_part((unsigned char)*pFlagsEnd)) {
-                    pFlagsEnd++;
-                }
-
-                token.type = T_REGEXP;
-                token.pText = xx_js_strndup(pStart, (size_t)(q - pStart));
-                token.pText2 = xx_js_strndup(pFlags, (size_t)(pFlagsEnd - pFlags));
+            if (js_regex_lex_literal(pLexer, p, &token, &pEnd)) {
                 tok_push(pLexer, token);
-                p = pFlagsEnd;
+                p = pEnd;
                 continue;
             }
         }

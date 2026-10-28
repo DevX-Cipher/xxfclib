@@ -841,7 +841,7 @@ static bool epsf_write_all(xx_io_device *destination, const uint8_t *data, size_
 }
 
 /* Decode a member completely in memory and verify it. */
-static bool epsf_decode_member(Abstractformat *format, const epsf_stream *stream, const epsf_member *member, uint64_t limit, uint8_t **plain, size_t *plain_size)
+static bool epsf_decode_member(Abstractformat *format, const epsf_stream *stream, const epsf_member *member, uint64_t limit, uint8_t **plain, size_t *plain_size, xx_pd_struct *pd)
 {
     uint8_t *packed = NULL;
     uint8_t *output = NULL;
@@ -849,7 +849,7 @@ static bool epsf_decode_member(Abstractformat *format, const epsf_stream *stream
     bool ok = false;
     *plain = NULL;
     *plain_size = 0U;
-    if (member->original_size > limit || member->original_size > EPSF_MAX_MEMBER || member->original_size > (uint64_t)SIZE_MAX - 1U) return false;
+    if (xx_pd_is_stopped(pd) || member->original_size > limit || member->original_size > EPSF_MAX_MEMBER || member->original_size > (uint64_t)SIZE_MAX - 1U) return false;
     if(member->kind==EPSF_KIND_ARCV && member->method==2U && !member->check && member->packed_size<=UINT32_MAX && member->data_offset>=40) {
         uint8_t h[40];
         if(epsf_read_at(format->device,member->data_offset-40,h,sizeof(h)) &&
@@ -857,7 +857,7 @@ static bool epsf_decode_member(Abstractformat *format, const epsf_stream *stream
            !xx_rt_memcmp(h+8,"DATA",4U) && (h[12]&0xffU)==1U &&
            xx_data_get_u32(h+20,4,0,false)==member->packed_size && !xx_data_get_u32(h+28,4,0,false))
             return xx_arcv4_recover_split_prefix(format,member->data_offset,(uint32_t)member->packed_size,
-                (uint32_t)member->original_size,member->method,member->name,plain,plain_size,NULL);
+                (uint32_t)member->original_size,member->method,member->name,plain,plain_size,pd);
     }
     if (member->kind == EPSF_KIND_SCRIPT) {
         size_t decoded = 0U;
@@ -1146,7 +1146,7 @@ bool xx_eschalon_setup_epsf_unpack_current_archive_record(Abstractformat *format
     stored = member->kind == EPSF_KIND_ARCV && member->method == 0U;
     if (stored) {
         if (member->original_size != member->packed_size || member->original_size > limit) return false;
-    } else if (!epsf_decode_member(format, stream, member, limit, &plain, &plain_size)) {
+    } else if (!epsf_decode_member(format, stream, member, limit, &plain, &plain_size, pd)) {
         return false;
     }
     path_option = epsf_option(&state->options, XX_META_ID_OPT_UNPACK_PATH);

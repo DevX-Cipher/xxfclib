@@ -13,5 +13,6 @@ bool xx_settings_platform_native_writable(const xx_settings *settings);
 xxfc_status_t xx_settings_platform_read_file(const char *path, char **text, size_t *size);
 xxfc_status_t xx_settings_platform_write_file(const char *path, const char *text, size_t size);
 bool xx_settings_platform_file_writable(const char *path);
+xxfc_status_t xx_settings_platform_file_is_regular(const char *path, bool *regular);
 
 #endif

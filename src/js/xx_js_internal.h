@@ -25,6 +25,7 @@
 #define JS_INTERNAL_H
 
 #include "xxfclib/js/xx_js.h"
+#include "xxfclib/regex/xx_regex.h"
 #include "xxfclib/js/xx_js_debug.h"
 typedef struct JSDebugFrameState JSDebugFrameState;
 #include "xx_js_deps.h"
@@ -99,7 +100,7 @@ typedef enum {
 } JSClass;
 
 typedef struct JSScope JSScope;
-typedef struct JSRegExp JSRegExp;
+typedef xx_regex JSRegExp;
 
 struct JSObj {
     int32_t nRef;
@@ -195,6 +196,8 @@ struct JSCtx {
     JSVal exception;
     char *pErrorText;
 
+    /* Whether the currently executing native callback was called with new. */
+    int bNativeConstruct;
     int nCallDepth;
     int nMaxCallDepth;
 
@@ -272,20 +275,11 @@ void js_install_builtins(JSCtx *pCtx);
 int js_is_string_concat(JSObj *pObj);
 void js_install_regexp(JSCtx *pCtx);
 
-/* Regular expressions (js_regexp.c). */
-JSRegExp *jsregexp_compile(const char *pPattern, const char *pFlags, char **ppError);
-void jsregexp_free(JSRegExp *pRegExp);
-int jsregexp_ngroups(JSRegExp *pRegExp);
-int jsregexp_global(JSRegExp *pRegExp);
-int jsregexp_ignorecase(JSRegExp *pRegExp);
-int jsregexp_multiline(JSRegExp *pRegExp);
-const char *jsregexp_source(JSRegExp *pRegExp);
-const char *jsregexp_flags(JSRegExp *pRegExp);
-/* Executes at or after nStart. Returns 1 on match; pnCaps holds
- * 2*(ngroups+1) offsets (-1 when the group did not participate).           */
-int jsregexp_exec(JSRegExp *pRegExp, const char *pText, size_t nTextSize, size_t nStart, int32_t *pnCaps);
-
+/* JavaScript RegExp adapters; compilation retains interpreter OOM policy. */
+JSRegExp *js_compile_regexp(const char *pattern, const char *flags, char **error);
+JSRegExp *js_compile_regexp_n(const char *pattern, size_t pattern_size, const char *flags, size_t flags_size, char **error);
 JSVal js_new_regexp_val(JSCtx *pCtx, const char *pPattern, const char *pFlags);
+JSVal js_new_regexp_n_val(JSCtx *pCtx, const char *pPattern, size_t nPatternSize, const char *pFlags, size_t nFlagsSize);
 JSRegExp *js_get_regexp(JSVal value);
 
 /* Parser (js_parse.c). */
@@ -303,8 +297,6 @@ JSVal js_throw_value(JSCtx *pCtx, JSVal value);
 
 void js_prepare_program(JSNode *pProgram);
 JSNode *js_parse_bytecode(const void *pData, size_t nSize);
-JSRegExp *jsregexp_ref(JSRegExp *pRegExp);
 JSVal js_new_regexp_shared_val(JSCtx *pCtx, JSRegExp *pRegExp);
-size_t jsregexp_memory_size(JSRegExp *pRegExp);
 
 #endif /* JS_INTERNAL_H */

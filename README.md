@@ -42,6 +42,7 @@ xxfclib/
 │   ├── var/ list/ tree/                # Variant values, lists and rooted trees
 │   ├── json/ xml/                      # JSON and XML
 │   ├── js/                             # Script engine used by die_engine
+│   ├── regex/                          # Shared regex core and JS/DIE adapters
 │   └── global/                         # Buffer sizes, CPU/terminal features and settings pointer
 ├── samples/
 │   ├── console/                        # xxfc_dump: structure and metadata dumper
@@ -51,6 +52,14 @@ xxfclib/
     └── windows/
         └── build_portable_windows.cmd  # Packaging script for Windows
 ```
+
+## Regular expressions
+
+`<xxfclib/regex/xx_regex.h>` exposes the reusable regex compiler and matcher.
+The implementation and JavaScript/DIE adapters live in [`src/regex`](src/regex/README.md).
+The core links without the JavaScript interpreter and supports concurrent
+execution with separate capture arrays. See the module notes for byte-string
+semantics, reference ownership and focused tests.
 
 ## Process memory
 
@@ -241,6 +250,14 @@ implementation and source-built FreeArc SFX stub are under
 `src/xfileunpacker`. The component links only the local
 formats-profile library and platform libraries, and compiles all runtime
 helper paths out with `XXFC_NO_EXTERNAL_HELPERS`.
+
+## Focused DIE engine archive writing
+
+`XXFC_DIE_ENGINE_TAR_ONLY_WRITING=ON` registers only plain TAR creation in
+`xxfclib::die_engine`. Other supported archives remain readable and extractable.
+This lets scanner consumers discard compression encoders while retaining source
+and precompiled TAR signature databases. The option defaults to `OFF`; the full
+xxfclib targets keep their normal archive-writing support.
 
 ## Disassembler dependency
 

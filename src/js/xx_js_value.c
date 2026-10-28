@@ -577,7 +577,7 @@ void jsobj_unref(JSCtx *pCtx, JSObj *pObj)
     if (!pObj->bBorrowedFnName) xx_js_free(pObj->pFnName);
 
     if (pObj->pRegExp) {
-        jsregexp_free(pObj->pRegExp);
+        xx_regex_free(pObj->pRegExp);
     }
 
     xx_js_free(pObj);
@@ -850,7 +850,7 @@ static void jsscope_collect_cycle(JSCtx *pCtx, JSScope *pScope)
                 xx_js_free(p->pUint32Data);
                 xx_js_free(p->pBoundArgs);
                 if (!p->bBorrowedFnName) xx_js_free(p->pFnName);
-                if (p->pRegExp) jsregexp_free(p->pRegExp);
+                if (p->pRegExp) xx_regex_free(p->pRegExp);
                 xx_js_free(p);
                 trial.pNodes[i].bScope = -1;
             } else trial.pNodes[i].bScope = 3;

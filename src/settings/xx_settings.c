@@ -5,6 +5,7 @@
 #include "xx_settings_internal.h"
 #include "platforms/xx_settings_platform.h"
 #include "xxfclib/global/xx_settings_global.h"
+#include "../io/xx_io_policy.h"
 
 char *xx_settings_duplicate(const char *text, size_t size)
 {
@@ -189,6 +190,97 @@ xx_settings *xx_settings_create_native(const char *organization, const char *app
     return settings;
 }
 
+static bool directory_separator(char character)
+{
+#if defined(_WIN32)
+    return character == '/' || character == '\\';
+#else
+    return character == '/';
+#endif
+}
+
+static bool absolute_directory(const char *directory)
+{
+    if (!directory || !directory[0]) return false;
+#if defined(_WIN32)
+    size_t size = xx_rt_strlen(directory);
+    if (size >= 3 && ((directory[0] >= 'A' && directory[0] <= 'Z') || (directory[0] >= 'a' && directory[0] <= 'z')) && directory[1] == ':' &&
+        directory_separator(directory[2]))
+        return true;
+    if (size < 5 || !directory_separator(directory[0]) || !directory_separator(directory[1]) || directory_separator(directory[2])) return false;
+    size_t end = 2;
+    if ((directory[2] == '?' || directory[2] == '.') && directory_separator(directory[3])) {
+        if (directory[2] != '?') return false;
+        if (size >= 7 && ((directory[4] >= 'A' && directory[4] <= 'Z') || (directory[4] >= 'a' && directory[4] <= 'z')) && directory[5] == ':' &&
+            directory_separator(directory[6]))
+            return true;
+        if (size < 11 || (directory[4] != 'U' && directory[4] != 'u') || (directory[5] != 'N' && directory[5] != 'n') || (directory[6] != 'C' && directory[6] != 'c') ||
+            !directory_separator(directory[7]) || directory_separator(directory[8]))
+            return false;
+        end = 8;
+    }
+    while (directory[end] && !directory_separator(directory[end])) ++end;
+    return directory[end] && directory[end + 1] && !directory_separator(directory[end + 1]);
+#else
+    return directory[0] == '/';
+#endif
+}
+
+xxfc_status_t xx_settings_is_portable(const char *application_directory, bool *portable)
+{
+    xx_settings_buffer path = {0};
+    xxfc_status_t status = XXFC_ERR_OUT_OF_MEMORY;
+    size_t directory_size;
+    if (!portable) return XXFC_ERR_NULL_PARAM;
+    *portable = false;
+    if (!absolute_directory(application_directory)) return XXFC_ERR_INVALID_ARG;
+    directory_size = xx_rt_strlen(application_directory);
+    if (!xx_settings_buffer_text(&path, application_directory) ||
+        (!directory_separator(application_directory[directory_size - 1]) && !xx_settings_buffer_text(&path, "/")))
+        goto done;
+    directory_size = path.size;
+    if (!xx_settings_buffer_text(&path, "PORTABLE")) goto done;
+    status = xx_settings_platform_file_is_regular(path.data, portable);
+    if (status != XXFC_OK || *portable) goto done;
+    path.size = directory_size;
+    path.data[directory_size] = 0;
+    if (!xx_settings_buffer_text(&path, "portable")) {
+        status = XXFC_ERR_OUT_OF_MEMORY;
+        goto done;
+    }
+    status = xx_settings_platform_file_is_regular(path.data, portable);
+done:
+    if (status != XXFC_OK) *portable = false;
+    xx_rt_free(path.data);
+    return status;
+}
+
+xx_settings *xx_settings_create_application(const char *application_directory, const char *organization, const char *application, xx_settings_mode_t mode)
+{
+    xx_settings_buffer path = {0};
+    xx_settings *settings;
+    bool portable = mode == XX_SETTINGS_MODE_PORTABLE;
+    size_t directory_size;
+    if (!valid_component(organization) || !valid_component(application)) return NULL;
+    if (mode == XX_SETTINGS_MODE_NATIVE) return xx_settings_create_native(organization, application);
+    if ((mode != XX_SETTINGS_MODE_AUTO && mode != XX_SETTINGS_MODE_PORTABLE) || !absolute_directory(application_directory)) return NULL;
+    if (mode == XX_SETTINGS_MODE_AUTO) {
+        if (xx_settings_is_portable(application_directory, &portable) != XXFC_OK) return NULL;
+        if (!portable) return xx_settings_create_native(organization, application);
+    }
+    directory_size = xx_rt_strlen(application_directory);
+    if (!xx_settings_buffer_text(&path, application_directory) ||
+        (!directory_separator(application_directory[directory_size - 1]) && !xx_settings_buffer_text(&path, "/")))
+        goto failure;
+    if (!xx_settings_buffer_text(&path, application) || !xx_settings_buffer_text(&path, ".ini")) goto failure;
+    settings = xx_settings_create_ini(path.data);
+    xx_rt_free(path.data);
+    return settings;
+failure:
+    xx_rt_free(path.data);
+    return NULL;
+}
+
 void xx_settings_destroy(xx_settings *settings)
 {
     if (!settings) return;
@@ -313,6 +405,7 @@ xxfc_status_t xx_settings_save(xx_settings *settings)
         mark_clean(settings);
         return XXFC_OK;
     }
+    if (!xx_io_policy_mutation_allowed()) return XXFC_ERR_IO;
     if (settings->format == XX_SETTINGS_FORMAT_NATIVE) {
         status = xx_settings_platform_save_native(settings);
         if (status == XXFC_OK) mark_clean(settings);

@@ -76,7 +76,7 @@ static size_t program_node_size(const JSNode *pNode)
             if (pNode->pHoistPlan->nSteps > (SIZE_MAX - sizeof(JSHoistPlan)) / sizeof(JSHoistStep)) return SIZE_MAX;
             nSize = program_add_size(nSize, sizeof(JSHoistPlan) + pNode->pHoistPlan->nSteps * sizeof(JSHoistStep));
         }
-        nSize = program_add_size(nSize, jsregexp_memory_size(pNode->pRegExpLiteral));
+        nSize = program_add_size(nSize, xx_regex_memory_size(pNode->pRegExpLiteral));
         nSize = program_add_size(nSize, program_node_size(pNode->b));
         nSize = program_add_size(nSize, program_node_size(pNode->c));
         nSize = program_add_size(nSize, program_node_size(pNode->d));
@@ -312,7 +312,7 @@ void js_free(JSCtx *pCtx)
             if (!pObj->bBorrowedFnName) xx_js_free(pObj->pFnName);
 
             if (pObj->pRegExp) {
-                jsregexp_free(pObj->pRegExp);
+                xx_regex_free(pObj->pRegExp);
             }
 
             xx_js_free(pObj);

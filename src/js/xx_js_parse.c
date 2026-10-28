@@ -118,7 +118,7 @@ void js_free_node(JSNode *pNode)
             xx_js_free(pNode->ppVarNames[i]);
         }
 
-        if (pNode->pRegExpLiteral) jsregexp_free(pNode->pRegExpLiteral);
+        if (pNode->pRegExpLiteral) xx_regex_free(pNode->pRegExpLiteral);
         xx_js_free(pNode->pHoistPlan);
         xx_js_free(pNode->ppVarNames);
         xx_js_free(pNode->ppList);
@@ -292,7 +292,7 @@ static unsigned prepare_program_node(JSNode *pNode, unsigned nDepth)
         }
         if (pNode->type == N_REGEXP && !pNode->pRegExpLiteral) {
             char *pError = NULL;
-            pNode->pRegExpLiteral = jsregexp_compile(pNode->pStr ? pNode->pStr : "", pNode->pStr2 ? pNode->pStr2 : "", &pError);
+            pNode->pRegExpLiteral = js_compile_regexp(pNode->pStr ? pNode->pStr : "", pNode->pStr2 ? pNode->pStr2 : "", &pError);
             /* Preserve evaluation-time errors for invalid, unreachable literals. */
             xx_js_free(pError);
         }

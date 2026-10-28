@@ -23,6 +23,7 @@
  * Boolean, Math, JSON, RegExp and the global helper functions.             */
 
 #include "xx_js_internal.h"
+#include "../regex/xx_regex_js_strings.h"
 
 #define ARG(i) (((i) < nArgc) ? pArgv[i] : js_undefined())
 
@@ -36,7 +37,7 @@
 
 /* ------------------------------------------------------------- utilities  */
 
-static JSVal this_string(JSCtx *pCtx, JSVal thisVal)
+JSVal js_builtin_string_value(JSCtx *pCtx, JSVal thisVal)
 {
     if (thisVal.tag == JT_STR) {
         return js_dup(thisVal);
@@ -1082,12 +1083,12 @@ static JSVal fn_string_tostring(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pA
     (void)pArgv;
     (void)pUser;
 
-    return this_string(pCtx, thisVal);
+    return js_builtin_string_value(pCtx, thisVal);
 }
 
 static JSVal fn_string_charat(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
 {
-    JSVal text = this_string(pCtx, thisVal);
+    JSVal text = js_builtin_string_value(pCtx, thisVal);
     int64_t nIndex = (nArgc > 0) ? js_to_int64(pCtx, pArgv[0]) : 0;
     JSVal result;
 
@@ -1106,7 +1107,7 @@ static JSVal fn_string_charat(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArg
 
 static JSVal fn_string_charcodeat(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
 {
-    JSVal text = this_string(pCtx, thisVal);
+    JSVal text = js_builtin_string_value(pCtx, thisVal);
     int64_t nIndex = (nArgc > 0) ? js_to_int64(pCtx, pArgv[0]) : 0;
     JSVal result;
 
@@ -1232,14 +1233,14 @@ static int64_t search_substring(JSCtx *pCtx, const char *pText, size_t nTextSize
     return nResult;
 }
 
-static int64_t find_substring(JSCtx *pCtx, const char *pText, size_t nTextSize, const char *pNeedle, size_t nNeedleSize, size_t nStart)
+int64_t js_builtin_find_substring(JSCtx *pCtx, const char *pText, size_t nTextSize, const char *pNeedle, size_t nNeedleSize, size_t nStart)
 {
     return search_substring(pCtx, pText, nTextSize, pNeedle, nNeedleSize, nStart, 0);
 }
 
 static JSVal fn_string_indexof(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
 {
-    JSVal text = this_string(pCtx, thisVal);
+    JSVal text = js_builtin_string_value(pCtx, thisVal);
     JSVal needle = js_to_string(pCtx, ARG(0));
     int64_t nStart = (nArgc > 1) ? js_to_int64(pCtx, pArgv[1]) : 0;
     int64_t nResult = 0;
@@ -1250,7 +1251,7 @@ static JSVal fn_string_indexof(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pAr
         nStart = 0;
     }
 
-    nResult = find_substring(pCtx, js_str_data(text), js_str_len(text), js_str_data(needle), js_str_len(needle), (size_t)nStart);
+    nResult = js_builtin_find_substring(pCtx, js_str_data(text), js_str_len(text), js_str_data(needle), js_str_len(needle), (size_t)nStart);
 
     js_release(pCtx, text);
     js_release(pCtx, needle);
@@ -1260,7 +1261,7 @@ static JSVal fn_string_indexof(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pAr
 
 static JSVal fn_string_lastindexof(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
 {
-    JSVal text = this_string(pCtx, thisVal);
+    JSVal text = js_builtin_string_value(pCtx, thisVal);
     JSVal needle = js_to_string(pCtx, ARG(0));
     size_t nTextSize = js_str_len(text);
     size_t nNeedleSize = js_str_len(needle);
@@ -1299,7 +1300,7 @@ static JSVal fn_string_lastindexof(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal 
 
 static JSVal fn_string_slice(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
 {
-    JSVal text = this_string(pCtx, thisVal);
+    JSVal text = js_builtin_string_value(pCtx, thisVal);
     int64_t nLength = (int64_t)js_str_len(text);
     int64_t nStart = (nArgc > 0) ? clamp_index(js_to_number(pCtx, pArgv[0]), nLength) : 0;
     int64_t nEnd = ((nArgc > 1) && (pArgv[1].tag != JT_UNDEF)) ? clamp_index(js_to_number(pCtx, pArgv[1]), nLength) : nLength;
@@ -1319,7 +1320,7 @@ static JSVal fn_string_slice(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv
 
 static JSVal fn_string_substring(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
 {
-    JSVal text = this_string(pCtx, thisVal);
+    JSVal text = js_builtin_string_value(pCtx, thisVal);
     int64_t nLength = (int64_t)js_str_len(text);
     int64_t nStart = 0;
     int64_t nEnd = nLength;
@@ -1370,7 +1371,7 @@ static JSVal fn_string_substring(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *p
 
 static JSVal fn_string_substr(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
 {
-    JSVal text = this_string(pCtx, thisVal);
+    JSVal text = js_builtin_string_value(pCtx, thisVal);
     int64_t nLength = (int64_t)js_str_len(text);
     int64_t nStart = (nArgc > 0) ? js_to_int64(pCtx, pArgv[0]) : 0;
     int64_t nCount = ((nArgc > 1) && (pArgv[1].tag != JT_UNDEF)) ? js_to_int64(pCtx, pArgv[1]) : nLength;
@@ -1408,7 +1409,7 @@ static JSVal fn_string_substr(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArg
 
 static JSVal string_case(JSCtx *pCtx, JSVal thisVal, int bUpper)
 {
-    JSVal text = this_string(pCtx, thisVal);
+    JSVal text = js_builtin_string_value(pCtx, thisVal);
     size_t nSize = js_str_len(text);
     JSStr *pStr = jsstr_new(pCtx, js_str_data(text), nSize);
     size_t i = 0;
@@ -1509,7 +1510,7 @@ static size_t string_trim_last_size(const char *pData, size_t nStart, size_t nEn
 
 static JSVal fn_string_trim(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
 {
-    JSVal text = this_string(pCtx, thisVal);
+    JSVal text = js_builtin_string_value(pCtx, thisVal);
     const char *pData = js_str_data(text);
     size_t nStart = 0;
     size_t nEnd = js_str_len(text);
@@ -1544,7 +1545,7 @@ static JSVal fn_string_trim(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv,
 
 static JSVal fn_string_concat(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
 {
-    JSVal text = this_string(pCtx, thisVal);
+    JSVal text = js_builtin_string_value(pCtx, thisVal);
     xx_buf_t buf;
     int i;
 
@@ -1573,403 +1574,6 @@ static JSVal fn_string_concat(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArg
 int js_is_string_concat(JSObj *pObj)
 {
     return pObj && pObj->cls == JCLASS_NATIVE && !pObj->pBoundTarget && pObj->nativeFn == fn_string_concat;
-}
-
-static JSVal fn_string_split(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
-{
-    JSVal text = this_string(pCtx, thisVal);
-    JSVal result = js_new_array(pCtx);
-    int64_t nCount = 0;
-    int64_t nLimit = ((nArgc > 1) && (pArgv[1].tag != JT_UNDEF)) ? js_to_int64(pCtx, pArgv[1]) : 0x7FFFFFFF;
-
-    (void)pUser;
-
-    if ((nArgc == 0) || (pArgv[0].tag == JT_UNDEF)) {
-        js_set_index(pCtx, result, 0, js_dup(text));
-        js_release(pCtx, text);
-
-        return result;
-    }
-
-    if (js_get_regexp(ARG(0))) {
-        JSRegExp *pRegExp = js_get_regexp(pArgv[0]);
-        const char *pData = js_str_data(text);
-        size_t nSize = js_str_len(text);
-        size_t nPos = 0;
-        size_t nLast = 0;
-        int32_t *pCaps = (int32_t *)xx_js_malloc((size_t)(jsregexp_ngroups(pRegExp) + 1) * 2 * sizeof(int32_t));
-
-        while ((nPos <= nSize) && (nCount < nLimit)) {
-            if (!jsregexp_exec(pRegExp, pData, nSize, nPos, pCaps)) {
-                break;
-            }
-
-            if ((size_t)pCaps[1] == nLast && pCaps[0] == pCaps[1]) {
-                nPos++;
-                continue;
-            }
-
-            js_set_index(pCtx, result, nCount++, js_strn(pCtx, pData + nLast, (size_t)pCaps[0] - nLast));
-
-            {
-                int g = 0;
-
-                for (g = 1; (g <= jsregexp_ngroups(pRegExp)) && (nCount < nLimit); g++) {
-                    if (pCaps[g * 2] >= 0) {
-                        js_set_index(pCtx, result, nCount++, js_strn(pCtx, pData + pCaps[g * 2], (size_t)(pCaps[g * 2 + 1] - pCaps[g * 2])));
-                    } else {
-                        js_set_index(pCtx, result, nCount++, js_undefined());
-                    }
-                }
-            }
-
-            nLast = (size_t)pCaps[1];
-            nPos = (pCaps[1] > pCaps[0]) ? (size_t)pCaps[1] : (size_t)(pCaps[1] + 1);
-        }
-
-        if (nCount < nLimit) {
-            js_set_index(pCtx, result, nCount++, js_strn(pCtx, pData + nLast, nSize - nLast));
-        }
-
-        xx_js_free(pCaps);
-        js_release(pCtx, text);
-
-        return result;
-    }
-
-    {
-        JSVal separator = js_to_string(pCtx, pArgv[0]);
-        const char *pData = js_str_data(text);
-        size_t nSize = js_str_len(text);
-        size_t nSepSize = js_str_len(separator);
-        size_t nPos = 0;
-
-        if (nSepSize == 0) {
-            size_t i = 0;
-
-            for (i = 0; (i < nSize) && (nCount < nLimit); i++) {
-                js_set_index(pCtx, result, nCount++, js_strn(pCtx, pData + i, 1));
-            }
-        } else {
-            for (;;) {
-                int64_t nFound = find_substring(pCtx, pData, nSize, js_str_data(separator), nSepSize, nPos);
-
-                if ((nFound < 0) || (nCount >= nLimit)) {
-                    break;
-                }
-
-                js_set_index(pCtx, result, nCount++, js_strn(pCtx, pData + nPos, (size_t)nFound - nPos));
-                nPos = (size_t)nFound + nSepSize;
-            }
-
-            if (nCount < nLimit) {
-                js_set_index(pCtx, result, nCount++, js_strn(pCtx, pData + nPos, nSize - nPos));
-            }
-        }
-
-        js_release(pCtx, separator);
-    }
-
-    js_release(pCtx, text);
-
-    return result;
-}
-
-/* Builds the array returned by String.match / RegExp.exec. */
-static JSVal build_match_array(JSCtx *pCtx, JSRegExp *pRegExp, const char *pData, int32_t *pCaps, JSVal input)
-{
-    JSVal result = js_new_array(pCtx);
-    int g = 0;
-    int nGroups = jsregexp_ngroups(pRegExp);
-
-    for (g = 0; g <= nGroups; g++) {
-        if (pCaps[g * 2] >= 0) {
-            js_set_index(pCtx, result, g, js_strn(pCtx, pData + pCaps[g * 2], (size_t)(pCaps[g * 2 + 1] - pCaps[g * 2])));
-        } else {
-            js_set_index(pCtx, result, g, js_undefined());
-        }
-    }
-
-    result.u.o->nArrayLen = nGroups + 1;
-
-    jsobj_put_hidden(pCtx, result.u.o, "index", js_num((double)pCaps[0]));
-    jsobj_put_hidden(pCtx, result.u.o, "input", js_dup(input));
-
-    return result;
-}
-
-static JSRegExp *coerce_regexp(JSCtx *pCtx, JSVal value, JSVal *pOwned)
-{
-    JSRegExp *pRegExp = js_get_regexp(value);
-
-    *pOwned = js_undefined();
-
-    if (pRegExp) {
-        return pRegExp;
-    }
-
-    {
-        JSVal text = js_to_string(pCtx, value);
-        JSVal created = js_new_regexp_val(pCtx, js_str_data(text), "");
-
-        js_release(pCtx, text);
-        *pOwned = created;
-
-        return js_get_regexp(created);
-    }
-}
-
-static JSVal fn_string_match(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
-{
-    JSVal text = this_string(pCtx, thisVal);
-    JSVal owned;
-    JSRegExp *pRegExp = coerce_regexp(pCtx, ARG(0), &owned);
-    const char *pData = js_str_data(text);
-    size_t nSize = js_str_len(text);
-    int32_t *pCaps = NULL;
-    JSVal result = js_null();
-
-    (void)pUser;
-
-    if (pRegExp == NULL) {
-        js_release(pCtx, text);
-        js_release(pCtx, owned);
-
-        return js_null();
-    }
-
-    pCaps = (int32_t *)xx_js_malloc((size_t)(jsregexp_ngroups(pRegExp) + 1) * 2 * sizeof(int32_t));
-
-    if (jsregexp_global(pRegExp)) {
-        size_t nPos = 0;
-        int64_t nCount = 0;
-
-        result = js_new_array(pCtx);
-
-        while ((nPos <= nSize) && jsregexp_exec(pRegExp, pData, nSize, nPos, pCaps)) {
-            js_set_index(pCtx, result, nCount++, js_strn(pCtx, pData + pCaps[0], (size_t)(pCaps[1] - pCaps[0])));
-            nPos = (pCaps[1] > pCaps[0]) ? (size_t)pCaps[1] : (size_t)(pCaps[1] + 1);
-        }
-
-        if (nCount == 0) {
-            js_release(pCtx, result);
-            result = js_null();
-        }
-    } else if (jsregexp_exec(pRegExp, pData, nSize, 0, pCaps)) {
-        result = build_match_array(pCtx, pRegExp, pData, pCaps, text);
-    }
-
-    xx_js_free(pCaps);
-    js_release(pCtx, text);
-    js_release(pCtx, owned);
-
-    return result;
-}
-
-static JSVal fn_string_search(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
-{
-    JSVal text = this_string(pCtx, thisVal);
-    JSVal owned;
-    JSRegExp *pRegExp = coerce_regexp(pCtx, ARG(0), &owned);
-    int32_t *pCaps = NULL;
-    JSVal result = js_num(-1);
-
-    (void)pUser;
-
-    if (pRegExp) {
-        pCaps = (int32_t *)xx_js_malloc((size_t)(jsregexp_ngroups(pRegExp) + 1) * 2 * sizeof(int32_t));
-
-        if (jsregexp_exec(pRegExp, js_str_data(text), js_str_len(text), 0, pCaps)) {
-            result = js_num((double)pCaps[0]);
-        }
-
-        xx_js_free(pCaps);
-    }
-
-    js_release(pCtx, text);
-    js_release(pCtx, owned);
-
-    return result;
-}
-
-/* Expands $1..$9, $&, $` and $' inside a replacement template. */
-static void expand_replacement(JSCtx *pCtx, xx_buf_t *pBuf, const char *pTemplate, size_t nTemplateSize, const char *pData, size_t nDataSize, int32_t *pCaps, int nGroups)
-{
-    size_t i = 0;
-
-    for (i = 0; i < nTemplateSize; i++) {
-        if ((pTemplate[i] == '$') && (i + 1 < nTemplateSize)) {
-            char nNext = pTemplate[i + 1];
-
-            if (nNext == '$') {
-                xx_buf_append_char(pBuf, '$');
-                i++;
-                continue;
-            }
-
-            if (nNext == '&') {
-                xx_buf_append(pBuf, pData + pCaps[0], (size_t)(pCaps[1] - pCaps[0]));
-                i++;
-                continue;
-            }
-
-            if (nNext == '`') {
-                xx_buf_append(pBuf, pData, (size_t)pCaps[0]);
-                i++;
-                continue;
-            }
-
-            if (nNext == '\'') {
-                xx_buf_append(pBuf, pData + pCaps[1], nDataSize - (size_t)pCaps[1]);
-                i++;
-                continue;
-            }
-
-            if ((nNext >= '0') && (nNext <= '9')) {
-                int nIndex = nNext - '0';
-                size_t nSkip = 1;
-
-                if ((i + 2 < nTemplateSize) && (pTemplate[i + 2] >= '0') && (pTemplate[i + 2] <= '9')) {
-                    int nTwo = nIndex * 10 + (pTemplate[i + 2] - '0');
-
-                    if (nTwo <= nGroups) {
-                        nIndex = nTwo;
-                        nSkip = 2;
-                    }
-                }
-
-                if ((nIndex >= 1) && (nIndex <= nGroups)) {
-                    if (pCaps[nIndex * 2] >= 0) {
-                        xx_buf_append(pBuf, pData + pCaps[nIndex * 2], (size_t)(pCaps[nIndex * 2 + 1] - pCaps[nIndex * 2]));
-                    }
-
-                    i += nSkip;
-                    continue;
-                }
-            }
-        }
-
-        xx_buf_append_char(pBuf, pTemplate[i]);
-    }
-
-    (void)pCtx;
-}
-
-static JSVal fn_string_replace(JSCtx *pCtx, JSVal thisVal, int nArgc, JSVal *pArgv, void *pUser)
-{
-    JSVal text = this_string(pCtx, thisVal);
-    JSVal pattern = ARG(0);
-    JSVal replacement = ARG(1);
-    const char *pData = js_str_data(text);
-    size_t nSize = js_str_len(text);
-    xx_buf_t buf;
-    JSVal result;
-    JSRegExp *pRegExp = js_get_regexp(pattern);
-
-    (void)pUser;
-
-    xx_buf_init(&buf);
-
-    if (pRegExp) {
-        int32_t *pCaps = (int32_t *)xx_js_malloc((size_t)(jsregexp_ngroups(pRegExp) + 1) * 2 * sizeof(int32_t));
-        size_t nPos = 0;
-        size_t nLast = 0;
-        int bGlobal = jsregexp_global(pRegExp);
-
-        while ((nPos <= nSize) && jsregexp_exec(pRegExp, pData, nSize, nPos, pCaps)) {
-            xx_buf_append(&buf, pData + nLast, (size_t)pCaps[0] - nLast);
-
-            if (js_is_callable(replacement)) {
-                int nGroups = jsregexp_ngroups(pRegExp);
-                JSVal *pCallArgs = (JSVal *)xx_js_malloc((size_t)(nGroups + 3) * sizeof(JSVal));
-                JSVal callResult;
-                JSVal callText;
-                int g = 0;
-
-                for (g = 0; g <= nGroups; g++) {
-                    if (pCaps[g * 2] >= 0) {
-                        pCallArgs[g] = js_strn(pCtx, pData + pCaps[g * 2], (size_t)(pCaps[g * 2 + 1] - pCaps[g * 2]));
-                    } else {
-                        pCallArgs[g] = js_undefined();
-                    }
-                }
-
-                pCallArgs[nGroups + 1] = js_num((double)pCaps[0]);
-                pCallArgs[nGroups + 2] = js_dup(text);
-
-                callResult = js_call(pCtx, replacement, js_undefined(), nGroups + 3, pCallArgs);
-                callText = js_to_string(pCtx, callResult);
-                xx_buf_append(&buf, js_str_data(callText), js_str_len(callText));
-
-                for (g = 0; g < nGroups + 3; g++) {
-                    js_release(pCtx, pCallArgs[g]);
-                }
-
-                xx_js_free(pCallArgs);
-                js_release(pCtx, callResult);
-                js_release(pCtx, callText);
-            } else {
-                JSVal template_ = js_to_string(pCtx, replacement);
-
-                expand_replacement(pCtx, &buf, js_str_data(template_), js_str_len(template_), pData, nSize, pCaps, jsregexp_ngroups(pRegExp));
-                js_release(pCtx, template_);
-            }
-
-            nLast = (size_t)pCaps[1];
-            nPos = (pCaps[1] > pCaps[0]) ? (size_t)pCaps[1] : (size_t)(pCaps[1] + 1);
-
-            if (!bGlobal) {
-                break;
-            }
-        }
-
-        xx_buf_append(&buf, pData + nLast, nSize - nLast);
-        xx_js_free(pCaps);
-    } else {
-        JSVal needle = js_to_string(pCtx, pattern);
-        int64_t nFound = find_substring(pCtx, pData, nSize, js_str_data(needle), js_str_len(needle), 0);
-
-        if (nFound < 0) {
-            xx_buf_append(&buf, pData, nSize);
-        } else {
-            xx_buf_append(&buf, pData, (size_t)nFound);
-
-            if (js_is_callable(replacement)) {
-                JSVal callArgs[3];
-                JSVal callResult;
-                JSVal callText;
-
-                callArgs[0] = js_dup(needle);
-                callArgs[1] = js_num((double)nFound);
-                callArgs[2] = js_dup(text);
-                callResult = js_call(pCtx, replacement, js_undefined(), 3, callArgs);
-                callText = js_to_string(pCtx, callResult);
-                xx_buf_append(&buf, js_str_data(callText), js_str_len(callText));
-                js_release(pCtx, callArgs[0]);
-                js_release(pCtx, callArgs[2]);
-                js_release(pCtx, callResult);
-                js_release(pCtx, callText);
-            } else {
-                JSVal template_ = js_to_string(pCtx, replacement);
-                int32_t caps[2];
-
-                caps[0] = (int32_t)nFound;
-                caps[1] = (int32_t)(nFound + (int64_t)js_str_len(needle));
-                expand_replacement(pCtx, &buf, js_str_data(template_), js_str_len(template_), pData, nSize, caps, 0);
-                js_release(pCtx, template_);
-            }
-
-            xx_buf_append(&buf, pData + nFound + js_str_len(needle), nSize - (size_t)nFound - js_str_len(needle));
-        }
-
-        js_release(pCtx, needle);
-    }
-
-    result = js_strn(pCtx, buf.data, buf.size);
-    xx_buf_free(&buf);
-    js_release(pCtx, text);
-
-    return result;
 }
 
 /* ---------------------------------------------------------------- Number  */
@@ -3165,10 +2769,10 @@ void js_install_builtins(JSCtx *pCtx)
     def_proto_method(pCtx, pCtx->pStringProto, "toLocaleLowerCase", fn_string_tolower, 0, NULL);
     def_proto_method(pCtx, pCtx->pStringProto, "trim", fn_string_trim, 0, NULL);
     def_proto_method(pCtx, pCtx->pStringProto, "concat", fn_string_concat, 1, NULL);
-    def_proto_method(pCtx, pCtx->pStringProto, "split", fn_string_split, 2, NULL);
-    def_proto_method(pCtx, pCtx->pStringProto, "match", fn_string_match, 1, NULL);
-    def_proto_method(pCtx, pCtx->pStringProto, "search", fn_string_search, 1, NULL);
-    def_proto_method(pCtx, pCtx->pStringProto, "replace", fn_string_replace, 2, NULL);
+    def_proto_method(pCtx, pCtx->pStringProto, "split", js_regex_string_split, 2, NULL);
+    def_proto_method(pCtx, pCtx->pStringProto, "match", js_regex_string_match, 1, NULL);
+    def_proto_method(pCtx, pCtx->pStringProto, "search", js_regex_string_search, 1, NULL);
+    def_proto_method(pCtx, pCtx->pStringProto, "replace", js_regex_string_replace, 2, NULL);
 
     /* Number.prototype */
     def_proto_method(pCtx, pCtx->pNumberProto, "toString", fn_number_tostring, 1, NULL);

@@ -37,6 +37,7 @@
 
 #include "xxfclib/rt/xx_rt.h"
 #include "xxfclib/algo/lzh/xx_lzh.h"
+#include "xx_lzh5_internal.h"
 
 #include "xxfclib/memory/xx_memory.h"
 
@@ -284,7 +285,7 @@ static bool xx_lzh5_read_literal(xx_lzh5_bits *bits, const xx_lzh5_huff *pre, xx
     return xx_lzh5_build(table, lengths, available);
 }
 
-bool xx_lzh5_decode_memory(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, int method, size_t *written)
+static bool xx_lzh5_decode_impl(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, int method, size_t *written, bool exact)
 {
     xx_lzh5_bits bits;
     xx_lzh5_huff pre;
@@ -311,7 +312,7 @@ bool xx_lzh5_decode_memory(const uint8_t *input, size_t input_size, uint8_t *out
     /* The wider windows need a five-bit count for the position table. */
     position_count_bits = method == 9 ? 6 : ((window_bits >= 15) ? 5 : 4);
 
-    if (output_size == 0U) return true;
+    if (output_size == 0U) return !exact || input_size == 0U;
     xx_lzh5_bits_init(&bits, input, input_size);
 
     while (produced < output_size) {
@@ -325,7 +326,8 @@ bool xx_lzh5_decode_memory(const uint8_t *input, size_t input_size, uint8_t *out
             return false;
         }
 
-        while (block_symbols-- > 0 && produced < output_size) {
+        while (produced < output_size && block_symbols > 0) {
+            --block_symbols;
             int symbol = xx_lzh5_decode_symbol(&bits, &literal);
 
             if (symbol < 0 || bits.overrun) return false;
@@ -364,6 +366,7 @@ bool xx_lzh5_decode_memory(const uint8_t *input, size_t input_size, uint8_t *out
                     distance = ((size_t)1U << (code - 1)) + (size_t)xx_lzh5_read_bits(&bits, code - 1) + 1U;
                 }
                 if (bits.overrun) return false;
+                if (exact && (size_t)length > output_size - produced) return false;
                 if (distance > ((size_t)1U << window_bits)) return false;
 
                 for (index = 0; index < (size_t)length && produced < output_size; ++index) {
@@ -375,8 +378,24 @@ bool xx_lzh5_decode_memory(const uint8_t *input, size_t input_size, uint8_t *out
                 }
             }
         }
+        if (exact && produced == output_size && block_symbols != 0) return false;
     }
 
+    /* Exact container users authenticate the complete encoded member. Only
+     * zero fill within its last byte is permitted; whole trailing bytes,
+     * unconsumed symbols and clipped matches are never accepted here. */
+    if (exact && (bits.overrun || bits.position != input_size || bits.available < 0 || bits.available > 7 ||
+                  (bits.available && (bits.cache & ((1U << bits.available) - 1U)) != 0U))) return false;
     if (written) *written = produced;
     return produced == output_size;
+}
+
+bool xx_lzh5_decode_memory(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, int method, size_t *written)
+{
+    return xx_lzh5_decode_impl(input, input_size, output, output_size, method, written, false);
+}
+
+bool xx_lzh5_decode_exact_memory(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size, int method, size_t *written)
+{
+    return xx_lzh5_decode_impl(input, input_size, output, output_size, method, written, true);
 }

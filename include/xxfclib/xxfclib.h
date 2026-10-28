@@ -28,12 +28,15 @@
 #define XXFCLIB_H
 
 #include "xxfclib/translation/xx_translation.h"
+#include "xxfclib/extractor/xx_extractor.h"
 
 #include "xxfclib/sort/xx_sort.h"
 #include "xxfclib/formats/archive/stor_resource/xx_stor_resource.h"
 #include "xxfclib/formats/archive/installshield_obl/xx_installshield_obl.h"
 #include "xxfclib/formats/archive/pftw_pkg/xx_pftw_pkg.h"
 #include "xxfclib/formats/archive/sod_installer/xx_sod_installer.h"
+#include "xxfclib/formats/archive/pe_rawfile/xx_pe_rawfile.h"
+#include "xxfclib/formats/archive/pklite/xx_pklite.h"
 #include "xxfclib/formats/game/fury_dat/xx_fury_dat.h"
 #include "xxfclib/formats/archive/starforce_ovl/xx_starforce_ovl.h"
 #include "xxfclib/formats/archive/self_unstuffer/xx_self_unstuffer.h"
@@ -168,6 +171,7 @@
 #include "xxfclib/json/xx_json.h"
 #include "xxfclib/xml/xx_xml.h"
 #include "xxfclib/fs/xx_fs.h"
+#include "xxfclib/regex/xx_regex.h"
 #include "xxfclib/js/xx_js.h"
 #include "xxfclib/memory/xx_memory.h"
 #include "xxfclib/formats/xx_memory_map.h"
