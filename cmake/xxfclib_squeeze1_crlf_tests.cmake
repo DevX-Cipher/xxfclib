@@ -1,0 +1,7 @@
+option(XXFC_BUILD_SQUEEZE1_CRLF_TESTS "Build SQ CRLF transport recovery regressions" OFF)
+if(XXFC_BUILD_SQUEEZE1_CRLF_TESTS AND NOT TARGET test_squeeze1_crlf)
+    enable_testing()
+    add_executable(test_squeeze1_crlf "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_squeeze1_crlf.c")
+    target_link_libraries(test_squeeze1_crlf PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_squeeze1_crlf COMMAND test_squeeze1_crlf "${CMAKE_CURRENT_BINARY_DIR}/squeeze1-crlf-output")
+endif()
