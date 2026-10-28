@@ -31,7 +31,9 @@
  *   0x7F  u16 LE           number of members
  *
  * The walk starts at offset 0 and follows header + stream to the next
- * header, footer-declared count times. The reference implementation stops
+ * header, footer-declared count times. A higher counter is advisory only when
+ * the complete physical walk reaches one zero marker and the canonical footer.
+ * The reference implementation stops
  * the walk rather than failing the file when a header does not parse or a
  * stream runs past EOF: two corpus archives end in a truncated member and
  * everything before it is still good. At least one member must parse.
@@ -80,6 +82,7 @@ typedef struct xx_swag_stream_s {
     int64_t archive_size;
     bool duplicate_footer;
     bool incomplete_tail;
+    bool advisory_footer;
 } xx_swag_stream;
 
 static void xx_swag_vtable_destroy(Abstractformat *self);
@@ -89,18 +92,24 @@ static void xx_swag_vtable_destroy(Abstractformat *self);
 static bool xx_swag_read_at(Abstractformat *self, int64_t offset, uint8_t *buffer, size_t size)
 {
     size_t completed = 0U;
+    int64_t saved;
+    bool result = false;
 
-    if (!self || !self->device || offset < 0 || xx_io_seek64(self->device, offset, SEEK_SET) != 0) {
+    if (!self || !self->device || offset < 0 || (saved = xx_io_tell(self->device)) < 0) {
         return false;
     }
+    if (xx_io_seek64(self->device, offset, SEEK_SET) != 0) goto done;
     while (completed < size) {
         ssize_t received = xx_io_read(self->device, buffer + completed, size - completed);
         if (received <= 0 || (size_t)received > size - completed) {
-            return false;
+            goto done;
         }
         completed += (size_t)received;
     }
-    return true;
+    result = true;
+done:
+    if (xx_io_seek64(self->device, saved, SEEK_SET) != 0) result = false;
+    return result;
 }
 
 static bool xx_swag_range_within(int64_t total, int64_t offset, int64_t size)
@@ -193,6 +202,24 @@ static bool xx_swag_name_valid(const uint8_t *name, size_t size)
         }
     }
     return true;
+}
+
+/* A published SWAG collection may retain a higher snippet counter after a
+ * deletion. Authorize completeness only when the physical walk accounts for
+ * every member byte, then exactly one LHA zero terminator and this footer.
+ * Existing exact-count/partial-prefix behavior remains separate. */
+static bool xx_swag_canonical_footer(const uint8_t footer[XX_SWAG_FOOTER_SIZE])
+{
+    static const char prefix[] = "SWAG ARCHIVE PROJECT";
+    const size_t starts[2] = {0U, 61U}, capacities[2] = {60U, 65U};
+    size_t field;
+    for (field = 0U; field < 2U; ++field) {
+        size_t start = starts[field], length = footer[start], i;
+        if (length == 0U || length > capacities[field]) return false;
+        for (i = 1U; i <= length; ++i) if (footer[start + i] < 32U || footer[start + i] > 126U) return false;
+        for (i = length + 1U; i <= capacities[field]; ++i) if (footer[start + i] != 0U) return false;
+    }
+    return footer[0] >= sizeof(prefix) - 1U && xx_rt_memcmp(footer + 1U, prefix, sizeof(prefix) - 1U) == 0;
 }
 
 static xx_swag_stream *xx_swag_parse(Abstractformat *self, xx_pd_struct *pd)
@@ -328,6 +355,12 @@ static xx_swag_stream *xx_swag_parse(Abstractformat *self, xx_pd_struct *pd)
     if (pd && xx_pd_is_stopped(pd)) goto fail;
 
     stream->incomplete_tail = stream->count != (size_t)declared_count;
+    if (stream->count < (size_t)declared_count && span - offset == XX_SWAG_FOOTER_SIZE + 1 && xx_swag_canonical_footer(footer)) {
+        uint8_t terminal;
+        if (!xx_swag_read_at(self, self->base_address + offset, &terminal, 1U)) goto fail;
+        if (pd && xx_pd_is_stopped(pd)) goto fail;
+        if (terminal == 0U) { stream->incomplete_tail = false; stream->advisory_footer = true; }
+    }
     if (span - offset == 2 * XX_SWAG_FOOTER_SIZE || span - offset == 2 * XX_SWAG_FOOTER_SIZE + 1) {
         uint8_t duplicate[XX_SWAG_FOOTER_SIZE];
         int64_t footer_at = span - 2 * XX_SWAG_FOOTER_SIZE;
@@ -673,8 +706,9 @@ const xx_archive_record *xx_swag_get_current_archive_record(Abstractformat *self
     xx_swag_stream *stream;
     if (!self || !state || state->format != self || !state->has_record) return NULL;
     stream = (xx_swag_stream *)state->internal_state;
-    if (stream && (stream->duplicate_footer || stream->incomplete_tail) &&
+    if (stream && (stream->duplicate_footer || stream->incomplete_tail || stream->advisory_footer) &&
         !xx_archive_record_set_meta_str(&state->current_record, XX_META_ID_COMMENT,
+            stream->advisory_footer ? "SWAG footer counter exceeds physical member count; member checksums remain verified" :
             stream->duplicate_footer ? "Repeated identical SWAG footer; member checksums remain verified" :
                                      "Incomplete SWAG tail; only complete checksum-verified members can be extracted")) return NULL;
     return &state->current_record;
