@@ -1,0 +1,7 @@
+option(XXFC_BUILD_LARC_PFX_ERASED_TESTS "Build authenticated LArc PFX erased-metadata recovery regressions" OFF)
+if(XXFC_BUILD_LARC_PFX_ERASED_TESTS AND NOT TARGET test_larc_pfx_erased)
+    enable_testing()
+    add_executable(test_larc_pfx_erased "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_larc_pfx_erased.c")
+    target_link_libraries(test_larc_pfx_erased PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_larc_pfx_erased COMMAND test_larc_pfx_erased "${CMAKE_CURRENT_BINARY_DIR}/larc-pfx-erased-output")
+endif()

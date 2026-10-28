@@ -1,0 +1,7 @@
+option(XXFC_BUILD_PE_RAWFILE_TESTS "Build scoped PE RAWFILE resource tests" OFF)
+if(XXFC_BUILD_PE_RAWFILE_TESTS AND NOT TARGET test_pe_rawfile)
+    enable_testing()
+    add_executable(test_pe_rawfile "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pe_rawfile.c")
+    target_link_libraries(test_pe_rawfile PRIVATE xxfclib::xxfclib)
+    add_test(NAME xxfc_pe_rawfile COMMAND test_pe_rawfile "${CMAKE_CURRENT_BINARY_DIR}/pe-rawfile-output")
+endif()
