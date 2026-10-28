@@ -38,7 +38,7 @@ static bool inno_parse_is1(Abstractformat *f, inno_ctx *ctx, int64_t size, xx_pd
         packed = xx_data_get_u32(entry + 86, 4, 0, false);
         if (length > 63U || (uint64_t)off != expected || raw > INT32_MAX || !packed || packed > INT32_MAX || expected > data_size ||
             data_size - expected < 4U || packed > data_size - expected - 4U ||
-            !inno_read_at(f->device, f->base_address + t->data_offset + (int64_t)expected, magic, sizeof(magic)) || xx_rt_memcmp(magic, "zlb", 4U)) goto done;
+            !inno_read_at(f->device, f->base_address + t->data_offset + (int64_t)expected, magic, sizeof(magic)) || xx_rt_memcmp(magic, "zlb\x1a", 4U)) goto done;
         l->chunk_offset = off;
         l->size = raw;
         l->chunk_size = packed;
