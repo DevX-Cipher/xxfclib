@@ -5574,6 +5574,8 @@ if(XXFC_BUILD_DIE_ENGINE)
     include("${CMAKE_CURRENT_SOURCE_DIR}/die_engine.cmake")
     xxfclib_select_stream_sources(XXFC_DIE_ENGINE_SOURCES)
     add_library(die_engine STATIC ${XXFC_DIE_ENGINE_SOURCES})
+    # Keep schema aliases from pulling the full reader registry into this focused archive.
+    target_compile_definitions(die_engine PRIVATE XXFC_PROFILE_DIE_ENGINE=1)
     xxfclib_configure_target(die_engine FALSE)
     if(XXFC_DIE_ENGINE_TAR_ONLY_WRITING)
         target_compile_definitions(die_engine PRIVATE XXFC_ARCHIVE_WRITE_TAR_ONLY=1)
