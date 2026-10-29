@@ -242,8 +242,8 @@ static bool sx_classicdata_comment(xx_data_struct_record*r,uint32_t id)
  if(id==sxcd_infogrames_volume_envelope.id||id==sxcd_infogrames_period_envelope.id){
   if(CD_NAME("control"))return xx_data_struct_record_set_comment(r,v&128?L"CONTINUOUS (bit7); low7 bits are the amount subtracted on each envelope cycle.":L"ONE_SHOT (bit7 clear); low7 bits are the envelope cycle adjustment amount.");
   if(CD_NAME("unused_byte")){CD_TEXT("Stored leading period-envelope byte skipped by the player. One-shot/continuous mode comes from command bytecode.");}
-  if(wcsstr(n,L"_delta")){CD_TEXT("Signed8-bit increment applied to the accumulated slide value.");}
-  if(wcsstr(n,L"_repeat")){CD_TEXT("Number of delay intervals before advancing to the next envelope phase; encoded byte is retained.");}
+  if(sx_wcsstr(n,L"_delta")){CD_TEXT("Signed8-bit increment applied to the accumulated slide value.");}
+  if(sx_wcsstr(n,L"_repeat")){CD_TEXT("Number of delay intervals before advancing to the next envelope phase; encoded byte is retained.");}
   CD_TEXT("Number of ticks per interval before incrementing the phase repeat counter; encoded byte is retained.");
  }
  if(id==sxcd_tme_file_header.id){CD_TEXT("Stored total song byte length, including the physical header, tables, instruction lists and sample payloads.");}
@@ -263,14 +263,14 @@ static bool sx_classicdata_comment(xx_data_struct_record*r,uint32_t id)
   if(CD_NAME("name")){CD_TEXT("Fixed32-byte instrument name; a nonzero first byte indicates a stored sample payload to InitData.");}
   if(CD_NAME("volume")){CD_TEXT("Stored instrument base-volume byte; event volume_add is added before signed extension.");}
   if(CD_NAME("unused_byte")){CD_TEXT("Second byte of the two-byte inst_volume allocation; the player reads only the first byte.");}
-  if(wcsstr(n,L"_rate")){CD_TEXT("Stored envelope countdown; the player uses this rate plus one.");}
+  if(sx_wcsstr(n,L"_rate")){CD_TEXT("Stored envelope countdown; the player uses this rate plus one.");}
   CD_TEXT("Stored envelope target level byte for the corresponding attack, decay or release phase.");
  }
  if(id==sxcd_tme_instruction.id){
   if(CD_NAME("opcode")){
    static const wchar_t*const names[]={L"STOP",L"VIBRATO_LEVEL",L"VIBRATO_SPEED",L"TREMOLO_LEVEL",L"TREMOLO_SPEED",L"SPECIAL_LEVEL",L"SPECIAL_SPEED",L"DELAY",L"GOTO"};
    wchar_t text[192];const wchar_t*name=v>>4<SX_COUNT(names)?names[v>>4]:L"UNKNOWN";
-   swprintf(text,SX_COUNT(text),L"%ls (high nibble). Low nibble selects LFO for level commands. Exactly0x00 terminates a serialized list.",name);return xx_data_struct_record_set_comment(r,text);
+   text[0]=0;sx_wappend(text,SX_COUNT(text),name);sx_wappend(text,SX_COUNT(text),L" (high nibble). Low nibble selects LFO for level commands. Exactly0x00 terminates a serialized list.");return xx_data_struct_record_set_comment(r,text);
   }
   if(CD_NAME("value")){CD_TEXT("Opcode-dependent level, speed or target instruction-list index. It is not a file offset.");}
   CD_TEXT("Stored instruction duration word; level/speed slides use this duration word plus one, while DELAY uses this word directly.");
@@ -287,7 +287,7 @@ static bool sx_classicdata_comment(xx_data_struct_record*r,uint32_t id)
   CD_TEXT("Fixed32-byte song name.");
  }
  if(id==sxcd_tme_entry.id){
-  if(wcsstr(n,L"_track")){CD_TEXT("Zero-based32-row track index into the event table; not a byte offset.");}
+  if(sx_wcsstr(n,L"_track")){CD_TEXT("Zero-based32-row track index into the event table; not a byte offset.");}
   CD_TEXT("Stored8-bit transposition/addition applied modulo256 by the player. Signed display preserves negative adjustments.");
  }
  if(id==sxcd_tme_event.id){
