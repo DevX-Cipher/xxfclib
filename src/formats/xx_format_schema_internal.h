@@ -56,5 +56,27 @@ static bool sx_u32(sx_context *ctx, int64_t off, bool be, uint32_t *out);
 static bool sx_u64(sx_context *ctx, int64_t off, bool be, uint64_t *out);
 static bool sx_add(sx_context *ctx, const sx_layout *layout, int64_t off, int64_t size);
 static bool sx_raw(sx_context *ctx, int64_t off, int64_t size);
-static bool sx_table(sx_context *ctx, const sx_layout *layout, int64_t off, int64_t entry_size, uint64_t count);
+static bool sx_table(sx_context* ctx, const sx_layout* layout, int64_t off, int64_t entry_size, uint64_t count);
+
+static inline const wchar_t* sx_wcsstr(const wchar_t* h, const wchar_t* n)
+{
+  size_t i, j;
+  if (!h || !n) return NULL;
+  if (!*n) return h;
+  for (i = 0; h[i]; i++) {
+    for (j = 0; n[j] && h[i + j] == n[j]; j++) {}
+    if (!n[j]) return h + i;
+  }
+  return NULL;
+}
+
+static inline void sx_wappend(wchar_t* dst, size_t cap, const wchar_t* src)
+{
+  size_t n = 0;
+  while (n < cap && dst[n]) n++;
+  if (n >= cap) return;
+  while (*src && n + 1 < cap) dst[n++] = *src++;
+  dst[n] = 0;
+}
+
 #endif
